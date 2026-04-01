@@ -48,6 +48,81 @@ CREATE NODETYPE store (
 );
 ```
 
+### Compound Indexes
+
+Add multi-column indexes to a NodeType for efficient queries on property combinations:
+
+```sql
+CREATE NODETYPE type_name (
+    column_name data_type,
+    ...
+)
+COMPOUND_INDEX 'index_name' ON (
+    column_name [ ASC | DESC ],
+    ...
+);
+```
+
+A NodeType can have multiple compound indexes:
+
+```sql
+CREATE NODETYPE article (
+    title TEXT NOT NULL,
+    category TEXT,
+    status TEXT DEFAULT 'draft',
+    priority INT
+)
+COMPOUND_INDEX 'idx_category_status_created' ON (
+    category,
+    status,
+    __created_at DESC
+)
+COMPOUND_INDEX 'idx_status_priority' ON (
+    status,
+    priority DESC
+);
+```
+
+**Index columns** can be any property defined on the NodeType, plus these system properties:
+
+| System Column | Type | Description |
+|---------------|------|-------------|
+| `__node_type` | String | The node's type name |
+| `__created_at` | Timestamp | Node creation time |
+| `__updated_at` | Timestamp | Last modification time |
+
+**Sort direction** — each column can specify `ASC` (default) or `DESC`. This matters especially for timestamp columns: `__created_at DESC` means newest-first in a forward index scan.
+
+**Column types** are inferred automatically from the property type:
+
+| Property Type | Index Column Type | Encoding |
+|---------------|-------------------|----------|
+| `TEXT` | String | Lexicographic |
+| `INT`, `BIGINT` | Integer | Numeric |
+| `BOOLEAN` | Boolean | Binary |
+| `__created_at`, `__updated_at` | Timestamp | Direction-aware |
+
+**How the query planner uses them** — the planner matches equality conditions on leading columns, with an optional ORDER BY on the trailing column:
+
+```sql
+-- ✅ Uses idx_category_status_created: prefix match + ORDER BY
+SELECT * FROM 'default'
+WHERE properties->>'category'::String = 'tech'
+  AND properties->>'status'::String = 'published'
+ORDER BY __created_at DESC
+LIMIT 20;
+
+-- ✅ Uses idx_category_status_created: partial prefix
+SELECT * FROM 'default'
+WHERE properties->>'category'::String = 'tech';
+
+-- ❌ Cannot use index: skips leading column (category)
+SELECT * FROM 'default'
+WHERE properties->>'status'::String = 'published';
+```
+
+When you add a compound index to a NodeType that already has data, RaisinDB automatically schedules a background job to build the index from existing nodes.
+
 ## CREATE ARCHETYPE
 
 Define an archetype schema (template for node types).

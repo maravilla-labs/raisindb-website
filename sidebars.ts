@@ -98,6 +98,7 @@ const sidebars: SidebarsConfig = {
             'concepts/multi-model/full-text-search',
           ],
         },
+        'concepts/indexing',
         'concepts/dcad',
         'concepts/workspaces',
         'concepts/access-control',

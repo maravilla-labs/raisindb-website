@@ -53,34 +53,38 @@ CREATE NODETYPE store (
 Add multi-column indexes to a NodeType for efficient queries on property combinations:
 
 ```sql
-CREATE NODETYPE type_name (
-    column_name data_type,
-    ...
+CREATE NODETYPE 'type_name' (
+    PROPERTIES (
+        column_name data_type,
+        ...
+    )
+    COMPOUND_INDEX 'index_name' ON (
+        column_name [ ASC | DESC ],
+        ...
+    )
 )
-COMPOUND_INDEX 'index_name' ON (
-    column_name [ ASC | DESC ],
-    ...
-);
 ```
 
 A NodeType can have multiple compound indexes:
 
 ```sql
-CREATE NODETYPE article (
-    title TEXT NOT NULL,
-    category TEXT,
-    status TEXT DEFAULT 'draft',
-    priority INT
+CREATE NODETYPE 'myapp:Article' (
+    PROPERTIES (
+        title String NOT NULL,
+        category String,
+        status String DEFAULT 'draft',
+        priority Integer
+    )
+    COMPOUND_INDEX 'idx_category_status_created' ON (
+        category,
+        status,
+        __created_at DESC
+    )
+    COMPOUND_INDEX 'idx_status_priority' ON (
+        status,
+        priority DESC
+    )
 )
-COMPOUND_INDEX 'idx_category_status_created' ON (
-    category,
-    status,
-    __created_at DESC
-)
-COMPOUND_INDEX 'idx_status_priority' ON (
-    status,
-    priority DESC
-);
 ```
 
 **Index columns** can be any property defined on the NodeType, plus these system properties:

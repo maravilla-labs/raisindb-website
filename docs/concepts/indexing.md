@@ -38,21 +38,23 @@ With a compound index, the same query becomes an **O(LIMIT) prefix scan** — it
 Compound indexes are declared on NodeTypes using SQL DDL:
 
 ```sql
-CREATE NODETYPE article (
-    title TEXT NOT NULL,
-    category TEXT,
-    status TEXT DEFAULT 'draft',
-    author_id TEXT
+CREATE NODETYPE 'myapp:Article' (
+    PROPERTIES (
+        title String NOT NULL,
+        category String,
+        status String DEFAULT 'draft',
+        author_id String
+    )
+    COMPOUND_INDEX 'idx_category_status_created' ON (
+        category,
+        status,
+        __created_at DESC
+    )
+    COMPOUND_INDEX 'idx_author_created' ON (
+        author_id,
+        __created_at DESC
+    )
 )
-COMPOUND_INDEX 'idx_category_status_created' ON (
-    category,
-    status,
-    __created_at DESC
-)
-COMPOUND_INDEX 'idx_author_created' ON (
-    author_id,
-    __created_at DESC
-);
 ```
 
 Each index specifies:
@@ -87,14 +89,15 @@ Compound indexes can include system properties alongside user-defined properties
 A cross-type index using `__node_type` lets you query across multiple NodeTypes efficiently:
 
 ```sql
-CREATE NODETYPE content_item (
-    workspace_id TEXT
-)
-COMPOUND_INDEX 'idx_ws_type_created' ON (
-    workspace_id,
-    __node_type,
-    __created_at DESC
-);
+CREATE NODETYPE 'myapp:ContentItem'
+    PROPERTIES (
+        workspace_id String
+    )
+    COMPOUND_INDEX 'idx_ws_type_created' ON (
+        workspace_id,
+        __node_type,
+        __created_at DESC
+    )
 ```
 
 ### Timestamp Sort Direction
@@ -142,15 +145,16 @@ This guarantees correct results during concurrent writes, branch operations, and
 Show the latest posts by a specific user:
 
 ```sql
-CREATE NODETYPE post (
-    author_id TEXT NOT NULL,
-    visibility TEXT DEFAULT 'public'
-)
-COMPOUND_INDEX 'idx_author_feed' ON (
-    author_id,
-    visibility,
-    __created_at DESC
-);
+CREATE NODETYPE 'social:Post'
+    PROPERTIES (
+        author_id String NOT NULL,
+        visibility String DEFAULT 'public'
+    )
+    COMPOUND_INDEX 'idx_author_feed' ON (
+        author_id,
+        visibility,
+        __created_at DESC
+    )
 ```
 
 ```sql
@@ -167,16 +171,17 @@ LIMIT 20;
 Browse products by category, filtering in-stock items, sorted by price:
 
 ```sql
-CREATE NODETYPE product (
-    category TEXT NOT NULL,
-    in_stock BOOLEAN DEFAULT true,
-    price INT
-)
-COMPOUND_INDEX 'idx_category_stock_price' ON (
-    category,
-    in_stock,
-    price ASC
-);
+CREATE NODETYPE 'shop:Product'
+    PROPERTIES (
+        category String NOT NULL,
+        in_stock Boolean DEFAULT true,
+        price Integer
+    )
+    COMPOUND_INDEX 'idx_category_stock_price' ON (
+        category,
+        in_stock,
+        price ASC
+    )
 ```
 
 ```sql
@@ -193,14 +198,15 @@ LIMIT 50;
 Show recent activity across all content types for a tenant:
 
 ```sql
-CREATE NODETYPE activity (
-    tenant TEXT NOT NULL,
-    action TEXT NOT NULL
-)
-COMPOUND_INDEX 'idx_tenant_activity' ON (
-    tenant,
-    __created_at DESC
-);
+CREATE NODETYPE 'app:Activity'
+    PROPERTIES (
+        tenant String NOT NULL,
+        action String NOT NULL
+    )
+    COMPOUND_INDEX 'idx_tenant_activity' ON (
+        tenant,
+        __created_at DESC
+    )
 ```
 
 ```sql

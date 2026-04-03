@@ -83,6 +83,16 @@ The installed skills:
 
 Skills use progressive loading — your agent only reads the ones relevant to the current task.
 
+:::tip Adding skills to an existing project
+If you have an existing project (or used `--skip-install`), install the skills manually:
+
+```bash
+npx skills add maravilla-labs/raisindb/packages/raisindb-skills
+```
+
+This works with any project — not just ones created with `raisindb package init`.
+:::
+
 ## Step 4: Build with Your AI Agent
 
 Open your project in your AI coding tool and start building. Here are example prompts:

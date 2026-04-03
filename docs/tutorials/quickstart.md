@@ -4,244 +4,149 @@ sidebar_position: 1
 
 # Quick Start
 
-Get up and running with RaisinDB in under 10 minutes. You'll install the server, create a content schema as a RAP package, query data with SQL, and explore branching.
+Get up and running with RaisinDB in under 10 minutes. You'll install the server, scaffold a project with AI agent support, and build your first content-driven app.
 
 ## Prerequisites
 
 - Node.js (v18 or later) and npm
-- Optional: `psql` (PostgreSQL client) for SQL queries
+- An AI coding agent ([Claude Code](https://claude.ai/code), [Cursor](https://cursor.com), or any agent that supports [Agent Skills](https://skills.sh))
 
-## Step 1: Install & Start
+## Step 1: Install the CLI & Start the Server
 
 ```bash
 npm install -g @raisindb/cli
 raisindb server start
 ```
 
-The CLI automatically downloads the right server binary for your platform (macOS, Linux, or Windows) and starts it. RaisinDB is now running with:
+The CLI downloads the right server binary for your platform and starts RaisinDB with:
 
+- **Admin Console** at [http://localhost:8080/admin](http://localhost:8080/admin)
 - **HTTP API** on port **8080**
 - **PGWire** (PostgreSQL protocol) on port **5432**
-- **Admin Console** at [http://localhost:8080/admin](http://localhost:8080/admin) — log in with `admin` / `admin`
+
+On first start, you'll see the admin credentials in the terminal output. Log in to the admin console and change the password.
 
 :::tip Alternative installation
-You can also download binaries directly from [GitHub Releases](https://github.com/maravilla-labs/raisindb/releases) or [build from source](/docs/guides/installation#build-from-source).
+Download binaries directly from [GitHub Releases](https://github.com/maravilla-labs/raisindb/releases) or [build from source](/docs/guides/installation#build-from-source).
 :::
 
-## Step 2: Create a RAP Package
+## Step 2: Create a Repository
 
-A RAP (Raisin Archive Package) bundles everything RaisinDB needs: type definitions, workspace config, and seed content. It's like npm for your database schema.
+In the admin console at [http://localhost:8080/admin](http://localhost:8080/admin):
 
-Create a project directory with this structure:
+1. Click **"Create Repository"**
+2. Give it a name (e.g., `demo`) — remember this name, your frontend will use it
 
-```
-my-project/
-  manifest.yaml
-  nodetypes/
-    myapp_Article.yaml
-    myapp_Author.yaml
-  workspaces/
-    content.yaml
-  content/
-    content/
-      articles/
-        welcome/
-          node.yaml
-          index.md
-      authors/
-        alice/
-          node.yaml
-```
-
-### manifest.yaml
-
-```yaml
-name: my-project
-version: 1.0.0
-title: My Project
-description: A starter project with articles and authors
-
-provides:
-  nodetypes:
-    - myapp:Article
-    - myapp:Author
-  workspaces:
-    - content
-  content:
-    - content/articles/welcome
-    - content/authors/alice
-
-workspace_patches:
-  content:
-    allowed_node_types:
-      add:
-        - myapp:Article
-        - myapp:Author
-```
-
-### nodetypes/myapp_Article.yaml
-
-```yaml
-name: myapp:Article
-description: A content article
-properties:
-  title:
-    type: string
-    required: true
-  body:
-    type: richtext
-  author:
-    type: string
-  tags:
-    type: array
-    items:
-      type: string
-  published:
-    type: boolean
-    default: false
-versionable: true
-indexable: true
-```
-
-### nodetypes/myapp_Author.yaml
-
-```yaml
-name: myapp:Author
-description: A content author
-properties:
-  name:
-    type: string
-    required: true
-  bio:
-    type: string
-  email:
-    type: string
-    unique: true
-```
-
-### workspaces/content.yaml
-
-```yaml
-name: content
-description: Main content workspace
-allowed_node_types:
-  - raisin:Folder
-  - myapp:Article
-  - myapp:Author
-allowed_root_node_types:
-  - raisin:Folder
-```
-
-### content/content/articles/welcome/node.yaml
-
-```yaml
-node_type: myapp:Article
-properties:
-  title: Welcome to RaisinDB
-  author: Alice
-  body: file:index.md
-  published: true
-  tags:
-    - welcome
-    - getting-started
-```
-
-### content/content/articles/welcome/index.md
-
-```markdown
-# Welcome to RaisinDB
-
-RaisinDB is a multi-tenant content database with Git-like versioning,
-SQL queries, and graph relationships — all in one package.
-```
-
-### content/content/authors/alice/node.yaml
-
-```yaml
-node_type: myapp:Author
-properties:
-  name: Alice
-  bio: Technical writer and RaisinDB enthusiast.
-  email: alice@example.com
-```
-
-:::tip What just happened?
-A RAP package bundles everything RaisinDB needs: type definitions, workspace config, and seed content. It's like npm for your database schema.
-:::
-
-## Step 3: Install the Package
+## Step 3: Scaffold Your Project
 
 ```bash
-raisindb package install ./my-project
+raisindb package init my-app
+cd my-app
+npm install
 ```
 
-This registers the `myapp:Article` and `myapp:Author` node types, creates the `content` workspace, and imports the seed content — all in one step.
+This creates:
 
-## Step 4: Query with SQL
+```
+my-app/
+├── package.json          # npm scripts + @raisindb/functions-types
+├── .gitignore
+├── AGENT.md              # Instructions for AI agents
+├── README.md
+├── package/              # RaisinDB content package (YAML)
+│   ├── manifest.yaml
+│   ├── nodetypes/
+│   ├── archetypes/
+│   ├── elementtypes/
+│   ├── workspaces/
+│   └── content/
+└── frontend/             # Your web app (SvelteKit or React)
+```
 
-Connect to RaisinDB using any PostgreSQL client:
+`npm install` installs `@raisindb/functions-types` — TypeScript definitions for the server-side function runtime. Your AI agent reads these to understand the available APIs.
+
+## Step 4: Install AI Agent Skills
 
 ```bash
-psql -h localhost -p 5432 -U admin -d raisindb
+npx skills add raisindb/raisindb/packages/raisindb-skills
 ```
 
-**List all articles:**
+This installs 10 focused skill files that teach your AI agent how to build RaisinDB apps:
 
-```sql
-SELECT path, properties->>'title'::String AS title
-FROM 'content'
-WHERE node_type = 'myapp:Article';
+| Skill | What it teaches |
+|-------|----------------|
+| `raisindb-overview` | Core concepts, path-as-URL routing, project structure |
+| `raisindb-content-modeling` | NodeTypes, Archetypes, ElementTypes in YAML |
+| `raisindb-frontend-sveltekit` | SvelteKit frontend with dynamic routing |
+| `raisindb-frontend-react` | React Router frontend with SSR |
+| `raisindb-sql` | SQL queries, JSONB, hierarchy, graph |
+| `raisindb-auth` | Login, register, anonymous access |
+| `raisindb-translations` | Multi-language content |
+| `raisindb-file-uploads` | File upload, thumbnails, signed URLs |
+| `raisindb-functions-triggers` | Server-side functions and event triggers |
+| `raisindb-access-control` | Roles, permissions, row-level security |
+
+Skills use progressive loading — your agent only reads the ones relevant to the current task.
+
+## Step 5: Build with Your AI Agent
+
+Open your project in your AI coding tool and start building. Here are example prompts:
+
+### Define your content model
+
+> "Create a blog with Article and Author node types. Articles should have a title, body, excerpt, featured image, and tags. Add a LandingPage archetype with Hero and TextBlock elements."
+
+The agent will create YAML files in `package/nodetypes/`, `package/archetypes/`, and `package/elementtypes/`, then validate with `npm run validate`.
+
+### Build the frontend
+
+> "Create a SvelteKit frontend that renders pages from the content package using path-based routing. The repository name is `demo`."
+
+The agent will scaffold the SvelteKit app in `frontend/`, set up the RaisinDB client with WebSocket connection, create component registries for archetypes and elements, and wire up the `[...slug]` route.
+
+### Add authentication
+
+> "Add login and register pages with anonymous access for public content."
+
+### Deploy your content
+
+```bash
+npm run deploy              # Validate + build + upload to server
+# or
+npm run sync                # Live sync during development
 ```
 
-**Filter by author:**
+## Available npm Scripts
 
-```sql
-SELECT * FROM 'content'
-WHERE properties->>'author'::String = 'Alice';
+| Script | What it does |
+|--------|-------------|
+| `npm run validate` | Validate all YAML in `package/` |
+| `npm run build` | Build `.rap` package file |
+| `npm run deploy` | Validate + build + upload to server |
+| `npm run sync` | Live sync package changes (watch mode) |
+| `npm run dev` | Start frontend dev server |
+
+## How It Works
+
+RaisinDB apps follow a **content-to-component pipeline**:
+
+```
+NodeType (schema)  →  Archetype (page template)  →  ElementTypes (blocks)
+      ↕                       ↕                           ↕
+YAML in package/       Maps to Page Component      Maps to Element Components
 ```
 
-**Create a relationship between author and article:**
+1. **Content lives at paths** like `/workspace/home`, `/workspace/about`
+2. **The frontend route** `/{slug}` queries `WHERE path = '/workspace/{slug}'`
+3. **The archetype** on the node determines which page component renders it
+4. **Elements** in `properties.content[]` map to inline block components
 
-```sql
-RELATE FROM path='/content/authors/alice'
-  TO path='/content/articles/welcome'
-  TYPE 'AUTHORED';
-```
-
-**Query the graph:**
-
-```sql
-SELECT * FROM NEIGHBORS('/content/authors/alice', 'OUT', 'AUTHORED');
-```
-
-:::tip What just happened?
-RaisinDB workspaces map to SQL tables. The `->>'key'::String` syntax extracts JSON properties. `RELATE` creates graph edges between nodes.
-:::
-
-## Step 5: Branch Your Data
-
-Branches work like Git — create isolated environments for drafts, testing, or AI agent tasks, then merge when ready.
-
-```sql
-CREATE BRANCH draft FROM main;
-
--- Switch to the draft branch (reconnect or use SET)
-INSERT INTO 'content' (path, node_type, properties)
-VALUES ('/content/articles/second-post', 'myapp:Article',
-  '{"title": "Draft Article", "author": "Alice", "published": false}');
-
--- Merge back to main when ready
-MERGE BRANCH draft INTO main;
-```
-
-:::tip What just happened?
-Branches work like Git. Create isolated workspaces for drafts, agent tasks, or A/B testing. Merge when ready.
-:::
+This means your URL structure IS your content structure. Add a page in YAML, it appears at that URL.
 
 ## Next Steps
 
-- [Core Concepts](/docs/concepts/overview) — Understand the data model
+- [Core Concepts](/docs/concepts/overview) — Understand the data model in depth
 - [DCAD: Schema-Driven Apps](/docs/concepts/dcad) — How your schema defines your app
-- [AI Agent Memory](/docs/guides/ai/agent-memory-with-branches) — Use branches for AI agent isolation
 - [SQL Reference](/docs/reference/sql/overview) — Full query language reference
-- [RAP Package Format](/docs/guides/packages/creating-packages) — Build reusable packages
+- [JavaScript Client](/docs/reference/javascript-client/overview) — SDK reference
+- [Creating Packages](/docs/guides/packages/creating-packages) — Package format reference

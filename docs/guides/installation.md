@@ -8,16 +8,14 @@ Get RaisinDB up and running in your development environment.
 
 ## Quick Start
 
-The fastest way to get started is using the CLI:
-
 ```bash
-npm install -g @raisindb/cli
-raisindb server start
+npm install -g @raisindb/cli   # Install the CLI
+raisindb server start           # Download & start server
+raisindb login                  # Authenticate (opens browser)
+raisindb package init my-app    # Scaffold project + install types + agent skills
 ```
 
-This downloads the server binary for your platform and starts RaisinDB with:
-- HTTP API on port 8080
-- PostgreSQL wire protocol on port 5432
+This gets you a running server, authenticated CLI, and a project ready for AI-assisted development. See the [Quick Start tutorial](/docs/tutorials/quickstart) for the full walkthrough.
 
 ## Installation Options
 
@@ -131,17 +129,26 @@ raisin-server
 
 ## CLI Tools
 
-The CLI also provides tools for package management and development:
+The CLI provides authentication, package management, and development tools:
 
 ```bash
+# Authentication
+raisindb login                          # Authenticate (opens browser)
+raisindb logout                         # Clear authentication
+
+# Project scaffolding
+raisindb package init my-app            # Create project with types + skills
+
 # Package management
-raisindb package create ./my-project    # Create a .rap package
-raisindb package install ./my-project   # Install a package on the server
-raisindb package sync                   # Sync local changes to server
+raisindb package deploy ./package       # Validate + build + upload
+raisindb package sync ./package --watch # Live sync during development
+raisindb package create ./package --check # Validate only
 
 # Interactive shell
 raisindb shell
 ```
+
+See the [CLI Reference](/docs/reference/cli/commands) for all commands and options.
 
 ## First Steps
 

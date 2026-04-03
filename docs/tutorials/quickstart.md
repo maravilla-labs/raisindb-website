@@ -30,12 +30,27 @@ On first start, you'll see the admin credentials in the terminal output. Log in 
 Download binaries directly from [GitHub Releases](https://github.com/maravilla-labs/raisindb/releases) or [build from source](/docs/guides/installation#build-from-source).
 :::
 
-## Step 2: Create a Repository
+## Step 2: Login & Create a Repository
 
-In the admin console at [http://localhost:8080/admin](http://localhost:8080/admin):
+Authenticate with the server (opens your browser):
+
+```bash
+raisindb login
+```
+
+This saves your credentials to `.raisinrc` — all subsequent CLI commands (`deploy`, `sync`, `upload`) will use this authentication automatically.
+
+Then in the admin console at [http://localhost:8080/admin](http://localhost:8080/admin):
 
 1. Click **"Create Repository"**
 2. Give it a name (e.g., `demo`) — remember this name, your frontend will use it
+
+:::tip Remote servers
+To connect to a remote server instead of localhost:
+```bash
+raisindb login --server https://my-raisindb.example.com
+```
+:::
 
 ## Step 3: Scaffold Your Project
 

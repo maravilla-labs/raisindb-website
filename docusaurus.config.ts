@@ -48,6 +48,20 @@ const config: Config = {
     mermaid: true,
   },
 
+  plugins: [
+    [
+      'docusaurus-plugin-llms',
+      {
+        generateLLMsTxt: true,
+        generateLLMsFullTxt: true,
+        title: 'RaisinDB Documentation',
+        description: 'Multi-Model Content Database with Git-like Versioning',
+        docsDir: 'docs',
+        includeBlog: false,
+      },
+    ],
+  ],
+
   presets: [
     [
       'classic',

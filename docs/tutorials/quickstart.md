@@ -41,11 +41,14 @@ In the admin console at [http://localhost:8080/admin](http://localhost:8080/admi
 
 ```bash
 raisindb package init my-app
-cd my-app
-npm install
 ```
 
-This creates:
+This does three things automatically:
+1. **Scaffolds** the project structure
+2. **Runs `npm install`** — installs `@raisindb/functions-types` (TypeScript definitions for the server-side function runtime)
+3. **Installs AI agent skills** via `npx skills add` — 10 skill files that teach your AI agent how to build RaisinDB apps
+
+The resulting project:
 
 ```
 my-app/
@@ -63,15 +66,7 @@ my-app/
 └── frontend/             # Your web app (SvelteKit or React)
 ```
 
-`npm install` installs `@raisindb/functions-types` — TypeScript definitions for the server-side function runtime. Your AI agent reads these to understand the available APIs.
-
-## Step 4: Install AI Agent Skills
-
-```bash
-npx skills add raisindb/raisindb/packages/raisindb-skills
-```
-
-This installs 10 focused skill files that teach your AI agent how to build RaisinDB apps:
+The installed skills:
 
 | Skill | What it teaches |
 |-------|----------------|
@@ -88,7 +83,7 @@ This installs 10 focused skill files that teach your AI agent how to build Raisi
 
 Skills use progressive loading — your agent only reads the ones relevant to the current task.
 
-## Step 5: Build with Your AI Agent
+## Step 4: Build with Your AI Agent
 
 Open your project in your AI coding tool and start building. Here are example prompts:
 

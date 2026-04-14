@@ -10,10 +10,6 @@ RaisinDB supports SQL/PGQ (Property Graph Queries), part of the SQL:2023 standar
 
 SQL/PGQ extends SQL with graph pattern matching capabilities using the GRAPH_TABLE syntax. It allows you to query graph structures using SQL while leveraging familiar SQL constructs.
 
-:::info Default Graph Name
-When no graph name is specified, RaisinDB uses the default graph `NODES_GRAPH`, which contains all nodes and their relationships.
-:::
-
 ## GRAPH_TABLE Syntax
 
 The GRAPH_TABLE function creates a table from graph pattern matching.
@@ -23,20 +19,8 @@ The GRAPH_TABLE function creates a table from graph pattern matching.
 ```sql
 SELECT *
 FROM GRAPH_TABLE (
-    graph_name
     MATCH pattern
     COLUMNS ( column_list )
-)
-```
-
-When using the default graph, you can omit the graph name:
-
-```sql
-SELECT *
-FROM GRAPH_TABLE (
-    NODES_GRAPH
-    MATCH (n:Page)
-    COLUMNS (n.title, n.status)
 )
 ```
 
@@ -50,7 +34,6 @@ Match nodes in the graph:
 -- Match all nodes
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n)
     COLUMNS (n.title, n.status)
 );
@@ -58,7 +41,6 @@ FROM GRAPH_TABLE (
 -- Match nodes with label (node type)
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n:Page)
     COLUMNS (n.title, n.view_count)
 );
@@ -66,7 +48,6 @@ FROM GRAPH_TABLE (
 -- Match with inline WHERE filter
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n:Page WHERE n.status = 'published')
     COLUMNS (n.title, n.created_at)
 );
@@ -80,7 +61,6 @@ Match nodes with any of several labels:
 -- Match nodes that are User OR Admin
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n:User|Admin)
     COLUMNS (n.name, n.email)
 );
@@ -88,7 +68,6 @@ FROM GRAPH_TABLE (
 -- Multi-label with inline filter
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n:Page|Article WHERE n.status = 'published')
     COLUMNS (n.title, n.__node_type)
 );
@@ -102,7 +81,6 @@ Match relationships between nodes:
 -- Simple relationship
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a:Page)-[:LINKS_TO]->(b:Page)
     COLUMNS (a.title AS source, b.title AS target)
 );
@@ -110,7 +88,6 @@ FROM GRAPH_TABLE (
 -- Relationship with properties
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a)-[r:LINKS_TO WHERE r.weight > 0.5]->(b)
     COLUMNS (a.title, r.weight, b.title)
 );
@@ -118,7 +95,6 @@ FROM GRAPH_TABLE (
 -- Undirected relationship
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a)-[:RELATED_TO]-(b)
     COLUMNS (a.title, b.title)
 );
@@ -132,7 +108,6 @@ Match paths through the graph:
 -- Fixed length path
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a:Page)-[:LINKS_TO]->(b)-[:LINKS_TO]->(c)
     COLUMNS (a.title AS start, c.title AS end)
 );
@@ -140,7 +115,6 @@ FROM GRAPH_TABLE (
 -- Variable length path
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a:Page)-[:LINKS_TO*1..3]->(b:Page)
     COLUMNS (a.title, b.title)
 );
@@ -162,7 +136,6 @@ Control the length of variable-length paths:
 -- Any number of hops
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a)-[:LINKS_TO*]->(b)
     COLUMNS (a.title, b.title)
 );
@@ -170,7 +143,6 @@ FROM GRAPH_TABLE (
 -- Exactly 2 hops
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a)-[:LINKS_TO*2]->(b)
     COLUMNS (a.title AS start, b.title AS end)
 );
@@ -178,7 +150,6 @@ FROM GRAPH_TABLE (
 -- Between 1 and 3 hops
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a)-[:LINKS_TO*1..3]->(b)
     COLUMNS (a.title, b.title)
 );
@@ -186,7 +157,6 @@ FROM GRAPH_TABLE (
 -- At least 2 hops
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a)-[:LINKS_TO*2..]->(b)
     COLUMNS (a.title, b.title)
 );
@@ -194,7 +164,6 @@ FROM GRAPH_TABLE (
 -- At most 3 hops
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a)-[:LINKS_TO*..3]->(b)
     COLUMNS (a.title, b.title)
 );
@@ -207,7 +176,7 @@ Within GRAPH_TABLE COLUMNS, node properties are accessed **by name directly** (e
 ```sql
 -- GRAPH_TABLE: access properties by name
 SELECT * FROM GRAPH_TABLE (
-    NODES_GRAPH MATCH (n:Page)
+    MATCH (n:Page)
     COLUMNS (n.title, n.status)  -- direct property access
 );
 
@@ -235,7 +204,6 @@ All other fields on nodes are stored as JSONB properties and accessed by name.
 ```sql
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n:Page)
     COLUMNS (
         n.id,
@@ -256,7 +224,6 @@ Filter graph patterns:
 ```sql
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a:Page)-[:LINKS_TO]->(b:Page)
     WHERE a.status = 'published' AND b.view_count > 100
     COLUMNS (a.title, b.title, b.view_count)
@@ -271,7 +238,6 @@ Specify which properties to return:
 -- Select node properties
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n:Page)
     COLUMNS (
         n.title AS page_title,
@@ -283,7 +249,6 @@ FROM GRAPH_TABLE (
 -- Select relationship properties
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a)-[r:LINKS_TO]->(b)
     COLUMNS (
         a.title AS source,
@@ -296,7 +261,6 @@ FROM GRAPH_TABLE (
 -- Select with expressions
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n:Page)
     COLUMNS (
         n.title,
@@ -317,7 +281,6 @@ The following aggregate functions are available inside GRAPH_TABLE COLUMNS:
 -- Count relationships per node
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a:Page)-[:LINKS_TO]->(b:Page)
     COLUMNS (
         a.title,
@@ -338,7 +301,6 @@ SELECT
     g.linked_page,
     c.category_name
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a:Page)-[:LINKS_TO]->(b:Page)
     COLUMNS (a.title AS page_title, b.title AS linked_page, b.category_id)
 ) g
@@ -347,7 +309,6 @@ JOIN categories c ON g.category_id = c.__id;
 -- Filter results with WHERE
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n:Page)
     COLUMNS (n.title, n.view_count)
 ) AS pages
@@ -360,7 +321,6 @@ SELECT
     COUNT(*) AS page_count,
     AVG(view_count) AS avg_views
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (n:Page)
     COLUMNS (n.status, n.view_count)
 ) AS pages
@@ -375,7 +335,6 @@ Match multiple patterns in one query:
 -- Two separate patterns
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH
         (a:Page)-[:LINKS_TO]->(b:Page),
         (b)-[:LINKS_TO]->(c:Page)
@@ -385,7 +344,6 @@ FROM GRAPH_TABLE (
 -- Chain patterns
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a:Page)-[:LINKS_TO]->(b:Page)-[:LINKS_TO]->(c:Page)
     WHERE a.id <> c.id
     COLUMNS (a.title AS start, b.title AS middle, c.title AS end)
@@ -402,7 +360,6 @@ SELECT
     linked_title,
     view_count
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (start:Page WHERE start.title = 'Home')-[:LINKS_TO]->(linked:Page)
     COLUMNS (linked.title AS linked_title, linked.view_count AS view_count)
 ) AS results
@@ -415,7 +372,6 @@ ORDER BY view_count DESC;
 -- Pages reachable in 2 hops
 SELECT DISTINCT end_title
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (start:Page WHERE start.title = 'Home')-[:LINKS_TO*2]->(end:Page)
     WHERE start.id <> end.id
     COLUMNS (end.title AS end_title)
@@ -430,7 +386,6 @@ SELECT
     page_title,
     COUNT(*) AS incoming_links
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (source:Page)-[:LINKS_TO]->(target:Page)
     COLUMNS (target.title AS page_title)
 ) AS links
@@ -448,7 +403,6 @@ SELECT
     end_page,
     COUNT(*) AS path_count
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a:Page)-[:LINKS_TO*1..3]->(b:Page)
     COLUMNS (a.title AS start_page, b.title AS end_page)
 ) AS paths
@@ -465,7 +419,6 @@ SELECT
     to_cat,
     COUNT(*) AS link_count
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (a:Page)-[:LINKS_TO]->(b:Page)
     WHERE a.category <> b.category
     COLUMNS (a.category AS from_cat, b.category AS to_cat)
@@ -482,7 +435,6 @@ SELECT
     page_title,
     COUNT(*) AS outgoing_links
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (hub:Page)-[:LINKS_TO]->(target:Page)
     COLUMNS (hub.title AS page_title)
 ) AS hubs
@@ -499,7 +451,6 @@ SELECT
     source_page,
     COUNT(DISTINCT target_page) AS influence_count
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (source:Page)-[:LINKS_TO*1..3]->(target:Page)
     COLUMNS (source.title AS source_page, target.title AS target_page)
 ) AS influence
@@ -514,7 +465,6 @@ LIMIT 20;
 -- Find users or admins connected to projects
 SELECT *
 FROM GRAPH_TABLE (
-    NODES_GRAPH
     MATCH (person:User|Admin)-[:MEMBER_OF]->(project:Project)
     COLUMNS (
         person.name,
@@ -529,7 +479,6 @@ FROM GRAPH_TABLE (
 ## Notes
 
 - SQL/PGQ is part of the SQL:2023 standard
-- The default graph is `NODES_GRAPH` which includes all nodes and relationships
 - Graph patterns are compiled to efficient execution plans
 - Can combine graph patterns with regular SQL operations
 - Variable-length paths may be expensive on large graphs
@@ -540,3 +489,4 @@ FROM GRAPH_TABLE (
 - Use DISTINCT to remove duplicate paths
 - System fields (id, workspace, node_type, path, name, parent_id, created_at, updated_at) are always available on nodes
 - User-defined properties are stored in JSONB and accessed by name in COLUMNS
+- For graph algorithms (PageRank, community detection, shortest paths), see [Graph Algorithm Functions](/docs/reference/sql/functions/graph-algorithms)

@@ -11,8 +11,8 @@ REL is a lightweight, safe expression language for evaluating conditions through
 | Context | Example |
 |---------|---------|
 | [Access control conditions](/docs/concepts/access-control#conditions) | `node.created_by == auth.local_user_id` |
-| [Flow decision steps](/docs/guides/flows/defining-flows#decision-step) | `input.priority >= 5 \|\| input.urgent == true` |
-| [Flow container rules](/docs/guides/flows/defining-flows#container-rules) | `input.region == 'eu'` |
+| [Flow conditions & templates](/docs/guides/workflows/data-and-templates#rel-conditions) | `input.priority >= 5 \|\| input.urgent == true` |
+| [Flow container rules](/docs/guides/workflows/flow-definition#or--rel-routed-exactly-one-child) | `input.region == 'eu'` |
 | Admin console condition builder | Visual UI compiled to REL (via WASM) |
 
 ---

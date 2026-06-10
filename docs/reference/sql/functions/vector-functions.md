@@ -221,6 +221,119 @@ LIMIT 10;
 
 ---
 
+## HYBRID_SEARCH
+
+Run a combined full-text and vector similarity search using Reciprocal Rank Fusion (RRF).
+
+### Syntax
+
+```sql
+SELECT * FROM HYBRID_SEARCH(query, k)
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| query | TEXT | The search query text |
+| k | INTEGER | Maximum number of results to return |
+
+### Return Columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| node_id | TEXT | The matched node ID |
+| name | TEXT | Node name |
+| path | TEXT | Node path in the content hierarchy |
+| node_type | TEXT | Node type |
+| score | DOUBLE | Combined RRF score (higher = more relevant) |
+| fulltext_rank | DOUBLE | Full-text search rank |
+| vector_rank | DOUBLE | Vector similarity rank |
+| vector_distance | DOUBLE | Raw vector distance |
+| properties | JSON | Node properties |
+
+### Examples
+
+```sql
+-- Basic hybrid search
+SELECT * FROM HYBRID_SEARCH('how does authentication work', 10);
+
+-- Use hybrid search results in a subquery
+SELECT node_id, name, score
+FROM HYBRID_SEARCH('database replication', 20)
+WHERE node_type = 'kb:Article'
+ORDER BY score DESC
+LIMIT 10;
+```
+
+### Notes
+
+- Combines full-text search and vector similarity into a single ranked result set
+- Uses Reciprocal Rank Fusion (RRF) to merge rankings from both search methods
+- Requires both full-text indexing and embedding configuration to be enabled
+- Results include both ranking metrics for transparency
+
+---
+
+## Distance Filtering in WHERE Clauses
+
+The `<=>` operator can be used in `WHERE` clauses to filter results by distance. The threshold is extracted and pushed down to the HNSW engine for efficient search:
+
+```sql
+-- Only return results within cosine distance 0.3
+SELECT id, name
+FROM 'default'
+WHERE embedding <=> EMBEDDING('machine learning') < 0.3
+ORDER BY embedding <=> EMBEDDING('machine learning');
+```
+
+### Configurable Default Max Distance
+
+```sql
+-- Set the default maximum distance threshold per-tenant
+ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5';
+```
+
+This controls the default cutoff for vector search results. Results beyond this distance are filtered out.
+
+---
+
+## Vector Index Management
+
+SQL commands for managing HNSW indexes.
+
+### REBUILD VECTOR INDEX
+
+Rebuild the HNSW index from stored embeddings:
+
+```sql
+REBUILD VECTOR INDEX;
+```
+
+Use this after bulk data imports or if the index becomes inconsistent.
+
+### VERIFY VECTOR INDEX
+
+Check the integrity of the HNSW index:
+
+```sql
+VERIFY VECTOR INDEX;
+```
+
+Returns a report of any inconsistencies found.
+
+### SHOW VECTOR INDEX HEALTH
+
+Display health statistics for the vector index:
+
+```sql
+SHOW VECTOR INDEX HEALTH;
+```
+
+Returns metrics including vector count, index size, and integrity status.
+
+---
+
 ## Examples
 
 ### Semantic Search
@@ -253,7 +366,11 @@ LIMIT 5;
 ### Hybrid Search (Vector + Full-Text)
 
 ```sql
--- Combine vector similarity with full-text search
+-- Use the HYBRID_SEARCH table function for combined ranking
+SELECT node_id, name, score, fulltext_rank, vector_rank
+FROM HYBRID_SEARCH('database management', 10);
+
+-- Or combine vector distance with full-text manually
 SELECT
     title,
     TS_RANK(search_vector, TO_TSQUERY('database')) AS text_rank,

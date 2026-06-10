@@ -136,6 +136,11 @@ The CLI provides authentication, package management, and development tools:
 raisindb login                          # Authenticate (opens browser)
 raisindb logout                         # Clear authentication
 
+# Non-interactive (CI): username/password, a token, or env vars
+raisindb login --server https://db.example.com --username admin --password "$PASSWORD"
+raisindb login --server https://db.example.com --token "$TOKEN"
+# or: export RAISINDB_SERVER=... RAISINDB_TOKEN=...   (wins over .raisinrc)
+
 # Project scaffolding
 raisindb package init my-app            # Create project with types + skills
 

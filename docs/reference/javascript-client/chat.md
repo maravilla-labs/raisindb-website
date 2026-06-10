@@ -2,203 +2,302 @@
 sidebar_position: 5
 ---
 
-# Chat
+# Chat & Conversations
 
 Conversational AI client for building chat interfaces.
 
 ## Architecture
 
-The `ChatClient` supports two modes:
+All conversation operations live behind two layers:
 
-- **Direct mode** (default): Creates `raisin:Conversation` and `raisin:Message` nodes directly, streams responses via SSE. This is the recommended approach for new applications.
-- **Flow mode** (legacy): Uses `FlowClient` for flow-backed conversations. Activate by passing `flow` to `createConversation()` or setting `forceFlowMode: true`.
+- **`ConversationManager`** (`db.conversations`) — the unified low-level API: list, create, open, delete, message history, streaming, plan actions, and persistent SSE subscriptions.
+- **`ConversationStore` / `ConversationListStore`** — framework-agnostic state containers on top of the manager, with a snapshot/subscribe pattern that binds directly to React, Svelte, and Vue (see [Framework Integrations](./frameworks.md)).
 
-Direct mode conversations are stored as node trees in the user's `raisin:access_control` workspace. When you send a message, a trigger fires the configured agent, which streams its response back via Server-Sent Events.
+Conversations are stored as node trees (`raisin:Conversation` + `raisin:Message`) in the user's home inbox inside the `raisin:access_control` workspace. Sending a message creates a message node; a trigger fires the configured agent, which streams its response back via Server-Sent Events.
 
-## ChatClient
+## ConversationManager
 
 Access via the `Database` instance:
 
 ```typescript
 const db = client.database('myapp');
-const chatClient = db.chat;
+const conversations = db.conversations;
 ```
 
-The `db.chat` getter returns a lazily-created, cached `ChatClient` pre-configured with the correct base URL, repository, auth manager, and WebSocket-backed `FlowsApi`.
+The `db.conversations` getter returns a lazily-created, cached `ConversationManager` pre-configured with the correct base URL, repository, and auth manager.
 
-### Options
+### list()
 
-```typescript
-interface ChatClientOptions {
-  requestTimeout?: number;
-  fetch?: typeof fetch;
-  defaultFlowPath?: string;
-  /** Force flow mode even for new conversations */
-  forceFlowMode?: boolean;
-}
-```
-
----
-
-## Methods
-
-### chat()
-
-One-shot convenience method. Creates a conversation, sends a message, and returns the full response.
+List conversations for the current user.
 
 ```typescript
-async chat(
-  agent: string,
-  message: string,
-  options?: {
-    signal?: AbortSignal;
-    input?: Record<string, unknown>;
-  }
-): Promise<ChatResult>
+async list(options?: {
+  type?: ConversationType;   // 'ai_chat' | 'direct_message'
+  limit?: number;
+  signal?: AbortSignal;
+}): Promise<ConversationListItem[]>
 ```
 
 ```typescript
-interface ChatResult {
-  response: string;
-  conversationId: string;
-}
+const aiChats = await db.conversations.list({ type: 'ai_chat', limit: 20 });
 ```
 
-Example:
+### create()
+
+Start a new conversation. The participant is auto-detected: agent paths (e.g. `/agents/support`) create an `ai_chat`, anything else a `direct_message`.
 
 ```typescript
-const { response } = await chatClient.chat(
-  'my-assistant',
-  'Summarize the latest sales report'
-);
-```
-
-### createConversation()
-
-Start a new multi-turn conversation.
-
-```typescript
-async createConversation(options: {
-  agent: string;
-  conversationType?: ConversationType;
-  flow?: string;
+async create(options: {
+  participant: string;                 // '/agents/support' or a user id
+  subject?: string;
   input?: Record<string, unknown>;
   signal?: AbortSignal;
 }): Promise<Conversation>
 ```
 
-In direct mode (default), creates a `raisin:Conversation` node. In flow mode (when `flow` is specified), runs the flow and polls until the chat session is ready.
-
-```typescript
-type ConversationType = 'ai_chat' | 'direct_message' | 'flow_chat';
-```
-
 ### sendMessage()
 
-Send a user message and stream the response as an async iterable.
+Send a user message and stream the agent's turn as an async iterable of `ChatEvent`s.
 
 ```typescript
 async *sendMessage(
-  conversationId: string,
+  conversationPath: string,
   content: string,
-  options?: { signal?: AbortSignal }
+  options?: SendMessageOptions
 ): AsyncIterable<ChatEvent>
 ```
 
-The `conversationId` parameter accepts either:
-- A **conversation path** (starts with `/`) for direct mode
-- A **flow instance ID** for flow mode
-
-Example:
+```typescript
+interface SendMessageOptions {
+  /** Stream events via SSE (default: true). false = fire-and-forget. */
+  stream?: boolean;
+  signal?: AbortSignal;
+  /**
+   * Inactivity timeout for the per-turn SSE stream in ms (default: 120000).
+   * If the stream produces no bytes for this long, the turn ends with a
+   * synthetic `waiting` event instead of hanging forever. 0 disables.
+   */
+  inactivityTimeoutMs?: number;
+}
+```
 
 ```typescript
-for await (const event of chatClient.sendMessage(id, 'Hello')) {
-  if (event.type === 'text_chunk') {
-    process.stdout.write(event.text);
+for await (const event of db.conversations.sendMessage(path, 'Hello!', {
+  inactivityTimeoutMs: 60_000,
+})) {
+  if (event.type === 'text_chunk') process.stdout.write(event.text);
+}
+// A final waiting/done event is guaranteed even if the stream dies.
+```
+
+### subscribe()
+
+Persistent SSE subscription that survives across turns. Useful for async events between turns (background tool results, agent-initiated messages). Auto-reconnects on disconnect. This is what `ConversationStore` uses internally.
+
+```typescript
+subscribe(
+  conversationPath: string,
+  onEvent: (event: ChatEvent) => void,
+  options?: { signal?: AbortSignal }
+): ConversationSubscription
+```
+
+```typescript
+interface ConversationSubscription {
+  unsubscribe(): void;
+  waitUntilConnected(): Promise<void>;
+}
+```
+
+### Other methods
+
+| Method | Description |
+|--------|-------------|
+| `open(conversationPath)` | Open an existing conversation, `null` if not found |
+| `delete(conversationPath)` | Delete a conversation and all its children |
+| `getMessages(conversationPath)` | Full message history from the node tree |
+| `createUserMessage(conversationPath, content)` | Persist a user message without streaming |
+| `markAsRead(conversationPath)` | Reset the conversation's unread count |
+| `markMessageAsRead(messagePath)` | Mark a single message as read |
+| `approvePlan(planPath, options?)` | Approve a pending plan (returns a `PlanActionReceipt`; final state arrives via events) |
+| `rejectPlan(planPath, feedback?, options?)` | Reject a pending plan |
+| `chat(participant, message, options?)` | One-shot: create + send + collect the full response |
+| `getActiveToolCalls(conversationPath)` | Pending/running tool calls from the node tree |
+| `checkTurnHealth(conversationPath)` | `'streaming' \| 'done' \| 'unknown'` for the latest assistant turn |
+
+---
+
+## ConversationStore
+
+Framework-agnostic store managing a single conversation: lazy creation, sending, streaming, tool call tracking, plan projection, history reload, and hang recovery. Subscribers get an immutable snapshot on every change.
+
+```typescript
+import { ConversationStore } from '@raisindb/client';
+
+const store = new ConversationStore({
+  database: db,
+  // Either resume an existing conversation...
+  conversationPath: existingPath,
+  // ...or let the first sendMessage() create one:
+  createOptions: { participant: '/agents/shift-planner' },
+});
+
+const unsubscribe = store.subscribe((s) => render(s));
+await store.loadMessages();          // history on reload
+await store.sendMessage('Plan next week');
+// later
+store.destroy();
+```
+
+### Options
+
+```typescript
+interface ConversationStoreOptions {
+  database: Database;
+  /** Resume an existing conversation */
+  conversationPath?: string;
+  /** Create a new conversation on first message */
+  createOptions?: { participant: string; input?: Record<string, unknown> };
+  /** Callback for individual chat events */
+  onEvent?: (event: ChatEvent) => void;
+  /**
+   * Streaming inactivity timeout in ms (default: 120000). If no SSE event
+   * arrives for this long while streaming, the store auto-recovers
+   * (reloads messages, clears the streaming state).
+   */
+  streamingTimeoutMs?: number;
+  /**
+   * Activity watchdog interval in ms (default: 30000). While streaming, the
+   * store periodically calls checkTurnHealth() and recovers if the backend
+   * says the turn already finished.
+   */
+  watchdogIntervalMs?: number;
+}
+```
+
+The two stability options form independent recovery layers on top of the SSE stream — together they guarantee a chat UI never gets stuck on a dead stream:
+
+- `streamingTimeoutMs` catches a silent stream (proxy reset, dead TCP).
+- `watchdogIntervalMs` catches the case where the stream is alive but the terminal event was lost.
+
+### Snapshot
+
+```typescript
+interface ConversationStoreSnapshot {
+  conversation: { conversationPath: string; type: string } | null;
+  messages: ChatMessage[];
+  isStreaming: boolean;        // agent is generating
+  isWaiting: boolean;          // turn done, waiting for user input
+  streamingText: string;       // accumulated text of the current turn
+  error: string | null;
+  activeToolCalls: ToolCallInfo[];   // in-flight tool executions
+  plans: PlanProjection[];           // deterministic plan/task projection
+  isLoading: boolean;
+  conversationPath: string | null;
+}
+```
+
+```typescript
+interface ToolCallInfo {
+  id: string;
+  functionName: string;
+  arguments: unknown;
+  status: 'running' | 'completed' | 'failed';
+  result?: unknown;
+  durationMs?: number;
+}
+```
+
+`plans` is rebuilt from persisted `ai_plan` / `ai_task_update` messages on every snapshot, so plan state survives reloads. Render approval UI from it:
+
+```typescript
+for (const plan of snapshot.plans) {
+  if (plan.status === 'pending_approval') {
+    // plan.title, plan.tasks[] with per-task status
+    await store.approvePlan(plan.planPath);
+    // or: await store.rejectPlan(plan.planPath, 'Not like this');
   }
 }
 ```
 
-### resumeConversation()
+### Actions
 
-Restore a conversation after a page reload.
-
-```typescript
-async resumeConversation(
-  conversationPathOrInstanceId: string
-): Promise<Conversation | null>
-```
-
-Accepts a conversation path (direct mode) or flow instance ID (flow mode).
-
-### getMessages()
-
-Load the full message history for a conversation.
-
-```typescript
-async getMessages(
-  conversationId: string
-): Promise<ChatMessage[]>
-```
-
-### stop()
-
-Abort an active streaming response.
-
-```typescript
-stop(conversationId: string): void
-```
+| Method | Description |
+|--------|-------------|
+| `sendMessage(content)` | Send + stream (creates the conversation if needed) |
+| `loadMessages()` | Load persisted history |
+| `approvePlan(planPath)` / `rejectPlan(planPath, feedback?)` | Plan actions |
+| `markMessageAsRead(messagePath)` | Mark one message as read |
+| `stop()` | Stop the current streaming turn in the UI |
+| `getConversationPath()` | Current conversation path |
+| `destroy()` | Release the SSE subscription and all timers |
 
 ---
 
-## Conversation
+## ConversationListStore
+
+Inbox-style list of conversations with optional realtime updates.
 
 ```typescript
-interface Conversation {
-  /** Conversation node ID */
-  id: string;
-  /** Conversation type */
-  type: ConversationType;
-  /** Agent reference path */
-  agentRef?: string;
-  /** Participant IDs */
-  participants?: string[];
-  /** Participant details */
-  participantDetails?: Record<string, { display_name: string }>;
-  /** Number of unread messages */
-  unreadCount?: number;
-  /** Last message preview */
-  lastMessage?: { content: string; sender_id: string; created_at: string };
-  /** Node path (primary identifier in direct mode) */
-  conversationPath: string;
-  /** Workspace */
-  conversationWorkspace: string;
-  /** Flow instance ID (only for flow-initiated chats) */
-  flowInstanceId?: string;
-  /** Initial events from creation */
-  initialEvents?: ChatEvent[];
-}
+import { ConversationListStore } from '@raisindb/client';
+
+const list = new ConversationListStore({
+  database: db,
+  type: 'ai_chat',     // optional filter
+  realtime: true,      // subscribe to node events under ${home}/inbox/chats/**
+});
+
+list.subscribe((s) => {
+  render(s.conversations);        // ConversationListItem[]
+  badge(s.totalUnreadCount);
+});
+await list.load();
+
+const convo = await list.createConversation({ participant: '/agents/support' });
+await list.markAsRead(convo.conversationPath);
+
+// Cached per-conversation stores:
+const store = list.getConversationStore(convo.conversationPath);
 ```
+
+With `realtime: true` the store subscribes to `node:created` / `node:updated` events on the user's chats folder (see [Realtime Subscriptions & Inbox](./realtime-inbox.md) for the path semantics involved).
 
 ---
 
 ## Chat Events
 
-Events yielded by `sendMessage()`:
+Events delivered by `sendMessage()` and `subscribe()`:
 
 | Event Type | Key Fields | Description |
 |-----------|------------|-------------|
 | `text_chunk` | `text` | Incremental text from the assistant |
-| `assistant_message` | `message: ChatMessage` | Complete assistant message |
-| `waiting` | `sessionId?`, `turnCount?` | Conversation is waiting for next input |
-| `completed` | `reason?`, `messages?` | Conversation turn is complete |
-| `failed` | `error` | An error occurred |
-| `tool_call_started` | `toolCallId`, `functionName`, `arguments` | Agent is calling a tool |
-| `tool_call_completed` | `toolCallId`, `result`, `error?` | Tool call finished |
 | `thought_chunk` | `text` | Reasoning/thinking text |
+| `assistant_message` | `message: ChatMessage` | Complete assistant message |
+| `tool_call_started` | `toolCallId`, `functionName`, `arguments` | Agent started a tool call |
+| `tool_call_completed` | `toolCallId`, `result`, `error?`, `durationMs?` | Tool call finished |
+| `waiting` | `sessionId?`, `turnCount?` | Turn finished, waiting for next input |
+| `done` | `content?`, `role?`, `finishReason?`, `dispatchPhase?` | Turn completed (terminal when `dispatchPhase` is `'terminal'`) |
+| `completed` | `reason?`, `messages?` | Conversation finished entirely |
+| `failed` | `error` | An error occurred |
 | `conversation_created` | `conversationPath`, `workspace` | Conversation node was created |
-| `message_saved` | `messagePath`, `role` | Message was persisted |
-| `log` | `level`, `message` | Log entry from the flow |
+| `message_saved` | `messagePath`, `role` | A message was persisted |
+| `message_delivered` | `message: ChatMessage` | An async message arrived (e.g. agent-initiated) |
+| `log` | `level`, `message` | Server-side log entry |
+
+Tool-call events let you render live activity badges:
+
+```typescript
+const store = new ConversationStore({
+  database: db,
+  conversationPath,
+  onEvent: (event) => {
+    if (event.type === 'tool_call_started') {
+      console.log(`running ${event.functionName}...`);
+    }
+  },
+});
+// or just read snapshot.activeToolCalls — the store tracks them for you.
+```
 
 ---
 
@@ -213,148 +312,46 @@ interface ChatMessage {
   path?: string;
   agent?: string;
   finishReason?: string;
+  dispatchPhase?: string;
   toolCalls?: ToolCallRecord[];
   toolCallId?: string;
-  children?: MessageChild[];
-  /** Sender identity ID */
+  children?: MessageChild[];     // thoughts, tool calls/results, plans
   senderId?: string;
-  /** Sender display name */
   senderDisplayName?: string;
-  /** Message delivery status */
   status?: string;
-  /** Message type discriminator */
-  messageType?: string;
-}
-```
-
-### ToolCallRecord
-
-```typescript
-interface ToolCallRecord {
-  id: string;
-  name: string;
-  arguments: unknown;
-}
-```
-
-### MessageChild
-
-```typescript
-interface MessageChild {
-  id: string;
-  path?: string;
-  type: 'thought' | 'tool_call' | 'tool_result' | 'cost';
-  content: string;
-  toolName?: string;
-  toolInput?: unknown;
-  status?: string;
+  messageType?: string;          // e.g. 'ai_plan', 'ai_task_update'
+  data?: Record<string, unknown>;
 }
 ```
 
 ---
 
-## ConversationClient
+## Full example
 
-The `ConversationClient` provides inbox-level operations for listing and managing conversations. Access via `db.conversations`:
-
-```typescript
-const db = client.database('myapp');
-const conversations = db.conversations;
-```
-
-### listConversations()
-
-List conversations for the current user.
+From the [shiftboard example](https://github.com/maravilla-labs/raisindb/tree/main/examples/shiftboard) — resume the latest conversation with an agent, or create one lazily:
 
 ```typescript
-async listConversations(options?: {
-  type?: ConversationType;
-  limit?: number;
-  signal?: AbortSignal;
-}): Promise<ConversationListItem[]>
-```
+import { ConversationStore } from '@raisindb/client';
 
-```typescript
-interface ConversationListItem {
-  id: string;
-  type: ConversationType;
-  conversationPath: string;
-  conversationWorkspace: string;
-  agentRef?: string;
-  participants?: string[];
-  unreadCount?: number;
-  lastMessage?: { content: string; sender_id: string; created_at: string };
-  updatedAt?: string;
-}
-```
+const AGENT_PATH = '/agents/shift-planner';
+const db = client.database('shiftboard');
 
-Example:
+// Reuse the most recent ai_chat conversation with our agent.
+let conversationPath: string | undefined;
+const existing = await db.conversations.list({ type: 'ai_chat' });
+conversationPath = existing
+  .filter((c) => c.agentRef === AGENT_PATH)
+  .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))[0]
+  ?.conversationPath;
 
-```typescript
-const aiChats = await conversations.listConversations({ type: 'ai_chat', limit: 20 });
-```
-
-### startAIChat()
-
-Create a new AI chat conversation.
-
-```typescript
-async startAIChat(options: {
-  agent: string;
-  input?: Record<string, unknown>;
-  signal?: AbortSignal;
-}): Promise<Conversation>
-```
-
-### openConversation()
-
-Open an existing conversation by path.
-
-```typescript
-async openConversation(
-  conversationPath: string,
-  options?: { signal?: AbortSignal }
-): Promise<Conversation | null>
-```
-
-### markAsRead()
-
-Mark a conversation as read.
-
-```typescript
-async markAsRead(
-  conversationPath: string,
-  options?: { signal?: AbortSignal }
-): Promise<void>
-```
-
----
-
-## ChatStore (Svelte Adapter)
-
-The `ChatStore` manages chat state for UI frameworks. It handles conversation creation, message sending, streaming, and message history with a subscribe/callback pattern.
-
-### Creating a ChatStore
-
-```typescript
-import { ChatStore } from '@raisindb/client';
-
-const db = client.database('myapp');
-const store = new ChatStore({
-  agent: '/agents/support',
+const store = new ConversationStore({
   database: db,
+  conversationPath,                                  // resume if found
+  createOptions: { participant: AGENT_PATH },        // else create on first send
 });
-```
 
-### Options
+store.subscribe((s) => render(s));
+if (conversationPath) await store.loadMessages();
 
-```typescript
-interface ChatStoreOptions {
-  agent: string;
-  database?: Database;
-  flowPath?: string;
-  clientOptions?: ChatClientOptions;
-  input?: Record<string, unknown>;
-  onEvent?: (event: ChatEvent) => void;
-}
+await store.sendMessage('Who is on shift tomorrow?');
 ```

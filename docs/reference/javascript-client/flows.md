@@ -235,9 +235,37 @@ if (isTerminalEvent(event)) {
 
 ---
 
+## Inbox tasks (db.inbox)
+
+When a flow hits a `human_task` step it emits `flow_waiting` and pauses: a task is created in the assignee's inbox, and completing the task resumes the flow. `InboxApi` is the client for those tasks — assignees can be users **or** AI agents, and both complete tasks through the same API.
+
+Access via the `Database` instance (lazily created and cached, like `db.flow`):
+
+```typescript
+const inbox = db.inbox;
+
+// List my pending tasks (pending first, then by priority and due time)
+const { tasks } = await inbox.listTasks({ status: 'pending' });
+
+// Approve the first one — the waiting flow resumes
+await inbox.completeTask(tasks[0].id, { action: 'approve', comment: 'LGTM' });
+```
+
+| Method | Description |
+|--------|-------------|
+| `listTasks(options?)` | List the caller's tasks. Filters: `status` (`'pending' \| 'completed' \| 'expired' \| 'cancelled'`), `assignee` (another principal's inbox, admins only) |
+| `getTask(taskId)` | Get a single task by ID (or path) |
+| `completeTask(taskId, response)` | Complete a task. Approval tasks: `{ action: '<option value>', comment? }`; input tasks: a value matching the task's `input_schema` |
+
+Each `InboxTask` carries `task_type`, `title`, `status`, `priority`, approval `options` / `input_schema`, and — for flow-created tasks — `flow_instance_id` and `step_id`. A standalone `InboxApi` can also be constructed directly: `new InboxApi(baseUrl, repository, authManager)`.
+
+For the full human-in-the-loop workflow patterns (escalation, agent assignees, due dates) see [Human-in-the-Loop](../../guides/workflows/human-in-the-loop.md).
+
+---
+
 ## useFlow (React Hook)
 
-React hook for executing and monitoring flows with reactive state.
+React hook for executing and monitoring flows with reactive state. Shown here in its raw form (`useFlow(React, options)` from the core entry); if you use [`createRaisinReact`](./frameworks.md#react), the returned `useFlow(options)` is pre-bound and reads the client from context.
 
 ```typescript
 import React from 'react';

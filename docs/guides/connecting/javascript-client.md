@@ -25,9 +25,7 @@ yarn add @raisindb/client
 ```typescript
 import { RaisinClient } from '@raisindb/client';
 
-const client = new RaisinClient('ws://localhost:8080', {
-  tenantId: 'default'
-});
+const client = new RaisinClient('ws://localhost:8080/ws/myapp');
 
 await client.connect();
 await client.authenticate({
@@ -39,6 +37,12 @@ await client.authenticate({
 const db = client.database('myapp');
 ```
 
+Connection URLs use the tenant-less `ws://host/ws/{repository}` form — no
+tenant id needed. Equivalently, pass a bare host URL with the `repository`
+option: `new RaisinClient('ws://localhost:8080', { repository: 'myapp' })`.
+Multi-tenant operators can address a specific tenant with
+`ws://host/sys/{tenant}/{repository}`.
+
 ### HTTP-Only Client (Server-Side Rendering)
 
 For server-side rendering where WebSocket is not available:
@@ -46,9 +50,7 @@ For server-side rendering where WebSocket is not available:
 ```typescript
 import { RaisinClient } from '@raisindb/client';
 
-const client = RaisinClient.forSSR('http://localhost:8080', {
-  tenantId: 'default'
-});
+const client = RaisinClient.forSSR('http://localhost:8080');
 
 await client.authenticate({
   username: 'admin',
@@ -151,7 +153,7 @@ By default tokens are stored in memory. For browser persistence:
 ```typescript
 import { RaisinClient, LocalStorageTokenStorage } from '@raisindb/client';
 
-const client = new RaisinClient('ws://localhost:8080', {
+const client = new RaisinClient('ws://localhost:8080/ws/myapp', {
   tokenStorage: new LocalStorageTokenStorage()
 });
 ```
@@ -441,34 +443,24 @@ const sub = await ws.events().subscribeToTypes(
 
 ## AI Chat
 
-Build conversational AI features with the `ChatClient`. It handles conversation lifecycle, real-time streaming, and message history. Conversations are stored as `raisin:Conversation` nodes with `raisin:Message` children.
+Build conversational AI features with the `ConversationManager` (`db.conversations`). It handles conversation lifecycle, real-time streaming, plan approvals, and message history. Conversations are stored as `raisin:Conversation` nodes with `raisin:Message` children. See [Chat & Conversations](../../reference/javascript-client/chat.md) for the full reference.
 
-### Create a Chat Client
+### Access the ConversationManager
 
 ```typescript
 const db = client.database('myapp');
-const chatClient = db.chat;
+const conversations = db.conversations;
 ```
 
-Or create manually:
-
-```typescript
-import { ChatClient } from '@raisindb/client';
-
-const chatClient = ChatClient.fromHttpClient(
-  client,               // authenticated RaisinClient or RaisinHttpClient
-  'http://localhost:8080',
-  'myapp'
-);
-```
+The getter returns a lazily-created, cached `ConversationManager` pre-configured with the correct base URL, repository, and auth manager.
 
 ### One-Shot Chat
 
-Send a single message and get the full response:
+Send a single message and collect the full response:
 
 ```typescript
-const { response, conversationId } = await chatClient.chat(
-  'my-assistant',       // agent reference
+const { response, conversationPath } = await db.conversations.chat(
+  '/agents/my-assistant',
   'What is RaisinDB?'
 );
 console.log(response);
@@ -479,13 +471,13 @@ console.log(response);
 Create a conversation and stream responses in real time:
 
 ```typescript
-// Start a conversation
-const conversation = await chatClient.createConversation({
-  agent: 'my-assistant'
+// Start a conversation (agent paths create an ai_chat)
+const conversation = await db.conversations.create({
+  participant: '/agents/my-assistant'
 });
 
 // Send a message and stream the response
-for await (const event of chatClient.sendMessage(
+for await (const event of db.conversations.sendMessage(
   conversation.conversationPath,
   'Tell me about your capabilities'
 )) {
@@ -511,38 +503,46 @@ for await (const event of chatClient.sendMessage(
 Restore a conversation after a page reload:
 
 ```typescript
-const conversation = await chatClient.resumeConversation(conversationPath);
+const conversation = await db.conversations.open(conversationPath);
 
 if (conversation) {
   // Load previous messages
-  const messages = await chatClient.getMessages(conversation.conversationPath);
+  const messages = await db.conversations.getMessages(conversation.conversationPath);
 }
-```
-
-### Stop Streaming
-
-```typescript
-chatClient.stop(conversationId);
 ```
 
 ### Manage Conversations
 
-Use the `ConversationClient` to list and manage the user's conversation inbox:
-
 ```typescript
-const conversations = db.conversations;
-
 // List AI chat conversations
-const chats = await conversations.listConversations({
+const chats = await db.conversations.list({
   type: 'ai_chat',
   limit: 20,
 });
 
-// Open an existing conversation
-const convo = await conversations.openConversation(chats[0].conversationPath);
-
 // Mark as read
-await conversations.markAsRead(chats[0].conversationPath);
+await db.conversations.markAsRead(chats[0].conversationPath);
+```
+
+### ConversationStore (UI state)
+
+For building chat UIs, `ConversationStore` wraps the manager with a snapshot/subscribe state container — streaming text, tool-call tracking, plan projection, and hang recovery included:
+
+```typescript
+import { ConversationStore } from '@raisindb/client';
+
+const store = new ConversationStore({
+  database: db,
+  createOptions: { participant: '/agents/my-assistant' },
+});
+
+store.subscribe((s) => {
+  render(s.messages, s.isStreaming, s.streamingText, s.activeToolCalls);
+});
+
+await store.sendMessage('Hello!');
+// later
+store.destroy();
 ```
 
 ## Flow Execution
@@ -552,10 +552,17 @@ Run server-side workflows and stream their progress in real time.
 ### Create a Flow Client
 
 ```typescript
+const db = client.database('myapp');
+const flowClient = db.flow;
+```
+
+Or create one manually from an authenticated client:
+
+```typescript
 import { FlowClient } from '@raisindb/client';
 
 const flowClient = FlowClient.fromHttpClient(
-  client,
+  client,               // authenticated RaisinClient or RaisinHttpClient
   'http://localhost:8080',
   'myapp'
 );
@@ -670,46 +677,40 @@ const { url } = await ws.signAssetUrl('/images/photo.jpg');
 
 ## React Integration
 
-### useChat Hook
+The `@raisindb/client/react` subpath export provides a Provider plus hooks (`useAuth`, `useSql`, `useSubscription`, `useConversation`, `useFlow`, ...). See [Framework Integrations](../../reference/javascript-client/frameworks.md) for the complete reference.
 
-The `useChat` hook manages chat state, streaming, and message history:
+### useConversation Hook
 
-```typescript
-import { useChat } from '@raisindb/client/integrations/react-chat';
-import * as React from 'react';
+```tsx
+import React from 'react';
+import { createRaisinReact } from '@raisindb/client/react';
+import { client } from './lib/raisin'; // your RaisinClient instance
+
+const { RaisinProvider, useConversation } = createRaisinReact(React);
 
 function ChatWidget() {
-  const {
-    messages,
-    isStreaming,
-    streamingText,
-    error,
-    sendMessage,
-    stop,
-  } = useChat(React, {
-    agent: 'my-assistant',
-    baseUrl: 'http://localhost:8080',
-    repository: 'myapp',
-    authManager: client.getAuthManager(),
+  const chat = useConversation({
+    database: client.database('myapp'),
+    createOptions: { participant: '/agents/my-assistant' },
   });
 
   const [input, setInput] = React.useState('');
 
   return (
     <div>
-      {messages.map((msg, i) => (
+      {chat.messages.map((msg, i) => (
         <div key={i} className={msg.role}>
           {msg.content}
         </div>
       ))}
 
-      {isStreaming && <div className="assistant">{streamingText}</div>}
+      {chat.isStreaming && <div className="assistant">{chat.streamingText}</div>}
 
       <input value={input} onChange={(e) => setInput(e.target.value)} />
-      <button onClick={() => { sendMessage(input); setInput(''); }}>
+      <button onClick={() => { chat.sendMessage(input); setInput(''); }}>
         Send
       </button>
-      {isStreaming && <button onClick={stop}>Stop</button>}
+      {chat.isStreaming && <button onClick={chat.stop}>Stop</button>}
     </div>
   );
 }
@@ -721,9 +722,7 @@ function ChatWidget() {
 import { RaisinClient } from '@raisindb/client';
 
 export async function articleLoader({ params }) {
-  const client = RaisinClient.forSSR('http://localhost:8080', {
-    tenantId: 'default'
-  });
+  const client = RaisinClient.forSSR('http://localhost:8080');
   await client.authenticate({
     username: 'admin',
     password: process.env.RAISIN_PASSWORD
@@ -739,31 +738,31 @@ export async function articleLoader({ params }) {
 
 ## Svelte Integration
 
-### ChatStore
+### Conversation adapter
 
-The `ChatStore` provides a reactive store for Svelte:
+The `@raisindb/client/svelte` subpath export provides adapter factories designed for Svelte 5 runes (`createAuthAdapter`, `createSqlAdapter`, `createConversationAdapter`, ...):
 
 ```typescript
-import { ChatStore } from '@raisindb/client/integrations/svelte-chat';
+import { createConversationAdapter } from '@raisindb/client/svelte';
 
-const chatStore = new ChatStore({
-  agent: 'my-assistant',
-  baseUrl: 'http://localhost:8080',
-  repository: 'myapp',
-  authManager: client.getAuthManager(),
+const adapter = createConversationAdapter({
+  database: client.database('myapp'),
+  createOptions: { participant: '/agents/my-assistant' },
 });
 
-// Subscribe to state changes
-const unsubscribe = chatStore.subscribe((state) => {
+// Subscribe to state changes (bind to $state in a .svelte.ts file)
+const unsubscribe = adapter.subscribe((state) => {
   console.log(state.messages, state.isStreaming, state.streamingText);
 });
 
 // Send a message
-await chatStore.sendMessage('Hello!');
+await adapter.sendMessage('Hello!');
 
 // Clean up
-chatStore.destroy();
+adapter.destroy();
 ```
+
+See [Framework Integrations](../../reference/javascript-client/frameworks.md#svelte-5) for the full adapter list and a runes-based example.
 
 ## Error Handling
 
@@ -796,14 +795,18 @@ try {
 ## Configuration Options
 
 ```typescript
+import { RaisinClient, LocalStorageTokenStorage, LogLevel } from '@raisindb/client';
+
 const client = new RaisinClient('ws://localhost:8080', {
-  tenantId: 'default',
+  repository: 'myapp',          // builds the /ws/myapp route
   defaultBranch: 'main',
   requestTimeout: 30000,
-  logLevel: 'info', // 'debug' | 'info' | 'warn' | 'error'
+  logLevel: LogLevel.Info,      // Silent | Error | Warn | Info | Debug
   tokenStorage: new LocalStorageTokenStorage(),
 });
 ```
+
+See the [ClientOptions reference](../../reference/javascript-client/connection.md#constructor) for the full option table.
 
 ## Connection State
 

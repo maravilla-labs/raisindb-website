@@ -87,9 +87,33 @@ RaisinDB supports two search modes for handling multi-chunk documents:
 
 Documents mode is typically what you want for RAG applications, where you need unique source documents rather than multiple chunks from the same document.
 
+## Distance Filtering in WHERE Clauses
+
+You can filter results by distance directly in SQL using the `<=>` operator. The HNSW engine extracts the threshold and applies it during the search for optimal performance:
+
+```sql
+-- Only return results within a cosine distance of 0.3
+SELECT id, name, properties->>'title'::String AS title
+FROM 'default'
+WHERE embedding <=> EMBEDDING('machine learning') < 0.3
+ORDER BY embedding <=> EMBEDDING('machine learning');
+```
+
+### Configurable Default Max Distance
+
+By default, vector search filters out results beyond a maximum distance threshold. You can configure this per-tenant:
+
+```sql
+ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5';
+```
+
+This replaces the previous hard-coded threshold and gives you control over how aggressively distant results are filtered.
+
 ## Hybrid Search: Vector + Full-Text
 
-Combine vector similarity with traditional text search for more precise results:
+### Filtering with Vector Search
+
+Combine vector similarity with traditional SQL filters for more precise results:
 
 ```sql
 -- Vector search + keyword filter
@@ -111,6 +135,32 @@ ORDER BY __distance ASC
 ```
 
 This lets you scope vector search to specific categories, content types, or locations in the content hierarchy.
+
+### HYBRID_SEARCH Table Function
+
+The `HYBRID_SEARCH` table function combines full-text search and vector similarity using Reciprocal Rank Fusion (RRF) to produce a single ranked result set. This is the recommended approach when you want the best of both keyword matching and semantic search:
+
+```sql
+SELECT * FROM HYBRID_SEARCH('how does authentication work', 10);
+```
+
+This returns up to 10 results with the following columns:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `node_id` | TEXT | The matched node ID |
+| `name` | TEXT | Node name |
+| `path` | TEXT | Node path in the content hierarchy |
+| `node_type` | TEXT | Node type |
+| `score` | DOUBLE | Combined RRF score (higher = more relevant) |
+| `fulltext_rank` | DOUBLE | Full-text search rank |
+| `vector_rank` | DOUBLE | Vector similarity rank |
+| `vector_distance` | DOUBLE | Raw vector distance |
+| `properties` | JSON | Node properties |
+
+:::tip
+`HYBRID_SEARCH` is ideal for RAG applications where pure vector search may miss keyword-specific matches and pure full-text search may miss semantically similar content.
+:::
 
 ## Filtering by Node Type
 
@@ -150,6 +200,42 @@ For multi-chunk documents, RaisinDB provides scoring controls:
 - **First chunk boost** — the first chunk of a document gets a configurable score boost
 
 These settings help ensure that the beginning of a document (which often contains the most relevant summary information) is weighted appropriately.
+
+## Document Chunking
+
+When chunking is enabled in your embedding configuration, long documents are automatically chunked before embedding. The embedding worker splits content using the configured strategy, generates embeddings for each chunk via the batch embedding API, and stores them in the HNSW index with chunk metadata.
+
+No manual chunking is needed — the pipeline handles splitting, embedding, and indexing automatically when nodes are created or updated.
+
+## Vector Index Management
+
+RaisinDB provides SQL commands to manage and monitor HNSW indexes:
+
+```sql
+-- Rebuild the vector index from stored embeddings
+REBUILD VECTOR INDEX;
+
+-- Verify index integrity
+VERIFY VECTOR INDEX;
+
+-- Show index health statistics
+SHOW VECTOR INDEX HEALTH;
+```
+
+These commands are available via SQL and pgwire, making them accessible from `psql` or any PostgreSQL-compatible client.
+
+## EXPLAIN for Vector Queries
+
+Use `EXPLAIN` to inspect how vector queries are executed:
+
+```sql
+EXPLAIN SELECT id, name, __distance
+FROM 'default'
+WHERE VECTOR_SEARCH(embedding, $1, 10)
+ORDER BY __distance ASC;
+```
+
+This shows the `VectorScan` plan details, including the number of candidates, distance metric, and any threshold filtering applied.
 
 ## Performance Characteristics
 

@@ -16,20 +16,40 @@ new RaisinClient(url: string, options?: ClientOptions)
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `url` | `string` | WebSocket URL (e.g. `ws://localhost:8080`) |
+| `url` | `string` | WebSocket URL (e.g. `ws://localhost:8080/ws/myrepo`) |
 | `options` | `ClientOptions` | Optional configuration |
 
 ```typescript
 interface ClientOptions {
+  repository?: string;
   tenantId?: string;
   defaultBranch?: string;
   requestTimeout?: number;
-  logLevel?: 'debug' | 'info' | 'warn' | 'error';
+  connection?: ConnectionOptions;
   tokenStorage?: TokenStorage;
+  logLevel?: LogLevel;
   mode?: 'websocket' | 'http' | 'hybrid';
   httpBaseUrl?: string;
 }
 ```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `repository` | extracted from URL | Repository name. With a bare host URL the client builds the tenant-less `/ws/{repository}` route internally. With a path URL it overrides the repository extracted from the URL (used for repo-scoped auth endpoints). |
+| `tenantId` | extracted from URL, else `'default'` | Optional — you normally never set this. The server resolves the tenant for `/ws/{repo}` connections; multi-tenant operators address a specific tenant with the `/sys/{tenant}/{repo}` URL form instead. |
+| `defaultBranch` | `'main'` | Branch used for all operations unless overridden. |
+| `requestTimeout` | `30000` | Per-request timeout in milliseconds. Requests that exceed it reject with `RaisinTimeoutError`. |
+| `connection` | — | Low-level `ConnectionOptions`: `autoReconnect` (default `true`), `reconnectOptions`, `heartbeatInterval` (default `30000`, `0` disables), `heartbeatTimeout` (default `5000`), `protocols`, `headers` (upgrade headers, Node.js only). |
+| `tokenStorage` | `MemoryTokenStorage` | Where tokens are persisted (see [Token Storage](#token-storage)). |
+| `logLevel` | `LogLevel.Info` | `LogLevel` enum: `Silent`, `Error`, `Warn`, `Info`, `Debug`. |
+| `mode` | `'websocket'` | Client mode. |
+| `httpBaseUrl` | derived from WS URL | HTTP base URL for identity auth and uploads. |
+
+The `repository` option lets you connect with a bare host URL — `new
+RaisinClient('ws://localhost:8080', { repository: 'myrepo' })` builds the
+tenant-less `/ws/myrepo` route internally. Multi-tenant operators can
+address a specific tenant with the `/sys/{tenant}/{repository}` URL form
+instead.
 
 ### connect()
 
@@ -55,33 +75,30 @@ Get a database interface for the given repository.
 client.database(name: string): Database
 ```
 
-The returned `Database` comes pre-configured with access to the [Chat](./chat.md) and [Flow](./flows.md) APIs:
+The returned `Database` comes pre-configured with access to the [Conversations](./chat.md), [Flow](./flows.md), [Functions](./functions.md), and inbox-task APIs:
 
 ```typescript
 const db = client.database('myapp');
 
-// Chat — conversational AI
-const convo = await db.chat.createConversation({ agent: '/agents/support' });
+// Conversations — conversational AI
+const convo = await db.conversations.create({ participant: '/agents/support' });
 
 // Flow — workflow execution
 const result = await db.flow.runAndWait('/flows/process-order', { orderId: '123' });
+
+// Inbox — human-in-the-loop tasks
+const { tasks } = await db.inbox.listTasks({ status: 'pending' });
 ```
 
-#### db.chat
+| Accessor | Returns | Reference |
+|----------|---------|-----------|
+| `db.conversations` | [`ConversationManager`](./chat.md) — list/create/open conversations, streaming, plan actions | [Chat & Conversations](./chat.md) |
+| `db.flow` | [`FlowClient`](./flows.md) — run flows over HTTP with SSE streaming | [Flows](./flows.md) |
+| `db.flows()` | `FlowsApi` — flow execution over the WebSocket connection | [Flows](./flows.md#flowsapi-websocket) |
+| `db.functions()` | `FunctionsApi` — invoke server-side functions | [Functions](./functions.md) |
+| `db.inbox` | `InboxApi` — list/complete human-in-the-loop tasks | [Flows](./flows.md#inbox-tasks-dbinbox) |
 
-Returns a pre-configured [`ChatClient`](./chat.md) scoped to this repository. The client is lazily created and cached.
-
-```typescript
-get chat: ChatClient
-```
-
-#### db.flow
-
-Returns a pre-configured [`FlowClient`](./flows.md) scoped to this repository. The client is lazily created and cached.
-
-```typescript
-get flow: FlowClient
-```
+All accessors are lazily created and cached, pre-configured with the correct base URL, repository, and auth manager.
 
 ---
 
@@ -326,6 +343,22 @@ client.setBranch(branch: string): void
 ```typescript
 client.getTenantId(): string
 ```
+
+---
+
+## Reconnection & Request Queueing
+
+The client reconnects automatically (exponential backoff) and re-authenticates with the stored token. Requests issued while the connection is re-establishing are **queued and flushed** after reconnect + re-auth, so brief network blips don't surface as errors. The queue is capped at **100 requests** — overflow rejects immediately (`Request queue is full`).
+
+After a reconnect, active subscriptions are restored with retries; if restoration fails permanently the client emits `subscription_restore_failed` (see [Realtime Subscriptions & Inbox](./realtime-inbox.md#reconnection)). `onReconnected()` fires only after connection, auth, and subscription restore have all succeeded.
+
+Failures surface as typed errors:
+
+| Error | Thrown when |
+|-------|-------------|
+| `RaisinTimeoutError` | A request exceeds `requestTimeout` (carries `timeoutMs`) |
+| `RaisinAuthError` | Authentication or token refresh fails (carries `code`, `status`) |
+| `RaisinConnectionError` | The connection drops unrecoverably |
 
 ---
 

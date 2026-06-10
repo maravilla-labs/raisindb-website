@@ -59,7 +59,11 @@ const sub = await ws.events().subscribeToNodeType('Article', (event) => {
 
 ### subscribeToPath()
 
-Subscribe to events for nodes at or under a path.
+Subscribe to events for nodes matching a path pattern.
+
+:::warning Path matching is literal glob — no implicit prefix matching
+A plain path matches only that exact node. Use `/*` for direct children and `/**` for the whole subtree. See [Realtime Subscriptions & Inbox](./realtime-inbox.md#path-filter-semantics) for the full semantics.
+:::
 
 ```typescript
 subscribeToPath(

@@ -265,4 +265,4 @@ WHERE node_type = 'raisin:Role';
 - [Workspaces](/docs/concepts/workspaces) — Organize content with workspace isolation
 - [Graph Model](/docs/concepts/graph-model) — Relationships and graph queries
 - [JavaScript Client — Authentication](/docs/reference/javascript-client/connection) — Client-side auth API
-- [Flows](/docs/guides/flows/defining-flows) — Automate workflows
+- [Workflows](/docs/guides/workflows/overview) — Automate workflows

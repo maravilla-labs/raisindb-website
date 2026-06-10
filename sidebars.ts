@@ -24,6 +24,22 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Shiftboard: Build an AI-Powered App',
+      collapsed: false,
+      link: {
+        type: 'doc',
+        id: 'tutorials/shiftboard/index',
+      },
+      items: [
+        'tutorials/shiftboard/install-with-the-cli',
+        'tutorials/shiftboard/chat-and-tools',
+        'tutorials/shiftboard/ssr-live-board',
+        'tutorials/shiftboard/agent-coordination',
+        'tutorials/shiftboard/durable-workflow',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Build a Content App',
       items: [
         'tutorials/content-app/define-schema',
@@ -178,12 +194,26 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
-          label: 'Functions & Workflows',
+          label: 'Functions',
           items: [
             'guides/functions/creating-functions',
             'guides/functions/triggers',
             'guides/functions/execution-logs',
-            'guides/flows/defining-flows',
+          ],
+        },
+        {
+          type: 'category',
+          label: 'Workflows',
+          items: [
+            'guides/workflows/overview',
+            'guides/workflows/quickstart',
+            'guides/workflows/flow-definition',
+            'guides/workflows/data-and-templates',
+            'guides/workflows/error-handling',
+            'guides/workflows/human-in-the-loop',
+            'guides/workflows/ai-steps',
+            'guides/workflows/triggers',
+            'guides/workflows/examples',
           ],
         },
         {
@@ -275,7 +305,9 @@ const sidebars: SidebarsConfig = {
         'reference/javascript-client/connection',
         'reference/javascript-client/node-operations',
         'reference/javascript-client/events',
+        'reference/javascript-client/realtime-inbox',
         'reference/javascript-client/chat',
+        'reference/javascript-client/frameworks',
         'reference/javascript-client/flows',
         'reference/javascript-client/functions',
         'reference/javascript-client/uploads',

@@ -2,177 +2,126 @@
 sidebar_position: 4
 ---
 
-# Sync and Watch
+# Sync and Watch: The Development Loop
 
-The `raisindb sync --watch` command enables a live development workflow where local package changes are automatically synchronized to your RaisinDB server. Edit node types, content, or configuration locally, and see changes reflected instantly.
+RaisinDB packages are the unit of deployment — but during development you
+don't want to rebuild and reinstall a package for every edit. The CLI gives
+you a two-speed loop:
 
-## Basic Sync
+- **`raisindb deploy --install`** — full build → upload → install. Use it for
+  the first install and whenever *structure* changes (manifest, node types,
+  workspace definitions).
+- **`raisindb sync --watch`** — watches your package directory and pushes
+  each changed *content* node to the running instance live (typically within
+  a second or two of saving).
 
-Push local package content to a running server:
-
-```bash
-raisindb sync --repo myapp --branch main
-```
-
-This compares your local package files against the server state and uploads any changes.
-
-## Watch Mode
-
-For development, use `--watch` to continuously sync on file changes:
+## Local development setup
 
 ```bash
-raisindb sync --watch --repo myapp --branch main
+# 1. Authenticate (writes server + token to .raisinrc)
+raisindb login --server http://localhost:8081 --username admin --password '...'
+
+# 2. Create the target repository
+raisindb repo create myapp --exists-ok
+
+# 3. First install
+raisindb deploy ./package --repo myapp --install
+
+# 4. Develop: push changes live as you edit
+raisindb sync ./package --repo myapp --watch
 ```
 
-Watch mode:
-1. Performs an initial sync of all local changes
-2. Monitors the package directory for file modifications
-3. Automatically syncs changed files to the server
-4. Reports sync status in the terminal
+`deploy --install` validates the package, builds the `.rap`, uploads it,
+starts the install job, and **waits for the final state**: it succeeds only
+when the package reaches status `installed`, and fails with the server's
+error detail when the status becomes `failed`.
 
-This is ideal for iterative development — edit a `node.yaml` or `index.js` file, save, and the changes appear in your running RaisinDB instance within seconds.
+`sync ./package --repo myapp` needs no config file — the repository comes
+from the flag and the server/token from `raisindb login` (or environment
+variables, see CI below). If a `.raisin-sync.yaml` exists in the package
+directory it is used; run `raisindb sync --init` to create one.
 
-## Sync Configuration
+## What watch mode syncs
 
-Configure sync behavior in your package's `manifest.yaml`:
+Watch mode maps each changed file to the node the package installer created
+from it:
 
-```yaml
-sync:
-  remote:
-    url: "http://localhost:8080"
-    repo_id: "myapp"
-    branch: "main"
-    tenant_id: "default"
-  defaults:
-    mode: replace              # replace | merge | update
-    on_conflict: prefer_local  # ask | prefer_local | prefer_server | prefer_newer
-    sync_deletions: true       # propagate local deletes to server
-    property_merge: shallow    # shallow | deep
-```
+| You edit | What happens on the server |
+|----------|---------------------------|
+| `content/{ws}/.../{dir}/.node.yaml` | Properties of the `{dir}` node are updated (PUT) |
+| `content/{ws}/.../{name}.yaml` | Properties of the `{name}` node are updated (PUT) |
+| `content/{ws}/.../index.js` (also `.py`, `.star`) | The asset node's inline `code` property is updated — the function runtime picks it up on the next call |
+| `content/{ws}/.../{base}.{locale}.yaml` | Translations for `{base}` are applied via the translate command |
+| other binary files | Re-uploaded as the asset's `file` resource (multipart) |
+| `manifest.yaml`, `nodetypes/`, `workspaces/`, `mixins/`, `archetypes/` | **Not synced** — these are applied at install time. The watcher prints a re-deploy hint |
 
-### Sync Modes
-
-| Mode | Behavior |
-|------|----------|
-| `replace` | Full replacement of server content with local (default) |
-| `merge` | Combine local and server, keeping content from both |
-| `update` | Only push changes, preserve unmodified server content |
-
-### Conflict Strategies
-
-| Strategy | Behavior |
-|----------|----------|
-| `ask` | Prompt in terminal for each conflict (default) |
-| `prefer_local` | Always keep your local version |
-| `prefer_server` | Always keep the server version |
-| `prefer_newer` | Use whichever version has a newer timestamp |
-| `merge_properties` | Attempt property-level merge |
-
-## Path Filters
-
-Control which paths are synced using filters:
-
-```yaml
-sync:
-  filters:
-    # Only sync YAML files in /content/pages
-    - root: /content/pages
-      mode: merge
-      include:
-        - "**/*.yaml"
-      exclude:
-        - "drafts/**"
-
-    # Local-only development content, never pushed
-    - root: /content/dev
-      direction: local_only
-
-    # System content pulled from server, never pushed
-    - root: /system
-      direction: server_only
-      on_conflict: prefer_server
-```
-
-### Sync Directions
-
-| Direction | Push | Pull | Use Case |
-|-----------|------|------|----------|
-| `bidirectional` | Yes | Yes | Default two-way sync |
-| `local_only` | No | No | Local dev content, not synced |
-| `server_only` | No | Yes | Pull from server, never push |
-| `push_only` | Yes | No | Push to server, never pull |
-
-## Sync Status
-
-Check what has changed between local and server:
+When a structural file changes, finish your edit and run:
 
 ```bash
-raisindb sync --status --repo myapp
+raisindb deploy ./package --repo myapp --install
 ```
 
-Each file gets a status:
+On an interactive terminal, watch mode renders a live status UI. When stdout
+is not a TTY (CI, piped to a file), it prints plain log lines instead:
+
+```
+[watch] watching /work/myapp/package
+[watch] target http://localhost:8081 repo=myapp branch=main
+[watch] 2026-06-10T11:40:01.123Z change: functions/lib/tools/list-shifts/index.js
+[watch] 2026-06-10T11:40:01.872Z pushed: functions/lib/tools/list-shifts/index.js
+```
+
+Add `--push` to skip the server-event subscription and only push local
+changes (no WebSocket connection needed).
+
+## Install status lifecycle
+
+Every uploaded package is a `raisin:Package` node whose `status` property
+tracks the lifecycle truthfully:
+
+```
+processing  →  uploaded  →  installing  →  installed
+                                       ↘  failed   (error property has the detail)
+```
 
 | Status | Meaning |
 |--------|---------|
-| `synced` | Identical locally and on server |
-| `local_only` | Exists only locally (new file) |
-| `server_only` | Exists only on server (deleted locally) |
-| `modified` | Changed locally since last sync |
-| `conflict` | Both local and server versions changed |
+| `processing` | Upload accepted; manifest extraction in progress |
+| `uploaded` | Package stored and validated, not installed |
+| `installing` | Install job running (node types, workspaces, content) |
+| `installed` | Install completed — `installed: true`, `installed_at` set |
+| `failed` | Processing or install failed — the CLI reports the error detail |
 
-## Development Workflow
+`raisindb package list --repo myapp` shows the status column, and
+`raisindb package install` / `deploy --install` print the failure detail
+(from the package node's `error` property where the schema supports it, or
+from the install job record). Built-in packages installed automatically at
+repository creation have no `status` property.
 
-A typical development workflow with sync:
+Uninstalling a package returns it to `uploaded`.
+
+## CI
+
+All commands are non-interactive and exit non-zero on failure, so a pipeline
+is just:
 
 ```bash
-# 1. Initialize a package
-raisindb init --pack my-feature
+# Authentication: environment variables win over .raisinrc
+export RAISINDB_SERVER=https://db.example.com
+export RAISINDB_TOKEN=...          # or: raisindb login --server ... --token "$TOKEN"
+                                   # or: raisindb login --server ... --username ... --password ...
 
-# 2. Start the server
-RUST_LOG=info ./target/release/raisin-server --config node.toml
-
-# 3. Start watch mode in another terminal
-raisindb sync --watch --repo myapp --branch main
-
-# 4. Edit files — changes sync automatically
-# Edit nodetypes/blog_Article.yaml → NodeType updated on server
-# Edit content/blog/posts/welcome/node.yaml → Content updated
-# Add content/blog/posts/new-post/node.yaml → New node created
-
-# 5. When ready, build the final package
-raisindb package create ./my-feature
+raisindb repo create myapp --exists-ok
+raisindb deploy ./package --repo myapp --install
 ```
 
-## Conflict Resolution
-
-When both local and server have changes to the same file, sync detects a conflict.
-
-In interactive mode (`on_conflict: ask`), you'll be prompted:
-
-```
-Conflict: content/blog/posts/welcome/node.yaml
-  Local:  modified 2026-03-31T10:00:00Z
-  Server: modified 2026-03-31T09:30:00Z
-
-  [l] Keep local  [s] Keep server  [n] Keep newer  [d] Show diff  [a] Abort
-```
-
-For automated workflows, set a default strategy:
-
-```yaml
-sync:
-  defaults:
-    on_conflict: prefer_local
-  conflicts:
-    "/content/pages/home":
-      strategy: prefer_server
-      backup: true
-```
-
-Path-specific overrides in `conflicts` take precedence over defaults.
+Exit codes: `0` — package reached status `installed`; `1` — validation,
+upload, or install failed (the install error detail is printed). A one-shot
+content push without a full reinstall is available as
+`raisindb sync ./package --repo myapp --push`.
 
 ## Next Steps
 
 - [Creating Packages](./creating-packages.md) — Package format and structure
-- [Built-in Packages](./builtin-packages.md) — Pre-installed packages
 - [Installing Packages](./installing-packages.md) — Package lifecycle
+- [Built-in Packages](./builtin-packages.md) — Pre-installed packages

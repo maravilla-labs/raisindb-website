@@ -77,6 +77,25 @@ query_timeout = 30  # seconds
 max_query_results = 10000
 ```
 
+## Vector Search Configuration
+
+```toml
+[embedding]
+# Distance metrics: "cosine", "l2", "inner_product", "hamming"
+distance_metric = "cosine"
+
+# Default max distance threshold for search results
+default_max_distance = 0.6
+
+# HNSW index parameters
+hnsw_m = 16                  # Bi-directional links per node
+hnsw_ef_construction = 200   # Candidate list size during index building
+hnsw_ef_search = 50          # Candidate list size during search
+
+# Vector quantization: "f32", "f16", "int8"
+quantization = "f32"
+```
+
 ## Environment Variables
 
 Override config with environment variables:

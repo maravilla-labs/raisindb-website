@@ -15,7 +15,7 @@ Both the WebSocket client (`RaisinClient`) and the HTTP client (`RaisinHttpClien
 ```typescript
 import { RaisinClient } from '@raisindb/client';
 
-const client = new RaisinClient('raisin://localhost:8080/sys/default');
+const client = new RaisinClient('raisin://localhost:8080/ws/myapp');
 await client.connect();
 await client.authenticate({ username: 'admin', password: 'admin' });
 

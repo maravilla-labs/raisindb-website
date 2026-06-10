@@ -18,7 +18,7 @@ RaisinDB integrates with major LLM and embedding providers out of the box. Each 
 | **Azure OpenAI** | Azure-hosted OpenAI models | Enterprise deployments |
 | **Groq** | Open-source models (Llama, Mixtral) | Fast inference |
 | **OpenRouter** | Multi-provider router | Unified API for many models |
-| **AWS Bedrock** | Claude, Nova, Llama | Via AWS credentials |
+| **AWS Bedrock** | Claude, Titan Embed, Nova, Llama | Converse API + Titan embeddings |
 | **Ollama** | Any local model | Self-hosted, no API key needed |
 | **Custom** | Any OpenAI-compatible endpoint | Custom deployments |
 
@@ -110,6 +110,40 @@ For long documents, RaisinDB automatically splits content into chunks before gen
 - **By paragraphs** — keep paragraphs intact
 
 Chunk overlap is configurable to ensure context is preserved across chunk boundaries.
+
+## AWS Bedrock
+
+AWS Bedrock is fully supported as both an LLM and embedding provider. It uses the Converse API for chat/generation and Titan Embed for embeddings.
+
+Bedrock credentials are configured **per-tenant** through the admin console or API, just like other providers. The API key field stores AWS credentials in the format `ACCESS_KEY_ID:SECRET_ACCESS_KEY`, and the endpoint field stores the AWS region.
+
+**Via Admin Console:** The Bedrock provider section shows separate fields for Access Key ID, Secret Access Key, and Region.
+
+**Via SQL:**
+
+```sql
+ALTER AI CONFIG ADD PROVIDER 'bedrock'
+  SET API_KEY = 'AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+  SET BASE_URL = 'us-east-1';
+```
+
+**Via REST API:**
+
+```json
+{
+  "provider": "bedrock",
+  "api_key": "AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+  "api_endpoint": "us-east-1",
+  "models": [
+    { "model_id": "anthropic.claude-sonnet-4-20250514-v1:0" },
+    { "model_id": "amazon.titan-embed-text-v2:0" }
+  ]
+}
+```
+
+:::info
+Each tenant has their own isolated Bedrock credentials, stored encrypted at rest with AES-256-GCM. This allows multi-tenant deployments where different tenants use different AWS accounts.
+:::
 
 ## Local Inference with Ollama
 

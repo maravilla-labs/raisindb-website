@@ -54,9 +54,21 @@ INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
 
 When the node is created, RaisinDB automatically generates an embedding from the content (if an [embedding provider is configured](./ai-provider-configuration.md)) and indexes it in the HNSW vector store.
 
-## Step 2: Chunk Long Content as Child Nodes
+## Step 2: Automatic Document Chunking
 
-For long documents, split content into child nodes. RaisinDB's hierarchy makes this natural — chunks are children of the source document:
+When chunking is enabled in your embedding configuration, RaisinDB automatically splits long documents into chunks, generates embeddings for each chunk via the batch embedding API, and indexes them in the HNSW vector store. No manual chunking is needed.
+
+```yaml
+defaults:
+  chunking:
+    strategy: "tokens"
+    chunk_size: 512
+    chunk_overlap: 50
+```
+
+Chunks are stored as child nodes in the content hierarchy, preserving the relationship to their source document. `VECTOR_SEARCH` in **Documents mode** automatically deduplicates results by source document.
+
+If you need manual control over chunking, you can still create chunks as child nodes explicitly:
 
 ```sql
 -- Parent document
@@ -67,23 +79,14 @@ INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
   '{"title": "Architecture Overview", "content": "Introduction to the system architecture..."}'
 );
 
--- Chunks as child nodes
+-- Manual chunks as child nodes
 INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
   'chunk-1',
   '/docs/architecture/architecture-overview',
   'kb:Chunk',
   '{"content": "The storage layer uses RocksDB with 40+ column families...", "position": 1, "source_doc": "architecture-overview"}'
 );
-
-INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
-  'chunk-2',
-  '/docs/architecture/architecture-overview',
-  'kb:Chunk',
-  '{"content": "The SQL engine parses queries through a multi-stage pipeline...", "position": 2, "source_doc": "architecture-overview"}'
-);
 ```
-
-Each chunk gets its own embedding, and `VECTOR_SEARCH` in **Documents mode** automatically deduplicates results by source document.
 
 ## Step 3: Retrieval Query Patterns
 
@@ -247,6 +250,34 @@ INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
 ```
 
 ## Advanced Patterns
+
+### Hybrid Search for RAG
+
+The `HYBRID_SEARCH` table function combines full-text and vector search using Reciprocal Rank Fusion (RRF), producing a single ranked result set. This is often more effective for RAG than pure vector search because it captures both exact keyword matches and semantic similarity:
+
+```javascript
+async function handler(input) {
+  // Use HYBRID_SEARCH for combined full-text + vector retrieval
+  const results = await raisin.sql.query(
+    `SELECT node_id, name, score, properties
+     FROM HYBRID_SEARCH($1, 10)`,
+    [input.question]
+  );
+
+  const context = results.map(r => r.properties.content).join('\n\n');
+
+  const answer = await raisin.ai.generate({
+    prompt: `Answer based on this context:\n\n${context}\n\nQuestion: ${input.question}`,
+    model: 'claude-sonnet-4-20250514'
+  });
+
+  return { answer: answer.text, sources: results.map(r => r.node_id) };
+}
+```
+
+:::tip
+Use `HYBRID_SEARCH` when your knowledge base contains content where exact terminology matters (e.g., product names, error codes, API endpoints) alongside content where semantic understanding is important.
+:::
 
 ### Multi-Workspace RAG
 

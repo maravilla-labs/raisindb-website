@@ -48,6 +48,23 @@ RaisinDB uses cosine distance (1 - cosine similarity):
 | 0.4 – 0.6 | 0.6 – 0.4 | Weakly related |
 | > 0.6 | < 0.4 | Not related |
 
+### Distance Filtering
+
+Filter results by distance threshold directly in SQL. The threshold is extracted and pushed down to the HNSW engine for efficient search:
+
+```sql
+SELECT id, path
+FROM 'default'
+WHERE embedding <=> EMBEDDING('search query') < 0.3
+ORDER BY embedding <=> EMBEDDING('search query');
+```
+
+The default maximum distance threshold is configurable per-tenant:
+
+```sql
+ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5';
+```
+
 ### Hybrid Search (Vector + Filters)
 
 Combine vector similarity with property filters:
@@ -63,6 +80,16 @@ LIMIT 10;
 ```
 
 Request more results from the vector index (20) than you need (10) to account for rows removed by the property filter.
+
+### Hybrid Search (Vector + Full-Text)
+
+The `HYBRID_SEARCH` table function combines full-text search and vector similarity using Reciprocal Rank Fusion (RRF):
+
+```sql
+SELECT * FROM HYBRID_SEARCH('how does authentication work', 10);
+```
+
+This produces a single ranked result set that merges keyword matches and semantic similarity, returning columns for both fulltext and vector ranks alongside a combined score. This approach avoids the weaknesses of either search method alone — pure vector search can miss exact keyword matches, while pure full-text search misses semantically equivalent terms.
 
 ### Search Within a Subtree
 
@@ -104,7 +131,7 @@ Embedding providers are configured per tenant. Supported providers:
 | Anthropic | Claude embedding models |
 | Azure OpenAI | Enterprise Azure deployments |
 | Google Gemini | Gemini embedding models |
-| AWS Bedrock | Claude, Titan embeddings |
+| AWS Bedrock | Converse API + Titan embeddings (fully supported) |
 | Ollama | Local models (self-hosted) |
 | Custom | Any OpenAI-compatible endpoint |
 
@@ -118,10 +145,34 @@ Vector indexes are isolated per tenant, repository, and branch. Each combination
 - Independent scaling per tenant
 - Branch-aware search (feature branch changes don't affect main)
 
+## HNSW Parameter Tuning
+
+The HNSW index exposes several parameters for tuning the trade-off between search accuracy and performance:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `M` | 16 | Number of bi-directional links per node. Higher values improve recall but use more memory |
+| `ef_construction` | 200 | Size of the dynamic candidate list during index building. Higher values produce a better graph but slow down insertion |
+| `ef_search` | 50 | Size of the dynamic candidate list during search. Higher values improve recall at the cost of query latency |
+
+These are configured through your embedding configuration and apply per-index.
+
+## Vector Quantization
+
+RaisinDB supports vector quantization to reduce memory usage at the cost of some precision:
+
+| Format | Size per Dimension | Use Case |
+|--------|-------------------|----------|
+| **F32** (default) | 4 bytes | Full precision, best accuracy |
+| **F16** | 2 bytes | 50% memory savings with minimal accuracy loss |
+| **Int8** | 1 byte | 75% memory savings, suitable for large-scale approximate search |
+
+Quantization is configured in the embedding configuration and applies when vectors are stored in the HNSW index.
+
 ## Performance
 
 - **HNSW** provides O(log n) approximate search — sub-millisecond for millions of vectors
-- **Cosine distance** is optimized for normalized embeddings (OpenAI embeddings are pre-normalized)
+- **Cosine, L2, InnerProduct, and Hamming** distance metrics are supported
 - **Moka LRU cache** limits memory usage with configurable cache size
 - **Periodic snapshots** persist indexes to disk with crash-safe recovery
 

@@ -173,6 +173,7 @@ const sidebars: SidebarsConfig = {
             'guides/ai/agent-memory-with-branches',
             'guides/ai/rag-patterns',
             'guides/ai/function-based-tool-use',
+            'guides/ai/agent-plans-and-tools',
           ],
         },
         {

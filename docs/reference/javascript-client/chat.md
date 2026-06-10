@@ -220,6 +220,11 @@ for (const plan of snapshot.plans) {
 }
 ```
 
+For the full plan lifecycle — enabling task creation on an agent, the four
+execution modes (`automatic`, `approve_then_auto`, `step_by_step`, `manual`),
+the persisted node shapes, and a complete approval-UI recipe — see the
+[Agent Plans & Custom Tools guide](/docs/guides/ai/agent-plans-and-tools).
+
 ### Actions
 
 | Method | Description |

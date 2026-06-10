@@ -238,4 +238,4 @@ npm run workflow-test
 - [Sync and Watch](/docs/guides/packages/sync-and-watch) — the live dev loop from Part 3 in depth.
 - [CLI commands](/docs/reference/cli/commands) — everything you used in Part 1.
 
-You have the full stack now: nodes as the single source of truth, an agent that acts through functions, a UI that's just subscriptions, and a workflow engine for everything that must not be forgotten.
+One piece remains. Chat handles one shift; a workflow handles one shift durably. In [Part 6](./planner-plans-workflows) the manager says *"fill all open weekend shifts"* — and a plan-enabled agent proposes an approvable task list that starts one of these workflows per shift.

@@ -16,6 +16,7 @@ Everything in this tutorial is a real, running example. The full source lives in
 - A **server-side rendered SvelteKit frontend** with cookie auth, a live board over WebSocket node subscriptions, and inbox notifications.
 - **Agent-to-staff coordination over chat** — the agent asks staff members themselves, handles declines, and only assigns after someone confirms.
 - The **same coordination as a durable workflow** — inbox approval tasks with accept/decline buttons, deadlines, and a full audit trail, started by the agent on request.
+- A **plan-driven coordinator** that fills the whole board in one request: it proposes an approvable plan with one task per open shift, and each approved task starts a workflow.
 
 Chat, board, notifications, and human tasks are all just **nodes and node events**. That is the whole architectural idea, and you will see it pay off in every part.
 
@@ -32,7 +33,7 @@ The tutorial uses demo-only accounts throughout: manager `planner@example.com` /
 
 ## The parts
 
-The tutorial is progressive: data and CLI basics first, then chat and tools, then the app, then multi-user coordination, and durable workflows **last**.
+The tutorial is progressive: data and CLI basics first, then chat and tools, then the app, then multi-user coordination, then durable workflows — and finally **plans**, which compose everything that came before.
 
 | Part | What you'll do |
 |------|----------------|
@@ -41,3 +42,4 @@ The tutorial is progressive: data and CLI basics first, then chat and tools, the
 | [3. A real app: SSR, live board, inbox notifications](./ssr-live-board) | SvelteKit SSR over HTTP, WebSocket node subscriptions, the notification bell, the live dev loop |
 | [4. The agent coordinates your staff](./agent-coordination) | The agent messages real staff users, handles a decline, assigns on confirmation — and one honest lesson about chat-only coordination |
 | [5. Same scenario as a durable workflow](./durable-workflow) | The `/flows/fill-shift` flow, inbox tasks as nodes, the in-app task panel, and how the agent starts workflows |
+| [6. The Planner: plans and workflows composed](./planner-plans-workflows) | A plan-enabled agent fills the whole board: approvable plan, one workflow per task, the board filling live — and what "completed" honestly means |

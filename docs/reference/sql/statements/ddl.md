@@ -159,6 +159,49 @@ CREATE ARCHETYPE searchable (
 );
 ```
 
+## CREATE MIXIN
+
+Define a mixin — a reusable property set composed into NodeTypes. See
+[Using Mixins](../../../guides/data-modeling/using-mixins.md) for the full guide.
+
+### Syntax
+
+```sql
+CREATE MIXIN 'namespace:Name'
+    [ DESCRIPTION 'text' ]
+    [ ICON 'icon-name' ]
+    PROPERTIES ( name Type [ MODIFIERS ], ... );
+```
+
+### Examples
+
+```sql
+CREATE MIXIN 'myapp:SEO'
+  DESCRIPTION 'Search engine metadata'
+  PROPERTIES (
+    meta_title String,
+    meta_description String,
+    canonical_url String
+  );
+
+CREATE MIXIN 'myapp:Timestamps'
+  PROPERTIES (
+    created_at Date REQUIRED,
+    updated_at Date REQUIRED
+  );
+```
+
+Compose mixins into a NodeType with the `MIXINS (...)` clause:
+
+```sql
+CREATE NODETYPE 'myapp:Article'
+  MIXINS ('myapp:SEO', 'myapp:Timestamps')
+  PROPERTIES (title String REQUIRED);
+```
+
+Mixins are applied in order (later mixins win on property conflicts), after the
+`EXTENDS` parent and before the NodeType's own properties.
+
 ## CREATE ELEMENTTYPE
 
 Define an element type (used for array or collection elements).
@@ -244,6 +287,16 @@ ALTER ARCHETYPE content
 ALTER COLUMN status TYPE TEXT;
 ```
 
+### ALTER MIXIN
+
+```sql
+-- Add a property to a mixin
+ALTER MIXIN 'myapp:SEO' ADD PROPERTY og_image String;
+
+-- Remove a property from a mixin
+ALTER MIXIN 'myapp:SEO' DROP PROPERTY canonical_url;
+```
+
 ### ALTER ELEMENTTYPE
 
 ```sql
@@ -278,6 +331,13 @@ DROP ARCHETYPE legacy_archetype;
 
 -- Drop if exists
 DROP ARCHETYPE IF EXISTS old_archetype;
+```
+
+### DROP MIXIN
+
+```sql
+-- Drop a mixin
+DROP MIXIN 'myapp:SEO';
 ```
 
 ### DROP ELEMENTTYPE

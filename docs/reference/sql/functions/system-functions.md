@@ -247,6 +247,50 @@ SELECT RAISIN_AUTH_REMOVE_PROVIDER('github');
 
 ---
 
+## Type Membership Functions
+
+Fast checks against a node's materialized type sets. Every node is stamped on write
+with its effective mixins and supertypes, so these are simple membership tests — no
+schema resolution happens at query time. See
+[Using Mixins](../../../guides/data-modeling/using-mixins.md).
+
+### HAS_MIXIN
+
+True if the node carries the given mixin (type-declared, transitively).
+
+```sql
+HAS_MIXIN(properties, mixin_name) → BOOLEAN
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| properties | JSONB | The node's `properties` column |
+| mixin_name | TEXT | Mixin name to test, e.g. `'myapp:SEO'` |
+
+```sql
+SELECT * FROM 'workspace' WHERE HAS_MIXIN(properties, 'myapp:SEO');
+```
+
+### IS_A
+
+True if the node "is a" given type — its `node_type`, any `EXTENDS` ancestor, or any
+mixin.
+
+```sql
+IS_A(properties, type_name) → BOOLEAN
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| properties | JSONB | The node's `properties` column |
+| type_name | TEXT | Type name to test, e.g. `'myapp:Article'` |
+
+```sql
+SELECT * FROM 'workspace' WHERE IS_A(properties, 'myapp:Article');
+```
+
+---
+
 ## Notes
 
 - Standard system functions follow PostgreSQL conventions

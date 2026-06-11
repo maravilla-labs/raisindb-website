@@ -146,6 +146,7 @@ const sidebars: SidebarsConfig = {
           label: 'Data Modeling',
           items: [
             'guides/data-modeling/creating-nodetypes',
+            'guides/data-modeling/using-mixins',
             'guides/data-modeling/using-archetypes',
             'guides/data-modeling/defining-elements',
             'guides/data-modeling/data-modeling-strategy',

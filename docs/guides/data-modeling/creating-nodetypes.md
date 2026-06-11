@@ -511,6 +511,7 @@ allowed_children:
 
 ## Next Steps
 
+- [Using Mixins](./using-mixins.md) to compose reusable property sets
 - [Using Archetypes](./using-archetypes.md) for reusable schemas
 - [Defining Elements](./defining-elements.md) for advanced property types
 - [Querying Data](../querying/sql-basics.md) with your NodeTypes

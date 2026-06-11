@@ -34,6 +34,10 @@ When you install a package:
 3. Workspaces are created or patched
 4. Content nodes are imported (including functions, templates, etc.)
 
+### Reinstalling
+
+Reinstalling a package never overwrites an existing workspace. New NodeTypes are still made usable in workspaces the package defines: their `allowed_node_types` are **additively merged** into the existing workspace (add-only, never removing types), so a reinstall that adds a type makes it usable without manual intervention. Workspaces that already allow everything (empty `allowed_node_types` or `"*"`) are left untouched. See [Workspace Patches](./creating-packages.md#workspace-patches) for extending workspaces your package does not own.
+
 ## Uninstall a Package
 
 ```bash

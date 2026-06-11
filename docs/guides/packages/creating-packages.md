@@ -222,6 +222,14 @@ workspace_patches:
 
 Patches are idempotent — applying the same patch twice does not create duplicate entries.
 
+### Reinstall behavior and existing workspaces
+
+When a package is **reinstalled**, an existing workspace is never overwritten — its live configuration is preserved. To pick up node types your package newly provides, the installer **additively merges** the `allowed_node_types` from your package's own `workspaces/<name>.yaml` into the existing workspace (add-only; it never removes a type). So for workspaces your package defines, simply listing a type in the workspace's `allowed_node_types` is enough — you do not need to duplicate it under `workspace_patches`.
+
+The merge is **skipped when the workspace already allows everything** — an empty `allowed_node_types` (which means "allow all") or one containing `"*"`. In that case the new type is already permitted, and merging would silently narrow the workspace. A literal `"*"` is never merged in.
+
+Use `workspace_patches` when you need to extend a workspace your package does **not** define itself — for example, adding your node types to another package's workspace, or a shared workspace by name.
+
 ## Dependencies
 
 Packages can depend on other packages. Dependencies are resolved in topological order using Kahn's algorithm:

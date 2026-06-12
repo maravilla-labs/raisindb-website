@@ -651,6 +651,46 @@ This creates a professional content editing interface with:
 - Conditional publishing date
 - Organized field groups
 
+## Element and Field Metadata
+
+Element types carry a free-form `meta` map — both at the element-type level and on each individual field. RaisinDB stores and round-trips `meta` untouched; it never interprets the contents, so it's the right place for editor hints, layout flags, categorization, or integration configuration that isn't part of a field's value.
+
+```yaml
+name: marketing:HeroBlock
+meta:
+  category: "marketing"
+  previewImage: "/assets/hero-preview.png"
+fields:
+  - $type: TextField
+    name: headline
+    label: Headline
+    meta:
+      group: "content"
+      maxPreviewChars: 60
+  - $type: MediaField
+    name: background
+    label: Background image
+    meta:
+      group: "appearance"
+```
+
+`meta` values may be strings, numbers, booleans, arrays, or objects. Both maps are editable in the Admin Console element editor — element-level `meta` lives under **Element Settings**, and per-field `meta` is in the field editor's **metadata** tab (the braces icon).
+
+:::tip Where meta lives
+Element-type `meta` attaches to the whole element. Per-field `meta` attaches to a single field via the shared field base, so any field type (`TextField`, `MediaField`, `CompositeField`, …) can carry it.
+:::
+
+## Resolving inheritance
+
+Element types support `extends`. To get an element type with its inheritance chain merged (base fields first, child overrides by name), use the **resolved** view — available on both the [HTTP API](/docs/reference/http-api/nodetypes-api) and the [JavaScript client](/docs/reference/javascript-client/schema-management):
+
+```typescript
+const resolved = await db.elementTypes().getResolved('marketing:HeroBlock');
+// { element_type, resolved_fields, resolved_layout, inheritance_chain, resolved_strict }
+```
+
+The same `getResolved()` exists for NodeTypes and Archetypes. Schemas are **per-branch**, so resolution runs against the database's branch — use `db.onBranch('staging')` to resolve on another branch. See [Schema Management](/docs/reference/javascript-client/schema-management).
+
 ## Best Practices
 
 1. **Use semantic elements**: Choose elements that match the data type

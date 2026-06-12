@@ -206,6 +206,63 @@ priority:
   enum: [1, 2, 3, 4, 5]
 ```
 
+## Property Metadata and Nested Schema
+
+Beyond the validation keys above, every property supports three open-ended maps for advanced schemas and custom tooling. In the stored schema these are distinct objects on the property, and the Admin Console exposes all three in the property editor's **Metadata** tab.
+
+### Constraints
+
+The validation keys shown above (`minLength`, `maxLength`, `pattern`, `minimum`, `maximum`, `minItems`, `maxItems`, `uniqueItems`, …) are stored together in a `constraints` map. You can also set constraint keys the visual editor doesn't surface directly — anything you put here is preserved and available to validators and integrations:
+
+```yaml
+sku:
+  type: string
+  constraints:
+    pattern: "^[A-Z0-9-]+$"
+    maxLength: 32
+    # custom keys are kept as-is
+    examples: ["AB-1234", "ZZ-9999"]
+```
+
+### Structure (nested object schemas)
+
+`Object` properties describe their shape with a `structure` map — nested property schemas keyed by field name. Each value is itself a full property schema, so structures can nest arbitrarily:
+
+```yaml
+address:
+  type: object
+  structure:
+    street:
+      type: string
+      required: true
+    city:
+      type: string
+    zip:
+      type: string
+      constraints:
+        pattern: "^\\d{5}(-\\d{4})?$"
+  allow_additional_properties: false
+```
+
+Set `allow_additional_properties: true` to permit keys not listed in `structure`.
+
+In the Admin Console you can build a structure visually by dropping nested properties onto an object in the NodeType canvas, or edit the whole structure as JSON in the property editor's **Metadata** tab.
+
+### Meta (arbitrary metadata)
+
+`meta` is a free-form key/value map that RaisinDB stores and round-trips untouched. The database never interprets it — use it to attach editor hints, integration configuration, or any custom data to a property:
+
+```yaml
+hero_image:
+  type: media
+  meta:
+    group: "appearance"
+    editorWidth: "full"
+    docs: "https://example.com/style-guide#hero"
+```
+
+Values may be strings, numbers, booleans, arrays, or objects.
+
 ## Inheritance with Extend
 
 NodeTypes can extend other NodeTypes (single inheritance):

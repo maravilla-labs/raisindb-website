@@ -136,6 +136,17 @@ fields:
 - If a child declares a field with the same name as the parent, the child's definition wins
 - Inheritance chains can go up to **20 levels deep**
 
+### Resolving the merged result
+
+You don't have to merge `extends` chains yourself. Both the [HTTP API](/docs/reference/http-api/nodetypes-api) and the [JavaScript client](/docs/reference/javascript-client/schema-management) expose a **resolved** view that returns the archetype with the full inheritance chain already merged:
+
+```typescript
+const resolved = await db.archetypes().getResolved('marketing-page');
+// { archetype, resolved_fields, resolved_layout, inheritance_chain, resolved_strict }
+```
+
+The same `getResolved()` is available for NodeTypes and ElementTypes. Because schemas are **per-branch**, resolution runs against the database's branch — use `db.onBranch('staging')` to resolve on another branch. See [Schema Management](/docs/reference/javascript-client/schema-management) for details.
+
 ## Examples
 
 ### Landing Page Archetype

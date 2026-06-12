@@ -8,28 +8,41 @@ RaisinDB packages are the unit of deployment — but during development you
 don't want to rebuild and reinstall a package for every edit. The CLI gives
 you a two-speed loop:
 
+- **`raisindb sync --watch`** — watches your package directory and pushes each
+  change to the running instance live (typically within a second or two of
+  saving). This covers **both content nodes and schema** — node types,
+  archetypes, element types, and mixins are upserted to the management API, so
+  the editor's resolved schemas update **without a re-deploy**. This is the
+  loop you'll use for almost all development.
 - **`raisindb deploy --install`** — full build → upload → install. Use it for
-  the first install and whenever *structure* changes (manifest, node types,
-  workspace definitions).
-- **`raisindb sync --watch`** — watches your package directory and pushes
-  each changed *content* node to the running instance live (typically within
-  a second or two of saving).
+  the first install, and whenever the **manifest** or a **workspace
+  definition** changes (those are applied at install time). Re-running it also
+  updates existing schema — a reinstall upserts node types / archetypes /
+  element types / mixins (content nodes are left untouched).
 
 ## Local development setup
 
 ```bash
-# 1. Authenticate (writes server + token to .raisinrc)
-raisindb login --server http://localhost:8081 --username admin --password '...'
+# 1. Start a local server in your project folder (data lives in ./.data)
+raisindb server start
 
-# 2. Create the target repository
+# 2. Authenticate (writes server + token to .raisinrc)
+raisindb login --server http://localhost:8080 --username admin --password '...'
+
+# 3. Create the target repository
 raisindb repo create myapp --exists-ok
 
-# 3. First install
+# 4. First install (creates the schema + seed content)
 raisindb deploy ./package --repo myapp --install
 
-# 4. Develop: push changes live as you edit
-raisindb sync ./package --repo myapp --watch
+# 5. Develop: watch + push every change (content AND schema) live as you edit
+raisindb sync ./package --repo myapp --watch --push
 ```
+
+On start, `--watch` does a **one-time full sync** (pushes the current local
+state once), then pushes **only changed files** as you edit. `--push` makes it
+one-way (local → server) and skips the server-event subscription, which is the
+right mode for a single-developer loop.
 
 `deploy --install` validates the package, builds the `.rap`, uploads it,
 starts the install job, and **waits for the final state**: it succeeds only
@@ -53,9 +66,19 @@ from it:
 | `content/{ws}/.../index.js` (also `.py`, `.star`) | The asset node's inline `code` property is updated — the function runtime picks it up on the next call |
 | `content/{ws}/.../{base}.{locale}.yaml` | Translations for `{base}` are applied via the translate command |
 | other binary files | Re-uploaded as the asset's `file` resource (multipart) |
-| `manifest.yaml`, `nodetypes/`, `workspaces/`, `mixins/`, `archetypes/` | **Not synced** — these are applied at install time. The watcher prints a re-deploy hint |
+| `nodetypes/`, `archetypes/`, `elementtypes/`, `mixins/` (`*.yaml`) | **Upserted to the management API live** — schema is package-authoritative, so a changed definition applies immediately (no re-deploy). `getResolved` reflects it right away. |
+| `manifest.yaml`, `workspaces/` | **Not synced** — applied at install time. The watcher prints a re-deploy hint |
 
-When a structural file changes, finish your edit and run:
+:::tip Schema is part of the live loop
+Schema directories live at the package root (a sibling of `content/`). Editing
+a node type, archetype, element type, or mixin pushes it straight to the
+management endpoints (`/api/management/{repo}/{branch}/{kind}`), which upsert —
+so re-saving a file applies the change instead of erroring. Only the manifest
+and workspace definitions still need a re-deploy.
+:::
+
+When the **manifest** or a **workspace** definition changes, finish your edit
+and run:
 
 ```bash
 raisindb deploy ./package --repo myapp --install
@@ -66,13 +89,11 @@ is not a TTY (CI, piped to a file), it prints plain log lines instead:
 
 ```
 [watch] watching /work/myapp/package
-[watch] target http://localhost:8081 repo=myapp branch=main
-[watch] 2026-06-10T11:40:01.123Z change: functions/lib/tools/list-shifts/index.js
-[watch] 2026-06-10T11:40:01.872Z pushed: functions/lib/tools/list-shifts/index.js
+[watch] target http://localhost:8080 repo=myapp branch=main
+Initial sync: 32 pushed, 0 failed — now watching for changes.
+[watch] 2026-06-10T11:40:01.123Z change: elementtypes/hero.yaml
+[watch] 2026-06-10T11:40:01.872Z pushed: elementtypes/hero.yaml
 ```
-
-Add `--push` to skip the server-event subscription and only push local
-changes (no WebSocket connection needed).
 
 ## Install status lifecycle
 
@@ -117,7 +138,8 @@ raisindb deploy ./package --repo myapp --install
 
 Exit codes: `0` — package reached status `installed`; `1` — validation,
 upload, or install failed (the install error detail is printed). A one-shot
-content push without a full reinstall is available as
+push of content **and** schema (node types / archetypes / element types /
+mixins) without a full reinstall is available as
 `raisindb sync ./package --repo myapp --push`.
 
 ## Next Steps

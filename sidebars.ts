@@ -306,6 +306,7 @@ const sidebars: SidebarsConfig = {
         'reference/javascript-client/overview',
         'reference/javascript-client/connection',
         'reference/javascript-client/node-operations',
+        'reference/javascript-client/schema-management',
         'reference/javascript-client/events',
         'reference/javascript-client/realtime-inbox',
         'reference/javascript-client/chat',

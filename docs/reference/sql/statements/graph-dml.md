@@ -177,12 +177,16 @@ everything else falls back to the base content.
 ### Syntax
 
 ```sql
-UPDATE <Type> FOR LOCALE '<locale>' [IN BRANCH '<branch>']
+UPDATE <workspace> FOR LOCALE '<locale>' [IN BRANCH '<branch>']
     SET <path> = <value> [, ...]
     WHERE <path = '...' | id = '...'> [AND node_type = '...']
 ```
 
-- `<Type>` is the node type / table name (resolved to its workspace).
+- **`<workspace>` is the workspace name — NOT a node type.** It is the same
+  table identifier you use in `SELECT … FROM <workspace>`; RaisinDB SQL tables
+  *are* workspaces. So `UPDATE Page …` means "translate in the workspace named
+  `Page`", not "translate nodes of type Page". To restrict by node type, add
+  `AND node_type = '...'` to the `WHERE` clause.
 - `FOR LOCALE` takes a locale code such as `'de'`, `'fr'`, `'en-US'`.
 - `IN BRANCH` is optional; without it the current branch is used.
 - A `WHERE` clause is **required** to identify the target node (by `path` or
@@ -209,6 +213,8 @@ walks by matching each `uuid` against array items, so nested fields round-trip
 without replacing the surrounding array.
 
 ### Examples
+
+In the examples below, `Page` is a **workspace name** (as in `SELECT … FROM Page`), not a node type.
 
 ```sql
 -- Translate top-level fields to Spanish

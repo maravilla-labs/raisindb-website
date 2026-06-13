@@ -71,6 +71,13 @@ UPDATE Page FOR LOCALE 'fr'
     WHERE path = '/content/homepage';
 ```
 
+:::note
+The token after `UPDATE` (`Page` here) is the **workspace name** — the same
+table identifier you use in `SELECT … FROM Page` — **not** a node type. RaisinDB
+SQL tables are workspaces. To narrow by node type, add `AND node_type = '...'` to
+the `WHERE` clause.
+:::
+
 See the [SQL TRANSLATE reference](/docs/reference/sql/statements/graph-dml#translate)
 for the full grammar (including `IN BRANCH`).
 

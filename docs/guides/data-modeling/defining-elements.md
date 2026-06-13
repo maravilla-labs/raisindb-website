@@ -453,17 +453,26 @@ sku:
   translatable: false
 ```
 
-When `translatable: true`, values are stored per locale:
+Translations are stored as a **per-locale overlay** on top of the base node, not
+inline on the field. The base node holds the source-language content; each locale
+adds an overlay of just the translated fields, and reads resolve them via a
+locale parameter (e.g. `?lang=fr`). Non-translatable fields like `sku` always
+fall back to the base.
 
-```json
-{
-  "title": {
-    "en": "Hello World",
-    "es": "Hola Mundo",
-    "fr": "Bonjour le monde"
-  }
-}
+For **repeatable** content (a `CompositeField` with `multiple: true`) that has
+translatable sub-fields, every item — at **every** nesting level — must carry a
+`uuid` so the overlay can address an individual item instead of replacing the
+whole array:
+
+```yaml
+features:                 # repeatable composite with a translatable sub-field
+  - uuid: feat-fast       # uuid required
+    icon: zap             # not translatable — preserved from base
+    title: Fast Development
 ```
+
+See the [Translations guide](./translations.md) for the full overlay model, the
+REST and SQL ways to write translations, and the rules for nested composites.
 
 ## Real-World Examples
 

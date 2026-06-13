@@ -170,27 +170,63 @@ RESTORE '/content/page1' AT REVISION 5;
 
 ## TRANSLATE
 
-Create or update translations for node content.
+Create or update translations for node content, per locale. Translations are
+stored as an overlay on the base node — only the fields you set are translated;
+everything else falls back to the base content.
 
 ### Syntax
 
 ```sql
-TRANSLATE node_path TO language
-    SET field = value [, ...]
+UPDATE <Type> FOR LOCALE '<locale>' [IN BRANCH '<branch>']
+    SET <path> = <value> [, ...]
+    WHERE <path = '...' | id = '...'> [AND node_type = '...']
 ```
+
+- `<Type>` is the node type / table name (resolved to its workspace).
+- `FOR LOCALE` takes a locale code such as `'de'`, `'fr'`, `'en-US'`.
+- `IN BRANCH` is optional; without it the current branch is used.
+- A `WHERE` clause is **required** to identify the target node (by `path` or
+  `id`).
+
+### Paths
+
+A `SET` target is a path into the node's content:
+
+| Path form | Targets |
+|-----------|---------|
+| `title` | a top-level field |
+| `metadata.author` | a nested object field |
+| `blocks[uuid='b1'].text` | a field on a repeatable item, addressed by `uuid` |
+| `sections[uuid='s1'].features[uuid='f1'].title` | a field nested inside two array levels |
+
+`array[uuid='…']` addressing works to **any depth** — a composite inside a
+multivalue element field, a composite inside a composite, and so on. Each array
+item along the path must carry a `uuid` (see the
+[Translations guide](/docs/guides/data-modeling/translations) for how to model
+translatable composites). The path
+flattens to a JSON pointer (`/sections/s1/features/f1/title`) that the resolver
+walks by matching each `uuid` against array items, so nested fields round-trip
+without replacing the surrounding array.
 
 ### Examples
 
 ```sql
--- Translate content to Spanish
-TRANSLATE '/content/homepage' TO 'es'
+-- Translate top-level fields to Spanish
+UPDATE Page FOR LOCALE 'es'
     SET title = 'Bienvenidos',
-        description = 'Pagina principal';
+        description = 'Pagina principal'
+    WHERE path = '/content/homepage';
 
--- Translate to French
-TRANSLATE '/products/widget' TO 'fr'
-    SET name = 'Widget',
-        description = 'Un excellent produit';
+-- Translate a field inside a repeatable composite item
+UPDATE Page FOR LOCALE 'fr'
+    SET blocks[uuid='hero-1'].heading = 'Bonjour'
+    WHERE path = '/content/homepage';
+
+-- Translate a field nested two array levels deep
+-- (a composite inside a multivalue element field)
+UPDATE Page FOR LOCALE 'de'
+    SET sections[uuid='s1'].features[uuid='f1'].title = 'Schnelle Entwicklung'
+    WHERE path = '/home';
 ```
 
 ---
@@ -232,13 +268,15 @@ INSERT INTO products (name, description)
 VALUES ('Premium Widget', 'High-quality widget for professionals');
 
 -- Add translations
-TRANSLATE '/products/premium-widget' TO 'es'
+UPDATE Product FOR LOCALE 'es'
     SET name = 'Widget Premium',
-        description = 'Widget de alta calidad para profesionales';
+        description = 'Widget de alta calidad para profesionales'
+    WHERE path = '/products/premium-widget';
 
-TRANSLATE '/products/premium-widget' TO 'de'
+UPDATE Product FOR LOCALE 'de'
     SET name = 'Premium Widget',
-        description = 'Hochwertiges Widget fuer Profis';
+        description = 'Hochwertiges Widget fuer Profis'
+    WHERE path = '/products/premium-widget';
 ```
 
 ### Version-Controlled Relationships

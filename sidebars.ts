@@ -149,6 +149,7 @@ const sidebars: SidebarsConfig = {
             'guides/data-modeling/using-mixins',
             'guides/data-modeling/using-archetypes',
             'guides/data-modeling/defining-elements',
+            'guides/data-modeling/translations',
             'guides/data-modeling/data-modeling-strategy',
           ],
         },

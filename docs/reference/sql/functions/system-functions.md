@@ -291,6 +291,108 @@ SELECT * FROM 'workspace' WHERE IS_A(properties, 'myapp:Article');
 
 ---
 
+## Lock & Inventory Functions
+
+Atomic [locks & inventory](../../../guides/coordination/locks-and-inventory.md) from
+SQL. These call the same backend as the function/HTTP/WS surfaces. They require the
+`[locks]` subsystem to be enabled and an **authenticated, non-anonymous** session
+(a held lock is a denial-of-service vector); the requested TTL is capped at 5
+minutes. Keys are scoped to the current tenant / repository / branch.
+
+### RAISIN_TRY_ACQUIRE
+
+Try once to acquire a lease-lock on an arbitrary `key`. Returns JSON with the
+result and a monotonically increasing **fence token**.
+
+```sql
+RAISIN_TRY_ACQUIRE(key, ttl_ms) → JSONB
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| key | TEXT | Arbitrary lock key, e.g. `'seat:AA123:14A'` |
+| ttl_ms | BIGINT | Lease duration in milliseconds (auto-expires; max 300000) |
+
+```sql
+SELECT RAISIN_TRY_ACQUIRE('seat:AA123:14A', 5000);
+-- {"acquired": true, "key": "seat:AA123:14A", "token": 42, "expires_at_ms": 1750000000000}
+-- or, if currently held by someone else:
+-- {"acquired": false}
+```
+
+### RAISIN_RELEASE
+
+Release a lock held with the given fence token. Returns `false` if the lock was
+already gone or held by someone else.
+
+```sql
+RAISIN_RELEASE(key, token) → BOOLEAN
+```
+
+```sql
+SELECT RAISIN_RELEASE('seat:AA123:14A', 42);
+```
+
+### RAISIN_RENEW
+
+Extend the lease on a held lock. Returns `false` if the lease was already lost.
+
+```sql
+RAISIN_RENEW(key, token, ttl_ms) → BOOLEAN
+```
+
+```sql
+SELECT RAISIN_RENEW('seat:AA123:14A', 42, 5000);
+```
+
+### RAISIN_CLAIM
+
+Atomically claim `n` units from an inventory `pool`, seeding it to `capacity` the
+first time it is touched. Never oversells.
+
+```sql
+RAISIN_CLAIM(pool, n, capacity) → JSONB
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| pool | TEXT | Inventory pool name, e.g. `'flight:AA123'` |
+| n | BIGINT | Units to claim |
+| capacity | BIGINT | Pool size (used only on first touch) |
+
+```sql
+SELECT RAISIN_CLAIM('flight:AA123', 1, 180);
+-- {"claimed": true, "remaining": 179}   (or {"claimed": false} when sold out)
+```
+
+### RAISIN_RELEASE_CLAIM
+
+Return `n` units to a pool. Returns the new remaining count.
+
+```sql
+RAISIN_RELEASE_CLAIM(pool, n) → BIGINT
+```
+
+```sql
+SELECT RAISIN_RELEASE_CLAIM('flight:AA123', 1);
+```
+
+### Fencing a write (the secure pattern)
+
+The fence token lets a guarded write reject a stale holder. Record the token on
+the protected row and only update when your token is newer — a standard
+compare-and-swap `UPDATE` whose affected-row count tells you if you won:
+
+```sql
+-- 1) acquire → token (say 42)
+-- 2) guarded write: succeeds only if no newer holder has written
+UPDATE 'flights' SET properties = $1::jsonb
+  WHERE path = '/AA123/14A' AND properties->>'fence'::String < '42';
+-- 0 rows affected ⇒ a newer holder won; back off.
+```
+
+---
+
 ## Notes
 
 - Standard system functions follow PostgreSQL conventions

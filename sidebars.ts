@@ -180,6 +180,15 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
+          label: 'MCP Servers',
+          items: [
+            'guides/mcp/overview',
+            'guides/mcp/defining-servers',
+            'guides/mcp/authentication',
+          ],
+        },
+        {
+          type: 'category',
           label: 'Authentication',
           items: [
             'guides/auth/authentication-setup',
@@ -202,6 +211,13 @@ const sidebars: SidebarsConfig = {
             'guides/functions/creating-functions',
             'guides/functions/triggers',
             'guides/functions/execution-logs',
+          ],
+        },
+        {
+          type: 'category',
+          label: 'Coordination',
+          items: [
+            'guides/coordination/locks-and-inventory',
           ],
         },
         {
@@ -298,6 +314,8 @@ const sidebars: SidebarsConfig = {
         'reference/http-api/branches-api',
         'reference/http-api/functions-api',
         'reference/http-api/query-api',
+        'reference/http-api/locks-api',
+        'reference/http-api/mcp-api',
       ],
     },
     {
@@ -308,6 +326,7 @@ const sidebars: SidebarsConfig = {
         'reference/javascript-client/connection',
         'reference/javascript-client/node-operations',
         'reference/javascript-client/schema-management',
+        'reference/javascript-client/branches',
         'reference/javascript-client/events',
         'reference/javascript-client/realtime-inbox',
         'reference/javascript-client/chat',

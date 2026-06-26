@@ -38,16 +38,23 @@ async function handler(input) {
   // Get children of a path
   const children = await raisin.nodes.getChildren("default", "/articles");
 
-  // Create a new node
-  await raisin.nodes.create("default", {
+  // Create a new node under a parent path: create(workspace, parentPath, data)
+  await raisin.nodes.create("default", "/research/findings", {
     name: "new-finding",
-    path: "/research/findings",
     node_type: "research:Finding",
     properties: {
       title: input.title,
       summary: input.summary,
       confidence: 0.85
     }
+  });
+
+  // Create a node and auto-create any missing ancestor folders.
+  // Ancestors default to `raisin:Folder` (pass a 4th arg to override).
+  await raisin.nodes.createDeep("default", "/research/2026/q2", {
+    name: "new-finding",
+    node_type: "research:Finding",
+    properties: { title: input.title }
   });
 
   // Update a node's properties

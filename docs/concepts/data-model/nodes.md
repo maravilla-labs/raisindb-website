@@ -194,9 +194,15 @@ Every node has system-managed metadata:
 | `properties` | JSONB | Content properties validated by NodeType |
 | `created_at` | timestamp | When the node was created |
 | `updated_at` | timestamp | Last modification time |
+| `created_by` | string | User id that created the node |
+| `updated_by` | string | User id of the last modification |
 | `__revision` | HLC | Current revision timestamp |
 | `__branch` | string | Current branch name |
 | `__workspace` | string | Workspace name |
+
+`created_by` / `updated_by` are stamped automatically from the authenticated actor
+on every write (create stamps both; updates refresh `updated_by` while preserving the
+original `created_by`/`created_at`). Unauthenticated/embedded writes record `anonymous`.
 
 ### Querying Metadata
 
@@ -239,18 +245,31 @@ ORDER BY __revision DESC;
 
 ### Auditable
 
-When `auditable: true`, all changes are logged for compliance:
+When `auditable: true`, every change to nodes of this type is logged to the audit
+log (who / what action / when). This is **opt-in** and separate from the always-on
+[revision history](#working-with-revisions) — non-auditable types still have full
+MVCC history, they just don't produce audit-log entries.
 
-```sql
-"metadata": {
-  "auditable": true
-}
-
--- Query audit log
-SELECT __revision, __timestamp, __user, __operation
-FROM default.__audit__
-WHERE path = '/content/blog/sensitive-data';
+```yaml
+auditable: true
 ```
+
+Audit logs are not a SQL surface; query them via the client or REST API:
+
+```typescript
+// JavaScript client — audit log for a node
+const entries = await ws.nodes().auditLog(nodeId);
+// → [{ action: "Update", user_id: "alice", timestamp: "…", … }, …]
+```
+
+```bash
+# REST — by id or by path
+GET /api/audit/{repo}/{branch}/{workspace}/by-id/{id}
+GET /api/audit/{repo}/{branch}/{workspace}/{node_path}
+```
+
+Over WebSocket, use the `audit_query` request (`{ node_id | path }`). All audit
+reads are authorized through row-level security.
 
 ### Indexable
 
@@ -320,6 +339,19 @@ WHERE path = '/content/blog/my-post';
 -- Reset to latest
 SET __revision = DEFAULT;
 ```
+
+To **list** a single node's revisions (git-style file history) with per-revision
+authorship — instead of time-travelling one revision at a time — use the client's
+`history()` method, which returns each `{ revision, updated_at, updated_by, deleted }`
+newest-first:
+
+```typescript
+const revisions = await ws.nodes().history(nodeId, { limit: 50 });
+const old = await ws.atRevision(revisions[1].revision).nodes().get(nodeId);
+```
+
+This is always available (it's the structural MVCC history) and does not require
+`auditable`. See [Node Operations → History & Audit](/docs/reference/javascript-client/node-operations#history--audit).
 
 Learn more: [Revisions](/docs/concepts/versioning/revisions)
 

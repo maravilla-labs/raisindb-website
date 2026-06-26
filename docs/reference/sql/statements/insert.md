@@ -57,6 +57,41 @@ VALUES
     ('/content/tags/reference', 'Tag', '{"name": "reference", "color": "red"}');
 ```
 
+## Targeting a Branch
+
+By default an INSERT writes to the current/connection branch. To insert into a
+**different** branch in a single statement, add a `__branch` pseudo-column to the
+column list — the analog of the `WHERE __branch = '…'` override that
+[SELECT](./select.md), UPDATE, and DELETE already support.
+
+```sql
+-- Write this node to the `staging` branch, regardless of the current branch
+INSERT INTO default (__branch, path, node_type, properties)
+VALUES ('staging', '/content/blog/draft', 'Article', '{"title": "Draft"}');
+```
+
+This is what lets a server-side function read one branch and write another in a
+single execution — for example, copy a node from `main` into another branch:
+
+```sql
+-- inside a function: read main, then insert into another branch
+SELECT * FROM default WHERE __branch = 'main' AND path = '/content/blog/post';
+INSERT INTO default (__branch, path, node_type, properties)
+VALUES ('staging', '/content/blog/post', 'Article', '{ ... }');
+```
+
+Rules:
+
+- `__branch` must be a **string literal** and the **same value for every row** in
+  the statement.
+- It requires an **explicit column list** (the all-columns shorthand has nowhere
+  to place it) and is removed before the row is stored — it is not a property.
+- The override applies in auto-commit mode. Inside an explicit `BEGIN … COMMIT`
+  the branch is fixed at `BEGIN`; use [`USE BRANCH`](./branch.md) instead there.
+
+See the [branches reference](../../javascript-client/branches.md) for the
+client-side `onBranch` equivalent.
+
 ## NULL Values
 
 Properties that aren't specified in the JSON are simply absent:

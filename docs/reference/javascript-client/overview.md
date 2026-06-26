@@ -38,6 +38,7 @@ tenant with `ws://host/sys/{tenant}/{repository}` (or by passing the
 
 - [Connection & Authentication](./connection.md) — Connect, authenticate, manage sessions
 - [Node Operations](./node-operations.md) — CRUD, tree operations, relationships
+- [Branches](./branches.md) — Fork, compare, and merge branches; `onBranch()` scoping
 - [Events](./events.md) — Real-time subscriptions
 - [Realtime Subscriptions & Inbox](./realtime-inbox.md) — Path filter semantics, inbox-bell pattern
 - [Chat & Conversations](./chat.md) — ConversationManager, ConversationStore, streaming, plans

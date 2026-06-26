@@ -426,6 +426,33 @@ WHERE PATH_STARTS_WITH(path, '/content/blog/old');
 
 **Warning**: Moving nodes with children requires careful handling to maintain referential integrity.
 
+## Child Ordering
+
+Sibling nodes under the same parent have an **explicit order** — not just
+alphabetical-by-path. This is what lets you arrange pages in a menu, sections on
+a page, or cards in a column exactly the way you want, regardless of their names.
+
+- **Stable and gap-friendly.** Each child gets an order key (a fractional index),
+  so a node can be inserted between any two siblings without renumbering the
+  rest. `listChildren()` and tree traversals return children in this order.
+- **Per-branch and versioned.** Order is stored per branch and tracked in history
+  like any other change — reordering on one branch does not affect another.
+- **Carried by merge.** When you [merge a branch](/docs/guides/branching/merging-changes),
+  the child order from the source branch travels with the merge.
+
+Reorder children with the JavaScript client (`reorder`, `moveChildBefore`,
+`moveChildAfter`), the HTTP API, or by dragging in the Admin Console — see
+[Node Operations → Ordering](/docs/reference/javascript-client/node-operations#ordering).
+
+:::tip Publishing order across branches
+If you promote content by **copying selected nodes** between branches (rather
+than a full branch merge — for example a `main` → `publish` publishing flow),
+copying a node carries its content but **not** its sibling order. Replay the
+order onto the target branch with
+[`applyChildOrder()`](/docs/reference/javascript-client/node-operations#applychildorder).
+A full branch merge already carries order, so it does not need this step.
+:::
+
 ## Path Indexing
 
 Create indexes for efficient hierarchical queries:

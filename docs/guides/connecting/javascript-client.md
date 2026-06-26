@@ -273,6 +273,11 @@ await ws.nodes().moveChildAfter(
 );
 ```
 
+Child order is per-branch and is carried automatically when a branch is merged.
+When promoting content by copying nodes between branches instead of merging, use
+`applyChildOrder(parentPath, sourceBranch)` to replay the order onto the target
+branch. See [Node Operations → Ordering](../../reference/javascript-client/node-operations.md#ordering).
+
 ## Relationships
 
 ### Add Relationships

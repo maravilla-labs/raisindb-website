@@ -370,9 +370,15 @@ auditable: true
 ```
 
 When enabled:
-- All changes logged to audit table
-- Includes user, timestamp, operation
+- Every change is written to the **audit log** (user, action, timestamp)
 - For compliance and security requirements
+
+This is **opt-in** and independent of revision history: every node always has full
+structural MVCC [revision history](/docs/concepts/data-model/nodes#working-with-revisions)
+regardless of `auditable` — the flag only controls whether audit-log entries are
+produced. Query the audit log with the client `nodes().auditLog(id)` method, the
+REST endpoint `GET /api/audit/{repo}/{branch}/{ws}/by-id/{id}`, or the WebSocket
+`audit_query` request.
 
 ## Hierarchical Constraints
 

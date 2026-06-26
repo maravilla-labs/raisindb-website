@@ -80,7 +80,10 @@ Manage Git-like branches and tags:
 
 - Create/delete branches
 - Compare branches
-- Merge with conflict resolution
+- Merge with conflict resolution. The merge dialog previews the per-node changes
+  a merge will bring across, grouped as **Added**, **Modified**, **Reordered**,
+  and **Deleted** — so [reordered siblings](/docs/concepts/data-model/paths-and-hierarchy#child-ordering)
+  are visible before you merge.
 - View commit history
 
 ### Functions

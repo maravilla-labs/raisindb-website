@@ -4,9 +4,24 @@ sidebar_position: 1
 
 # Working with Branches
 
-Branches let you work on changes in isolation before merging to main.
+Branches let you work on changes in isolation before merging to main. A branch
+forked with `fromBranch` is a **full copy** of the source — its nodes, indexes,
+and schema (archetypes, element types, node types) — so you can write archetyped
+content to it immediately.
 
 ## Create a Branch
+
+### JavaScript Client
+
+```typescript
+// Fork a branch from main's HEAD (copies schema + content)
+await db.branches().create('feature-xyz', { fromBranch: 'main' });
+```
+
+See the [Branches SDK reference](../../reference/javascript-client/branches.md)
+for the full API.
+
+### HTTP API
 
 ```bash
 curl -X POST \
@@ -59,6 +74,19 @@ curl -X DELETE \
   -H "Authorization: Bearer TOKEN"
 ```
 
+## Deploy a Package to a Branch
+
+The CLI can upload and install a package onto any branch with `--branch`:
+
+```bash
+# Deploy schema + content to a `staging` branch (not main)
+raisindb deploy ./package --repo myapp --branch staging --install
+```
+
+`deploy`, `sync`, and `install` all accept `-b, --branch <name>` (default
+`main`). See the [CLI commands reference](../../reference/cli/commands.md#package-deploy).
+
 ## Next Steps
 
 - [Merging Changes](./merging-changes.md)
+- [Branches SDK reference](../../reference/javascript-client/branches.md)

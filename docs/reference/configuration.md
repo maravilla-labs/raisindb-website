@@ -96,6 +96,33 @@ hnsw_ef_search = 50          # Candidate list size during search
 quantization = "f32"
 ```
 
+## Locks
+
+Enables the atomic [locks & inventory](../guides/coordination/locks-and-inventory.md) subsystem. Off by default.
+
+```toml
+[locks]
+enabled = true
+backend = "inprocess"   # "inprocess" = single server; "redis" = cluster
+reaper_interval_secs = 30
+
+[locks.redis]           # only used when backend = "redis"
+url = "redis://127.0.0.1:6379/0"
+namespace = "raisin:locks"
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `false` | Master switch for locks and inventory. |
+| `backend` | `"inprocess"` | `"inprocess"` (single node) or `"redis"` (cluster). |
+| `reaper_interval_secs` | `30` | Expired-lock sweep interval (in-process backend). |
+| `redis.url` | `redis://127.0.0.1:6379/0` | Redis connection URL. |
+| `redis.namespace` | `raisin:locks` | Key prefix on the Redis instance. |
+
+:::warning
+The `inprocess` backend does **not** coordinate across servers. In a multi-node cluster use `backend = "redis"`, or locks/inventory will oversell. The `redis` backend requires a server built with the `locks-redis` feature.
+:::
+
 ## Environment Variables
 
 Override config with environment variables:

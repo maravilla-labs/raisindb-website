@@ -59,10 +59,12 @@ Functions have access to the sandboxed `raisin` API:
 
 | API | Operations |
 |-----|------------|
-| `raisin.nodes` | `get`, `getById`, `getChildren`, `create`, `update`, `delete`, `query` |
+| `raisin.nodes` | `get`, `getById`, `getChildren`, `create`, `createDeep`, `upsertDeep`, `update`, `delete`, `query` |
 | `raisin.sql` | `query`, `execute` |
 | `raisin.http` | `get`, `post`, `put`, `delete` (allowlisted endpoints) |
 | `raisin.events` | `emit` (publish events) |
+| `raisin.locks` | `acquire`, `release`, `renew` (atomic [lease-locks](../coordination/locks-and-inventory.md)) |
+| `raisin.inventory` | `claim`, `release` (counting reservations) |
 
 ```javascript
 async function handler(input) {

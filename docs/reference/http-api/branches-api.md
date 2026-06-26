@@ -60,3 +60,33 @@ Request:
 ```bash
 GET /api/management/repositories/{tenant}/{repo}/branches/{branch}/compare/{base}
 ```
+
+Returns the divergence counts (`ahead`, `behind`) and the common ancestor.
+
+## Diff Branches
+
+Per-node changes of a branch relative to a base branch — which nodes were added,
+modified, reordered, or deleted since the branches diverged. Cost scales with the
+size of the change, not the repository.
+
+```bash
+GET /api/management/repositories/{tenant}/{repo}/branches/{branch}/diff/{base}
+```
+
+Response:
+
+```json
+{
+  "common_ancestor": "...",
+  "added":    [{ "node_id": "...", "workspace": "content", "path": "/menu/new", "operation": "added" }],
+  "modified": [
+    { "node_id": "...", "workspace": "content", "path": "/menu/home",  "operation": "modified" },
+    { "node_id": "...", "workspace": "content", "path": "/menu/about", "operation": "reordered" }
+  ],
+  "deleted":  [{ "node_id": "...", "workspace": "content", "path": "/menu/old", "operation": "deleted" }]
+}
+```
+
+`operation` is one of `added`, `modified`, `reordered`, or `deleted`. Reordered
+entries are returned in the `modified` array. Requires the RocksDB storage
+backend.

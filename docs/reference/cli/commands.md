@@ -181,12 +181,16 @@ Validate, build, and upload a package in one step. Reads `manifest.yaml` for the
 raisindb package deploy ./package
 raisindb package deploy ./package --repo demo
 raisindb deploy ./package --repo demo --install
+
+# Deploy (and install) to a non-default branch
+raisindb deploy ./package --repo demo --branch staging --install
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-s, --server <url>` | Server URL |
 | `-r, --repo <name>` | Repository name |
+| `-b, --branch <name>` | Target branch (default: `main`). Uploads — and, with `--install`, installs — onto this branch. |
 | `-i, --install` | Install after upload; waits until the package status is `installed` (fails on `failed` with the error detail) |
 
 ### package upload
@@ -222,12 +226,14 @@ Install a package by name. Starts the install job and polls until the package re
 
 ```bash
 raisindb package install my-package --repo demo
+raisindb package install my-package --repo demo --branch staging
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-s, --server <url>` | Server URL |
 | `-r, --repo <name>` | Repository name |
+| `-b, --branch <name>` | Branch the package lives on / installs into (default: `main`) |
 
 ### package sync
 
@@ -249,6 +255,7 @@ raisindb sync ./package --repo demo --watch
 | `-n, --dry-run` | Show changes without applying |
 | `-r, --repo <name>` | Repository name |
 | `-s, --server <url>` | Server URL |
+| `-b, --branch <name>` | Branch to sync against (default: `main`) |
 | `--init` | Initialize sync configuration |
 
 ### package clone

@@ -64,15 +64,17 @@ Every call runs under the **caller's** [row-level security](../auth/row-level-se
 
 ## Custom function tools
 
-A custom tool runs an existing [`raisin:Function`](../functions/creating-functions.md) **as the calling identity** (no privilege escalation). A failed function surfaces as a tool error (`isError: true`), not a transport error. There are two equivalent ways to declare one.
+A custom tool runs an existing [`raisin:Function`](../functions/creating-functions.md) **as the calling identity** (no privilege escalation). A failed function surfaces as a tool error (`isError: true`), not a transport error.
 
-### Server-side: the `tools` list
+:::tip Schemas are inherited
+A `raisin:Function` already declares `input_schema` and `output_schema`. A custom tool **reuses them** — you don't repeat the schema. An omitted `name`, `description`, `inputSchema`, or `outputSchema` is filled from the function, in *both* declaration forms below. The function's `output_schema` is advertised as the tool's `outputSchema`, and a result is returned as `structuredContent`.
+:::
 
-List the tool on the server node (shown above). The server owns the mapping from tool name to function.
+There are two equivalent ways to declare a custom tool.
 
 ### Function-side: an `mcp` block
 
-Add an `mcp` block to the `raisin:Function` node so the function *is* a tool wherever a server's data policy covers its workspace:
+Add an `mcp` block to the `raisin:Function` node — a bare `enabled: true` is enough; everything else is inherited from the function:
 
 ```yaml
 node_type: raisin:Function
@@ -81,18 +83,23 @@ properties:
   entry_file: index.js:recommend
   language: javascript
   enabled: true
-  mcp:                                  # promote this function to an MCP tool
+  input_schema:                         # the function's own schema…
+    type: object
+    properties: { customer_id: { type: string } }
+    required: [customer_id]
+  output_schema:
+    type: object
+    properties: { items: { type: array } }
+  mcp:                                  # …promoted to a tool, inheriting the above
     enabled: true
-    name: recommend                     # defaults to the function name
-    description: Recommend products for a customer.
-    inputSchema:
-      type: object
-      properties: { customer_id: { type: string } }
-      required: [customer_id]
-    scopes: [catalog:read]
+    scopes: [catalog:read]             # add name/description/inputSchema only to override
 ```
 
-The function receives the tool arguments as its input and returns the tool result. When a server-side `tools` entry and a function-side `mcp` block declare the same name, the server-side entry wins.
+The function is exposed on every server (the `functions` workspace is always scanned). It receives the tool arguments as its input and returns the tool result.
+
+### Server-side: the `tools` list
+
+List the tool on the server node's `tools:` (shown in the node example above). The server owns the mapping; `inputSchema`/`outputSchema`/`description` are inherited from the referenced function when omitted — so a minimal entry is just `{ function, name, scopes }`. When a server-side `tools` entry and a function-side `mcp` block declare the same name, the server-side entry wins.
 
 ## Resources
 

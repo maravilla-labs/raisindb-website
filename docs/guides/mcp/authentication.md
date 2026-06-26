@@ -84,10 +84,20 @@ curl -s http://localhost:8080/mcp/myapp/main/private \
 
 ## Self-hosting behind a proxy
 
-The OAuth issuer and token audiences are derived from configuration, not request headers. When RaisinDB runs behind a reverse proxy or on a fixed public origin, set:
+The OAuth issuer and token audiences are derived per request from the host RaisinDB is reached on, so a multi-tenant deployment serving each org on its own host advertises the right issuer automatically. To stop a spoofed host from minting a token with an attacker-chosen audience, the derived host is validated against an allowlist.
+
+**Single fixed origin** — set an absolute override (skips host derivation entirely):
 
 ```bash
 RAISINDB_BASE_URL=https://db.example.com
 ```
 
-so discovery URLs and token audiences stay canonical regardless of inbound headers. Only set `RAISINDB_TRUST_FORWARDED_HEADERS=1` when a trusted proxy sets `X-Forwarded-*` (they are ignored by default, since they are client-spoofable on a directly reachable server).
+**Multi-host / wildcard subdomains** — instead of a single base URL, allowlist trusted host **suffixes** (comma-separated). A suffix matches its apex and any subdomain (`db.example.com` matches `db.example.com` and `acme.db.example.com`, but not `evil-db.example.com`):
+
+```bash
+RAISINDB_TRUSTED_HOST_SUFFIXES=.db.example.com
+```
+
+A tenant's **custom domains** are allowlisted per tenant via the `trusted_oauth_hosts` field on its auth config (exact host match), in addition to the global suffixes.
+
+Only set `RAISINDB_TRUST_FORWARDED_HEADERS=1` when a trusted proxy sets `X-Forwarded-*` (they are ignored by default, since they are client-spoofable on a directly reachable server). When no allowlist is configured at all, the issuer falls back to the request host unvalidated (single-origin convenience) and a warning is logged.

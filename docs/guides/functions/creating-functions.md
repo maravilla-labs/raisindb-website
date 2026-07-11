@@ -62,6 +62,7 @@ Functions have access to the sandboxed `raisin` API:
 | `raisin.nodes` | `get`, `getById`, `getChildren`, `create`, `createDeep`, `upsertDeep`, `update`, `delete`, `query` |
 | `raisin.sql` | `query`, `execute` |
 | `raisin.http` | `get`, `post`, `put`, `delete` (allowlisted endpoints) |
+| `raisin.imap` | `fetchSince`, `listMailboxes`, `fetchMessage`, `search` (native IMAP protocol; host allowlisted like `raisin.http`) |
 | `raisin.events` | `emit` (publish events) |
 | `raisin.locks` | `acquire`, `release`, `renew` (atomic [lease-locks](../coordination/locks-and-inventory.md)) |
 | `raisin.inventory` | `claim`, `release` (counting reservations) |

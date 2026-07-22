@@ -101,6 +101,21 @@ The function is exposed on every server (the `functions` workspace is always sca
 
 List the tool on the server node's `tools:` (shown in the node example above). The server owns the mapping; `inputSchema`/`outputSchema`/`description` are inherited from the referenced function when omitted — so a minimal entry is just `{ function, name, scopes }`. When a server-side `tools` entry and a function-side `mcp` block declare the same name, the server-side entry wins.
 
+### Interactive-widget tools
+
+Add a `ui: { mode, entry }` field to a tool to have its result render as an inline HTML mini-app in an MCP-UI-capable host:
+
+```yaml
+tools:
+  - function: order_card
+    name: order_card
+    ui:
+      mode: uri-list                       # or "html"
+      entry: site/widgets/order/index.html # workspace-relative path (optionally with #fragment)
+```
+
+See [Interactive Widgets (MCP-UI)](./interactive-widgets.md) for the full workflow, the `html` vs `uri-list` tradeoff, and the button-click action pattern.
+
 ## Resources
 
 Set `data.resources: true` to expose each node as a `raisin://{workspace}/{path}` MCP resource. Clients can:

@@ -14,7 +14,8 @@ You declare **what** a server exposes; RaisinDB does the rest:
 
 - **Auto data tools** — generated from your NodeTypes (query, get, search, create, update, delete nodes). No code.
 - **Custom tools** — your own [functions](../functions/creating-functions.md) exposed as tools.
-- **Resources** — your nodes as readable, subscribable MCP resources.
+- **Resources** — your nodes as readable, subscribable MCP resources (including raw binary assets).
+- **Interactive widgets** — a tool can return an inline HTML mini-app the host renders, and call your tools back on a click. See [Interactive Widgets](./interactive-widgets.md).
 
 A repository can hold **many** servers, each with its own identity, policy, and access rules.
 
@@ -90,3 +91,4 @@ A brand-new `raisin:McpServer` is discovered through an indexed query that settl
 
 - [Defining MCP servers](./defining-servers.md) — the full node shape, auto data tools, and custom function tools.
 - [Authentication & clients](./authentication.md) — public vs. scoped servers, the OAuth 2.1 flow, and connecting a client.
+- [Interactive Widgets (MCP-UI)](./interactive-widgets.md) — return an inline HTML widget from a tool and wire button-click actions.

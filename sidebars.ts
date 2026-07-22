@@ -186,6 +186,7 @@ const sidebars: SidebarsConfig = {
             'guides/mcp/overview',
             'guides/mcp/defining-servers',
             'guides/mcp/authentication',
+            'guides/mcp/interactive-widgets',
           ],
         },
         {
@@ -330,6 +331,7 @@ const sidebars: SidebarsConfig = {
         'reference/http-api/query-api',
         'reference/http-api/locks-api',
         'reference/http-api/mcp-api',
+        'reference/http-api/resource-serving-api',
       ],
     },
     {

@@ -49,7 +49,7 @@ Response:
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 ```
 
-Returns only the tools the caller's scopes permit. Each entry: `{ "name", "description", "inputSchema" }`.
+Returns only the tools the caller's scopes permit. Each entry: `{ "name", "description", "inputSchema" }`. A tool bound to an [interactive widget](../../guides/mcp/interactive-widgets.md) also advertises its `outputSchema` (inherited from the function) and carries a `ui` binding — see [Interactive-widget tools](#interactive-widget-tools) below.
 
 ### tools/call
 
@@ -63,6 +63,17 @@ Response (`isError: true` marks a function/tool-level failure, distinct from a J
 {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"json","json":{ "...": "..." }}],"isError":false}}
 ```
 
+### Interactive-widget tools
+
+A tool may declare a `ui` binding (`{ mode, entry }`) so its result renders as an inline HTML mini-app in an MCP-UI-capable host. The tool still returns its `data` as `structuredContent`; the `ui` binding tells the host how to render it. See the [Interactive Widgets guide](../../guides/mcp/interactive-widgets.md) for the full workflow.
+
+| `mode` | Delivery |
+|--------|----------|
+| `html` | The engine reads the widget HTML bytes and returns them as a `text/html` resource; the host renders via `srcdoc`. When `entry` carries a `#fragment`, the engine injects `window.__RAISIN_INITIAL_ROUTE__` into the returned HTML. |
+| `uri-list` | The result is a `text/uri-list` pointing at the [resource-serving endpoint](./resource-serving-api.md) URL for `entry`; the host iframes it with a real `src=`. The `#fragment` rides along on the URL. |
+
+`entry` is a workspace-relative path to the widget's HTML, split on the first `#` into a path and an optional SPA-route fragment. `mode: uri-list` is the only path where [`raisin:StaticSiteFolder.serving_config`](./resource-serving-api.md#serving_config) headers apply.
+
 ### resources/list · resources/read · resources/subscribe
 
 Available when the server's `data.resources` is `true`. Resources are addressed as `raisin://{workspace}/{path}`.
@@ -70,6 +81,14 @@ Available when the server's `data.resources` is `true`. Resources are addressed 
 ```json
 {"jsonrpc":"2.0","id":4,"method":"resources/read","params":{"uri":"raisin://products/widgets/acme"}}
 ```
+
+A resource is returned as one or more `contents` entries. A node's properties come back as a `text` block (JSON-stringified); a binary asset (image, PDF, HTML) comes back byte-for-byte as a base64 `blob`:
+
+```json
+{"jsonrpc":"2.0","id":4,"result":{"contents":[{"uri":"raisin://products/widgets/acme","mimeType":"image/png","blob":"iVBORw0KGgo…"}]}}
+```
+
+Each entry carries `uri`, `mimeType`, and exactly one of `text` (UTF-8 payloads) or `blob` (base64-encoded raw bytes). This makes any uploaded asset readable over `resources/read`, and underpins `mode: html` widget delivery.
 
 `resources/subscribe` upgrades to SSE and streams `notifications/resources/updated` frames as nodes change.
 

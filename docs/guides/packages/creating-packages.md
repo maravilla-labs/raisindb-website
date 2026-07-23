@@ -134,7 +134,7 @@ sync:
 | `dependencies` | List | No | Packages this package depends on. |
 | `provides` | Object | No | Declares what the package contributes. |
 | `workspace_patches` | Object | No | Workspace modifications applied during install. |
-| `sync` | Object | No | Bidirectional sync configuration. |
+| `sync` | Object | No | Bidirectional local↔server sync configuration (remote connection + conflict strategy), consumed by the export/local-dev tooling. **Not** the per-path install-reconciliation policy — that's a separate file, [`.raisin-sync.yaml`](#reconciling-updates-raisin-syncyaml), described below. |
 
 ## Adding Mixins
 
@@ -229,6 +229,87 @@ When a package is **reinstalled**, an existing workspace is never overwritten �
 The merge is **skipped when the workspace already allows everything** — an empty `allowed_node_types` (which means "allow all") or one containing `"*"`. In that case the new type is already permitted, and merging would silently narrow the workspace. A literal `"*"` is never merged in.
 
 Use `workspace_patches` when you need to extend a workspace your package does **not** define itself — for example, adding your node types to another package's workspace, or a shared workspace by name.
+
+## Reconciling Updates: .raisin-sync.yaml
+
+Install and reinstall default to **skip mode**: content nodes that already
+exist are left untouched, so a redeploy never clobbers a user's edits. That's
+the right default for user-owned content — but it also means anything your
+package treats as **platform code**, not user content (server-side functions,
+a config node, seed data that should stay in lockstep with the package), never
+refreshes on an existing install unless the operator deliberately reinstalls
+with a different [install mode](./installing-packages.md#install-modes) or you
+push it by hand with `raisindb sync --push --force`.
+
+For a package that ships updates to users who run their own installs — an
+update channel, a tenant re-provision, `maravilla update` — you can't rely on
+someone hand-running a force push every time. Declare the reconciliation
+policy in the package itself instead: drop a **`.raisin-sync.yaml`** file at
+the package root, next to `manifest.yaml`.
+
+```yaml
+# .raisin-sync.yaml  (package root, beside manifest.yaml — NOT a field inside it)
+defaults:
+  mode: skip               # preserve user content by default — never clobber
+filters:
+  - root: /functions        # platform code the user never hand-edits
+    mode: replace            # always overwrite on update, so fixes/new fns land
+```
+
+It rides along inside the built `.rap` automatically — the packager includes
+any file not excluded by `.gitignore`/`.rapignore`, so **don't gitignore this
+file** (see the naming collision note below).
+
+### How it's resolved
+
+For every content path the install touches, the server's install job:
+
+1. If the operator explicitly chose **`overwrite`** mode, `.raisin-sync.yaml`
+   is ignored entirely and that path is overwritten — the clean-reset escape
+   hatch always wins.
+2. Otherwise, it finds the **last** matching entry in `filters` by path prefix
+   (the prefix is `/{workspace}{node_path}`, e.g. `/functions/lib/notify`) and
+   uses its `mode`. No filter matches → `defaults.mode` applies.
+3. `mode: skip` never touches an existing node at that path (create only if
+   missing). `mode: replace` always overwrites it, regardless of the
+   operator's chosen install mode. `merge` and `update` also parse but aren't
+   specially handled today — they fall through to whichever install mode the
+   operator chose, so use `skip`/`replace` when you need an actual guarantee.
+
+Keep `defaults` conservative (`skip`) and carve out only the paths you
+consider platform-owned as `replace` — typically `/functions`, and any
+configuration content your package manages exclusively.
+
+### See it before you ship it
+
+The [dry-run preview](./installing-packages.md#preview-an-install-dry-run)
+annotates every affected path with *why* it will be created, updated, or
+skipped whenever `.raisin-sync.yaml` (not the chosen install mode) decided the
+outcome. A package that ships one also shows a "Custom Sync Policy" badge on
+its list/detail page in the admin console — hover it for the default mode and
+every filter — so you can confirm the policy landed without doing a real
+install.
+
+### Don't confuse it with the other `.raisin-sync.yaml`
+
+The `raisindb sync` CLI command also reads a file named `.raisin-sync.yaml` —
+but from your **local checkout**, not the package root inside a `.rap`. That
+one is connection config (server URL, repo, branch, ignore patterns) for the
+local↔server live-push workflow described in
+[Sync and Watch](./sync-and-watch.md), and the CLI always excludes it from
+what it pushes/packages. Same filename, same package-root location, entirely
+different purpose from the install-reconciliation file above — and if your
+project's `.gitignore` excludes the local connection-config version (common,
+since it can carry a server URL), double-check it isn't also swallowing the
+install-policy one. Verify what actually got packaged with:
+
+```bash
+unzip -l my-package-1.0.0.rap | grep raisin-sync
+```
+
+It's also unrelated to the manifest's own `sync:` field (in the field
+reference above) — that one configures the same bidirectional local↔server
+sync tooling, embedded in `manifest.yaml` instead of a local file.
 
 ## Dependencies
 

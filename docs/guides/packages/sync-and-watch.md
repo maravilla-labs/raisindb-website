@@ -54,6 +54,16 @@ from the flag and the server/token from `raisindb login` (or environment
 variables, see CI below). If a `.raisin-sync.yaml` exists in the package
 directory it is used; run `raisindb sync --init` to create one.
 
+:::note Two different `.raisin-sync.yaml` files
+This is your **local, gitignore-worthy connection config** (server URL, repo,
+branch) for the CLI's local↔server push — always excluded from what gets
+pushed or packaged. There's a *separate*, same-named file the server's install
+job reads **from inside a built `.rap`** to reconcile content updates on
+install — see [Reconciling Updates](./creating-packages.md#reconciling-updates-raisin-syncyaml)
+in Creating Packages. Same filename, same package-root location, different
+purpose — don't let one shadow the other in your `.gitignore`.
+:::
+
 ## What watch mode syncs
 
 Watch mode maps each changed file to the node the package installer created

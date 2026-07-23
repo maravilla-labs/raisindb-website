@@ -242,10 +242,10 @@ with a different [install mode](./installing-packages.md#install-modes) or you
 push it by hand with `raisindb sync --push --force`.
 
 For a package that ships updates to users who run their own installs — an
-update channel, a tenant re-provision, `maravilla update` — you can't rely on
-someone hand-running a force push every time. Declare the reconciliation
-policy in the package itself instead: drop a **`.raisin-sync.yaml`** file at
-the package root, next to `manifest.yaml`.
+update channel, a self-hosted instance auto-updating itself, a re-provisioning
+script — you can't rely on someone hand-running a force push every time.
+Declare the reconciliation policy in the package itself instead: drop a
+**`.raisin-sync.yaml`** file at the package root, next to `manifest.yaml`.
 
 ```yaml
 # .raisin-sync.yaml  (package root, beside manifest.yaml — NOT a field inside it)

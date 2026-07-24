@@ -255,6 +255,59 @@ LIMIT 20;
 
 Pass the `created_at` value of the last row from the previous page as `$1`.
 
+Keyset cursors also work over paths — useful for hierarchical listings, since
+sibling paths sort naturally:
+
+```sql
+-- Page through the children of /blog, 20 at a time
+SELECT * FROM 'default'
+WHERE CHILD_OF('/blog') AND path > $1   -- $1 = last path of the previous page
+ORDER BY path
+LIMIT 20;
+```
+
+### Previous / Next Node
+
+Because RaisinDB is hierarchical, "the node before/after this one" is a
+single keyset query — no window functions needed:
+
+```sql
+-- Next sibling of /blog/post-3 (path order)
+SELECT * FROM 'default'
+WHERE CHILD_OF('/blog') AND path > '/blog/post-3'
+ORDER BY path ASC LIMIT 1;
+
+-- Previous sibling
+SELECT * FROM 'default'
+WHERE CHILD_OF('/blog') AND path < '/blog/post-3'
+ORDER BY path DESC LIMIT 1;
+```
+
+For a blog's "older / newer post" links, cursor on the publish date instead
+of the path:
+
+```sql
+-- Next (newer) article after the current one ($1 = current published_at)
+SELECT * FROM 'default'
+WHERE DESCENDANT_OF('/blog')
+  AND properties->>'published_at'::String > $1
+ORDER BY properties->>'published_at'::String ASC LIMIT 1;
+
+-- Previous (older) article
+SELECT * FROM 'default'
+WHERE DESCENDANT_OF('/blog')
+  AND properties->>'published_at'::String < $1
+ORDER BY properties->>'published_at'::String DESC LIMIT 1;
+```
+
+:::note Editorial (drag-and-drop) order
+`CHILD_OF('/parent')` with **no ORDER BY** returns children in their
+maintained ordered-children (editorial) order. That order is not exposed as
+a sortable SQL column yet, so keyset cursors over it aren't possible — cursor
+on `path`, `created_at`, or a property instead, or fetch the ordered child
+list and slice client-side.
+:::
+
 ## Combining Multiple Query Types
 
 ### Hierarchy + Graph

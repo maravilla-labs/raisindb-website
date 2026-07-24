@@ -348,99 +348,113 @@ WHERE DESCENDANT_OF(__path, '/content')
 
 ## REFERENCES
 
-Check if a node has a reference to a target path.
+Find nodes whose `reference`-type properties point at a target node. Uses the
+reverse reference index, so it stays fast regardless of table size and keeps
+working after the target node is moved (the index is keyed by the target's
+stable id).
 
 ### Syntax
 
 ```sql
-REFERENCES(target_path) → BOOLEAN
+REFERENCES('workspace:/path') → BOOLEAN
 ```
 
 ### Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| target_path | PATH | Path being referenced |
+| target | TEXT | Target in **`workspace:/path`** format. The workspace prefix is required — a bare path is rejected with a validation error, because paths are only unique within a workspace. |
 
 ### Return Value
 
-BOOLEAN - true if current node references target, false otherwise.
+BOOLEAN - true if the current node holds a reference to the target.
 
 ### Examples
 
 ```sql
--- Find all nodes referencing a specific path
-SELECT * FROM nodes
-WHERE REFERENCES('/content/products/widget1');
+-- Find all nodes referencing a product (same workspace)
+SELECT * FROM 'default'
+WHERE REFERENCES('default:/content/products/widget1');
 
--- Find nodes with any references
-SELECT
-    __path,
-    COUNT(*) AS reference_count
-FROM nodes
-WHERE REFERENCES(__path)
-GROUP BY __path;
+-- Cross-workspace: stories referencing a tag that lives in the tags workspace
+SELECT id, path, name FROM 'stories'
+WHERE REFERENCES('tags:/university/data');
 
--- Find pages referencing a category
-SELECT p.__path, p.title
-FROM pages p
-WHERE REFERENCES('/categories/tutorials');
+-- Composes with other predicates: hierarchy scoping, node_type, ORDER BY, LIMIT
+SELECT id, path, name FROM 'stories'
+WHERE REFERENCES('tags:/university/data')
+  AND DESCENDANT_OF('/university')
+  AND node_type = 'studio:Page'
+ORDER BY properties->>'published_at'::String DESC
+LIMIT 20;
+
+-- Fully parameterized (recommended — no string interpolation needed)
+-- $1 = 'tags:/university/data'
+SELECT * FROM 'stories' WHERE REFERENCES($1);
 ```
 
 ### Notes
 
-- Uses reverse reference index for performance
-- Checks outgoing references from current node
-- Useful for finding relationships
+- The argument must be `'workspace:/path'` — the workspace prefix is mandatory.
+- Backed by the reverse reference index; the planner selects a
+  `ReferenceIndexScan`, so the query reads only the referrers.
+- Composes with `DESCENDANT_OF` / `CHILD_OF` / `node_type` / property
+  predicates and `COUNT(*)`: REFERENCES drives the scan and the other
+  predicates filter the (small) result set.
+- Survives target moves: the reference is resolved by the target's stable id,
+  not the stored path string.
 
 ---
 
 ## NEIGHBORS
 
-Get neighboring nodes connected by graph relationships.
+Table-valued function returning nodes connected to a start node by graph
+relations (created with `RELATE`).
 
 ### Syntax
 
 ```sql
-NEIGHBORS(node_id, direction, relation_type) → TABLE
+NEIGHBORS(start, direction, relation_type) → TABLE
 ```
 
 ### Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| node_id | UUID | ID of the source node |
-| direction | TEXT | Direction: `'outgoing'`, `'incoming'`, or `'both'` |
-| relation_type | TEXT | Optional. Filter by relationship type |
+| start | TEXT | Node id, path, or **`workspace:/path`** to disambiguate across workspaces |
+| direction | TEXT | `'OUT'` (outgoing), `'IN'` (incoming), or `'BOTH'` |
+| relation_type | TEXT | Relation type filter, or `NULL` / `''` for all types |
 
 ### Return Value
 
-TABLE - Set of neighboring node IDs and relationship metadata.
+TABLE - the neighboring nodes (full node columns) plus `relation_type` and
+`weight` columns describing the connecting edge.
 
 ### Examples
 
 ```sql
--- Find all outgoing neighbors
-SELECT * FROM NEIGHBORS(__id, 'outgoing')
-FROM pages
-WHERE __path = '/content/home';
+-- All outgoing neighbors of a node (any relation type)
+SELECT n.path, n.relation_type
+FROM NEIGHBORS('/content/home', 'OUT', NULL) AS n;
 
--- Find incoming relationships of a specific type
-SELECT * FROM NEIGHBORS(__id, 'incoming', 'links_to')
-FROM pages
-WHERE title = 'About';
+-- Incoming 'tagged-with' edges: everything tagged with this tag.
+-- The workspace prefix resolves the path in the tag's own workspace.
+SELECT n.id, n.path, n.name
+FROM NEIGHBORS('tags:/university/data', 'IN', 'tagged-with') AS n;
 
--- Find all connected nodes (both directions)
-SELECT * FROM NEIGHBORS(__id, 'both')
-FROM pages
-WHERE __path = '/content/hub';
+-- Both directions
+SELECT * FROM NEIGHBORS('/content/hub', 'BOTH', NULL);
 ```
 
 ### Notes
 
-- Returns an empty set if the node has no relationships in the given direction
-- When `relation_type` is omitted, returns neighbors for all relationship types
-- Uses the graph index for efficient lookups
+- `start` accepts a node id or a path; a path without a workspace prefix is
+  resolved in the query's default workspace — use `'workspace:/path'` when the
+  start node lives elsewhere.
+- Direction values are `'OUT'`, `'IN'`, `'BOTH'` (case-insensitive).
+- Returns an empty set if the node has no relations in the given direction.
+- For multi-hop patterns or ordering/filtering on neighbor properties,
+  prefer `GRAPH_TABLE`.
 
 ---
 

@@ -72,8 +72,8 @@ RaisinDB provides specialized functions for working with hierarchical paths:
 - `PATH_STARTS_WITH(path, prefix)` - Check path prefix
 - `CHILD_OF(path, parent)` - Check direct parent relationship
 - `DESCENDANT_OF(path, ancestor)` - Check descendant relationship
-- `REFERENCES(target)` - Check if node references target
-- `NEIGHBORS(node_id, direction, relation_type)` - Get neighboring nodes in the graph
+- `REFERENCES('workspace:/path')` - Check if node references target (workspace prefix required)
+- `NEIGHBORS(start, direction, relation_type)` - Get neighboring nodes in the graph (`'OUT'`/`'IN'`/`'BOTH'`)
 
 ### Working with Properties
 

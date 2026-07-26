@@ -165,6 +165,7 @@ const sidebars: SidebarsConfig = {
             'guides/querying/full-text-search',
             'guides/querying/time-travel-queries',
             'guides/querying/common-query-patterns',
+            'guides/querying/pagination',
           ],
         },
         {

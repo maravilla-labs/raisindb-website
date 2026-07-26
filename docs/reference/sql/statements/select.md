@@ -290,6 +290,9 @@ ORDER BY DEPTH(path), properties->>'title';
 
 ## LIMIT and OFFSET
 
+For paging large result sets, prefer a keyset cursor over a growing `OFFSET` —
+see [Pagination](/docs/guides/querying/pagination).
+
 Paginate results:
 
 ```sql
@@ -459,6 +462,42 @@ FROM default;
 ```
 
 System aliases are also available: `__id`, `__path`, `__node_type`, `__created_at`, `__updated_at`, `__revision`, `__branch`.
+
+### Editorial order columns
+
+Two further columns expose the **manual (drag-and-drop) order** a parent's
+children are kept in:
+
+| Column | Orders a node | Use for |
+| --- | --- | --- |
+| `__order` | among its **siblings** | listing / paging one parent's children |
+| `__tree_order` | within a **subtree** (document order) | listing / paging a whole tree |
+
+Both are opaque, lexicographically sortable text. Sort by them, and pass the last
+row's value back as a keyset cursor — but treat the value as a token: don't parse
+or construct one.
+
+```sql
+SELECT name, __order
+FROM 'default'
+WHERE CHILD_OF('/menu')
+ORDER BY __order;
+```
+
+`__tree_order` is populated only by tree traversals (`DESCENDANT_OF`, full table
+scans); on other scans it is `NULL` rather than guessed.
+
+:::warning `__order` is not `path`
+Both order parents before children, so they look interchangeable — but they order
+*siblings* differently. `path` sorts siblings **alphabetically**; `__order` sorts
+them **editorially**. They agree only when the manual order happens to be
+alphabetical, which is why using `path` by mistake looks correct until someone
+reorders something.
+
+Never mix them: a cursor on one with an `ORDER BY` on the other drops and
+duplicates rows. Keyset pagination requires the cursor column and the `ORDER BY`
+column to be the same.
+:::
 
 ## Examples
 

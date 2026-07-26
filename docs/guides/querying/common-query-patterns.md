@@ -232,6 +232,9 @@ LIMIT 10;
 
 ## Pagination
 
+Recipes below; see [Pagination](./pagination.md) for choosing between offset and
+keyset, picking a cursor column, and the HTTP / JavaScript client equivalents.
+
 ### Offset-Based Pagination
 
 ```sql
@@ -300,12 +303,81 @@ WHERE DESCENDANT_OF('/blog')
 ORDER BY properties->>'published_at'::String DESC LIMIT 1;
 ```
 
-:::note Editorial (drag-and-drop) order
-`CHILD_OF('/parent')` with **no ORDER BY** returns children in their
-maintained ordered-children (editorial) order. That order is not exposed as
-a sortable SQL column yet, so keyset cursors over it aren't possible — cursor
-on `path`, `created_at`, or a property instead, or fetch the ordered child
-list and slice client-side.
+### Editorial (drag-and-drop) Order
+
+RaisinDB keeps a **manual order** for every parent's children — what an editor
+sets by dragging in the admin console. Two columns expose it, and both work as
+keyset cursors:
+
+| Column | Orders a node | Use for |
+| --- | --- | --- |
+| `__order` | among its **siblings** | paging one parent's children |
+| `__tree_order` | within a **subtree** (document order) | paging a whole tree |
+
+```sql
+-- Page 1: a menu's items in the order the editor arranged them
+SELECT name, __order
+FROM 'default'
+WHERE CHILD_OF('/menu')
+ORDER BY __order
+LIMIT 20;
+
+-- Page 2 — $1 = the __order value of the last row from page 1
+SELECT name, __order
+FROM 'default'
+WHERE CHILD_OF('/menu') AND __order > $1
+ORDER BY __order
+LIMIT 20;
+```
+
+To page an entire tree rather than one level, cursor on `__tree_order`. It sorts
+into document order: each node appears before its descendants, and a subtree stays
+contiguous, so a whole navigation tree pages correctly.
+
+```sql
+SELECT path, __tree_order
+FROM 'default'
+WHERE DESCENDANT_OF('/menu') AND __tree_order > $1
+ORDER BY __tree_order
+LIMIT 20;
+```
+
+Both values are opaque. Pass them back as **bound parameters**, exactly as
+received — don't parse, construct, or interpolate them.
+
+Changing the order is a write, not a property edit — you name a position or a
+neighbour and the server assigns the key:
+
+```ts
+await ws.nodes().reorder('/menu', 'about', 0);              // move to the front
+await ws.nodes().moveChildBefore('/menu', 'about', 'home');
+await ws.nodes().moveChildAfter('/menu', 'about', 'contact');
+```
+
+:::warning `__order` is not `path`
+Both order parents before children, so they look interchangeable — but they order
+*siblings* differently. `path` sorts siblings **alphabetically**; `__order` sorts
+them **editorially**.
+
+With children arranged `c`, `a`, `b`:
+
+```sql
+ORDER BY path         -- a, b, c   (alphabetical — the manual order is lost)
+ORDER BY __tree_order -- c, a, b   (the order the editor set)
+```
+
+They agree only when the manual order happens to be alphabetical, which is why
+reaching for `path` looks fine until someone reorders something. And never mix
+them — `WHERE __tree_order > $1 ORDER BY path` advances the cursor in one order
+while sorting in another, which drops and duplicates rows. Keyset pagination
+requires the cursor column and the `ORDER BY` column to match.
+:::
+
+:::tip Prefer this over a `sort_order` property
+Hand-maintaining a numeric `sort_order` means renumbering to insert between two
+items, and concurrent edits collide. The built-in order is a fractional index —
+inserting between two siblings never renumbers anything — and it is what the
+admin console's drag-and-drop already writes to.
 :::
 
 ## Combining Multiple Query Types

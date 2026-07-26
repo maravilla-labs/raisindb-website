@@ -254,24 +254,23 @@ await ws.nodes().copyTree('/articles/series', '/articles/archived-series');
 
 ### Reorder Nodes
 
+You name a position or a neighbour and the server assigns the order key. Children
+are identified by **name**, not full path.
+
 ```typescript
-// Set specific order key
-await ws.nodes().reorder('/articles/item-1', 'a0');
+// Move to a 0-based position among its siblings
+await ws.nodes().reorder('/articles', 'item-1', 0);
 
 // Move before sibling
-await ws.nodes().moveChildBefore(
-  '/articles',
-  '/articles/item-2',
-  '/articles/item-1'
-);
+await ws.nodes().moveChildBefore('/articles', 'item-2', 'item-1');
 
 // Move after sibling
-await ws.nodes().moveChildAfter(
-  '/articles',
-  '/articles/item-3',
-  '/articles/item-2'
-);
+await ws.nodes().moveChildAfter('/articles', 'item-3', 'item-2');
 ```
+
+Read the resulting order back with the `__order` column, which also serves as a
+pagination cursor — see
+[Editorial order](/docs/guides/querying/common-query-patterns#editorial-drag-and-drop-order).
 
 Child order is per-branch and is carried automatically when a branch is merged.
 When promoting content by copying nodes between branches instead of merging, use

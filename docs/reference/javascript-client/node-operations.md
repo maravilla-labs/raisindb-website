@@ -165,9 +165,41 @@ can only read history/audit for nodes you can read.
 
 ### listChildren()
 
+All children of a parent, in editorial (drag-and-drop) order.
+
 ```typescript
 listChildren(parentPath: string): Promise<Node[]>
 ```
+
+### listChildrenPage()
+
+One page of a parent's children, in editorial order. Pagination is keyset-based:
+pass the previous response's `nextCursor` back as `cursor`. `nextCursor` is
+`null` on the last page.
+
+```typescript
+listChildrenPage(
+  parentPath: string,
+  options?: { cursor?: string; limit?: number }
+): Promise<{ items: Node[]; nextCursor: string | null }>
+```
+
+```typescript
+let cursor: string | undefined;
+do {
+  const page = await ws.nodes().listChildrenPage('/menu', { cursor, limit: 50 });
+  for (const child of page.items) {
+    // ...
+  }
+  cursor = page.nextCursor ?? undefined;
+} while (cursor);
+```
+
+The cursor is opaque — pass it back exactly as received. A page may contain fewer
+than `limit` items without being the last page (permission filtering is applied
+per page), so drive the loop from `nextCursor`, never from the item count.
+
+See [Pagination](/docs/guides/querying/pagination) for the full picture.
 
 ### getChildren()
 
@@ -231,36 +263,47 @@ Sibling nodes have an explicit order (see
 [Child Ordering](/docs/concepts/data-model/paths-and-hierarchy#child-ordering)).
 Order is per-branch and is carried automatically when a branch is merged.
 
+You name a position or a neighbour; the server assigns the order key. Children
+are identified by **name**, not by full path.
+
 ### reorder()
 
-Set the order key for a node.
+Move a child to a 0-based position among its siblings. A position past the end
+appends.
 
 ```typescript
-reorder(nodePath: string, orderKey: string): Promise<Node>
+reorder(parentPath: string, childName: string, position: number): Promise<Node>
+```
+
+Returns the reordered node, carrying its newly assigned `order_key` — the same
+value the `__order` SQL column reports.
+
+```typescript
+await ws.nodes().reorder('/articles', 'item-1', 0);   // move to the front
 ```
 
 ### moveChildBefore()
 
-Move a child before a reference sibling.
+Move a child so it sits immediately before one of its siblings.
 
 ```typescript
 moveChildBefore(
   parentPath: string,
-  childPath: string,
-  referencePath: string
-): Promise<Node>
+  childName: string,
+  beforeChildName: string
+): Promise<void>
 ```
 
 ### moveChildAfter()
 
-Move a child after a reference sibling.
+Move a child so it sits immediately after one of its siblings.
 
 ```typescript
 moveChildAfter(
   parentPath: string,
-  childPath: string,
-  referencePath: string
-): Promise<Node>
+  childName: string,
+  afterChildName: string
+): Promise<void>
 ```
 
 ### applyChildOrder()

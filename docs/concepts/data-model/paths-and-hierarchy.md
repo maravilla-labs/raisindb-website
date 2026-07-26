@@ -440,6 +440,11 @@ a page, or cards in a column exactly the way you want, regardless of their names
 - **Carried by merge.** When you [merge a branch](/docs/guides/branching/merging-changes),
   the child order from the source branch travels with the merge.
 
+- **Queryable from SQL.** The order is exposed as `__order` (position among
+  siblings) and `__tree_order` (position within a subtree, in document order).
+  Both are sortable and work as keyset pagination cursors — see
+  [Editorial order](/docs/guides/querying/common-query-patterns#editorial-drag-and-drop-order).
+
 Reorder children with the JavaScript client (`reorder`, `moveChildBefore`,
 `moveChildAfter`), the HTTP API, or by dragging in the Admin Console — see
 [Node Operations → Ordering](/docs/reference/javascript-client/node-operations#ordering).

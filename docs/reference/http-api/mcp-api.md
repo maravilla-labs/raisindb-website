@@ -49,7 +49,7 @@ Response:
 {"jsonrpc":"2.0","id":2,"method":"tools/list"}
 ```
 
-Returns only the tools the caller's scopes permit. Each entry: `{ "name", "description", "inputSchema" }`. A tool bound to an [interactive widget](../../guides/mcp/interactive-widgets.md) also advertises its `outputSchema` (inherited from the function) and carries a `ui` binding — see [Interactive-widget tools](#interactive-widget-tools) below.
+Returns only the tools the caller's scopes permit. Each entry: `{ "name", "description", "inputSchema" }`. A tool bound to an [interactive widget](../../guides/mcp/interactive-widgets.md) also advertises its `outputSchema` (inherited from the function) and `_meta.ui.resourceUri` — see [Interactive-widget tools (MCP Apps)](#interactive-widget-tools-mcp-apps) below.
 
 ### tools/call
 
@@ -63,16 +63,28 @@ Response (`isError: true` marks a function/tool-level failure, distinct from a J
 {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"json","json":{ "...": "..." }}],"isError":false}}
 ```
 
-### Interactive-widget tools
+### Interactive-widget tools (MCP Apps)
 
-A tool may declare a `ui` binding (`{ mode, entry }`) so its result renders as an inline HTML mini-app in an MCP-UI-capable host. The tool still returns its `data` as `structuredContent`; the `ui` binding tells the host how to render it. See the [Interactive Widgets guide](../../guides/mcp/interactive-widgets.md) for the full workflow.
+A tool may declare a `ui` binding so an MCP Apps-capable host renders its results through an HTML view. The engine then does three things on the wire — the tool result itself stays **data only** (`content` + `structuredContent`), nothing UI-related is embedded in it:
 
-| `mode` | Delivery |
-|--------|----------|
-| `html` | The engine reads the widget HTML bytes and returns them as a `text/html` resource; the host renders via `srcdoc`. When `entry` carries a `#fragment`, the engine injects `window.__RAISIN_INITIAL_ROUTE__` into the returned HTML. |
-| `uri-list` | The result is a `text/uri-list` pointing at the [resource-serving endpoint](./resource-serving-api.md) URL for `entry`; the host iframes it with a real `src=`. The `#fragment` rides along on the URL. |
+- **`tools/list`**: the tool carries `_meta.ui.resourceUri: "ui://{workspace}/{entry}"` (plus the deprecated flat `"ui/resourceUri"` key for pre-GA hosts), and `_meta.ui.visibility` when the binding declares it.
+- **`resources/list`**: the view is predeclared once per distinct URI — `{ uri, name, description, mimeType: "text/html;profile=mcp-app", _meta.ui: { csp, permissions, prefersBorder } }`.
+- **`resources/read`** of the `ui://` URI: the widget HTML as `text` with mime `text/html;profile=mcp-app` and the same `_meta.ui` on the content item (spec precedence over the listing entry). The read is an ordinary RLS-scoped asset read.
 
-`entry` is a workspace-relative path to the widget's HTML, split on the first `#` into a path and an optional SPA-route fragment. `mode: uri-list` is the only path where [`raisin:StaticSiteFolder.serving_config`](./resource-serving-api.md#serving_config) headers apply.
+Binding fields (on the `raisin:McpServer` tool entry or the function's `mcp` block):
+
+| Field | Meaning |
+|---|---|
+| `mode` | `html` — MCP Apps view delivery. `uri-list` is reserved (the spec's deferred external-URL content type). |
+| `entry` | **Absolute node path** (leading `/`) of the widget's HTML asset. |
+| `workspace` | Workspace `entry` resolves in; defaults to the session workspace (first of `data.workspaces`). |
+| `name` / `description` | The view's identity in `resources/list`. |
+| `csp` | `{ connectDomains, resourceDomains, frameDomains, baseUriDomains }` — when omitted, the server declares its own origin for connect + resource. |
+| `permissions` | Sandbox permission requests (camera/microphone/geolocation/clipboardWrite), passed through. |
+| `prefersBorder` | Host renders a visible border + background. |
+| `visibility` | `[model, app]` (default) or `[app]` for view-only tools. |
+
+The view↔host runtime protocol (handshake, `tool-input`/`tool-result` notifications, view-initiated `tools/call`) is documented in the [View↔Host protocol reference](../mcp-ui-client/view-protocol.md); the [Interactive Widgets guide](../../guides/mcp/interactive-widgets.md) covers the authoring workflow.
 
 ### resources/list · resources/read · resources/subscribe
 
@@ -88,7 +100,7 @@ A resource is returned as one or more `contents` entries. A node's properties co
 {"jsonrpc":"2.0","id":4,"result":{"contents":[{"uri":"raisin://products/widgets/acme","mimeType":"image/png","blob":"iVBORw0KGgo…"}]}}
 ```
 
-Each entry carries `uri`, `mimeType`, and exactly one of `text` (UTF-8 payloads) or `blob` (base64-encoded raw bytes). This makes any uploaded asset readable over `resources/read`, and underpins `mode: html` widget delivery.
+Each entry carries `uri`, `mimeType`, and exactly one of `text` (UTF-8 payloads) or `blob` (base64-encoded raw bytes). This makes any uploaded asset readable over `resources/read`. Widget views use the dedicated `ui://{workspace}/{path}` scheme on this same method and come back as `text` with mime `text/html;profile=mcp-app` — see [Interactive-widget tools (MCP Apps)](#interactive-widget-tools-mcp-apps).
 
 `resources/subscribe` upgrades to SSE and streams `notifications/resources/updated` frames as nodes change.
 

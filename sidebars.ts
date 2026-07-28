@@ -355,6 +355,14 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'MCP UI Client',
+      items: [
+        'reference/mcp-ui-client/overview',
+        'reference/mcp-ui-client/view-protocol',
+      ],
+    },
+    {
+      type: 'category',
       label: 'CLI',
       items: [
         'reference/cli/overview',

@@ -27,7 +27,7 @@ One JSON-RPC 2.0 message per request body. `{slug}` resolves a `raisin:McpServer
 
 - A request (with `id`) returns a JSON-RPC response (HTTP `200`); errors are carried in the JSON-RPC `error` field.
 - A notification (no `id`) returns `202` with no body.
-- `resources/subscribe` returns a `text/event-stream` (SSE) of update notifications.
+- `subscriptions/listen` and `resources/subscribe` return a `text/event-stream` (SSE) of notifications.
 
 ## Methods
 
@@ -40,7 +40,7 @@ One JSON-RPC 2.0 message per request body. `{slug}` resolves a `raisin:McpServer
 Response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false},"resources":{"subscribe":true,"listChanged":false}},"serverInfo":{"name":"Catalog","version":"1.0.0"},"instructions":"Query the product catalog."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":true},"resources":{"subscribe":true,"listChanged":false}},"serverInfo":{"name":"Catalog","version":"1.0.0"},"instructions":"Query the product catalog."}}
 ```
 
 ### tools/list
@@ -102,7 +102,42 @@ A resource is returned as one or more `contents` entries. A node's properties co
 
 Each entry carries `uri`, `mimeType`, and exactly one of `text` (UTF-8 payloads) or `blob` (base64-encoded raw bytes). This makes any uploaded asset readable over `resources/read`. Widget views use the dedicated `ui://{workspace}/{path}` scheme on this same method and come back as `text` with mime `text/html;profile=mcp-app` — see [Interactive-widget tools (MCP Apps)](#interactive-widget-tools-mcp-apps).
 
-`resources/subscribe` upgrades to SSE and streams `notifications/resources/updated` frames as nodes change.
+`resources/subscribe` upgrades to SSE and streams `notifications/resources/updated` frames as nodes change. It is the pre-2026-07-28 form; new clients should prefer `subscriptions/listen` below.
+
+### subscriptions/listen
+
+One long-lived stream carrying every notification type the client opts into, replacing both `resources/subscribe` and the older HTTP GET endpoint.
+
+```json
+{"jsonrpc":"2.0","id":5,"method":"subscriptions/listen","params":{"notifications":{"toolsListChanged":true,"resourceSubscriptions":["raisin://products/widgets/acme"]}}}
+```
+
+The response upgrades to SSE. The **first** frame is always the acknowledgement, and it reports the subset the server will actually honour — which may be narrower than you asked for:
+
+```json
+{"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":5},"notifications":{"toolsListChanged":true,"resourceSubscriptions":["raisin://products/widgets/acme"]}}}
+```
+
+Check it. A type that is absent will never arrive, and waiting on one is indistinguishable from a quiet server.
+
+| Filter field | Honoured |
+|---|---|
+| `toolsListChanged` | **yes** — emitted when a `raisin:Function` in the `functions` workspace changes |
+| `resourceSubscriptions` | **yes** — per-URI, as `notifications/resources/updated` |
+| `promptsListChanged` | no — there is no prompt registry to change |
+| `resourcesListChanged` | no — the resource *list* is static; use `resourceSubscriptions` for individual updates |
+
+Every frame carries `_meta."io.modelcontextprotocol/subscriptionId"`, equal to the `id` of the `subscriptions/listen` request, so a client multiplexing several streams can tell them apart.
+
+`notifications/tools/list_changed` carries **no payload beyond that id** — it means "call `tools/list` again", nothing more. Changes are coalesced, so installing a package that writes many functions produces one notification rather than one per node.
+
+A graceful close is the empty response to the original request, which distinguishes an intentional shutdown from a dropped connection:
+
+```json
+{"jsonrpc":"2.0","id":5,"result":{"resultType":"complete","_meta":{"io.modelcontextprotocol/subscriptionId":5}}}
+```
+
+Close the stream to cancel.
 
 ## Error codes
 

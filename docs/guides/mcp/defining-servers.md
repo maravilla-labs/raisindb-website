@@ -123,6 +123,15 @@ Set `data.resources: true` to expose each node as a `raisin://{workspace}/{path}
 - `resources/read` — fetch a node's content.
 - `resources/subscribe` — receive live `notifications/resources/updated` over Server-Sent Events as nodes change.
 
+## Live updates
+
+Clients can hold one stream open with [`subscriptions/listen`](../../reference/http-api/mcp-api.md#subscriptionslisten) and opt into the notification types they want. Two are honoured:
+
+- **`toolsListChanged`** — sent whenever the functions behind your tools change, so a client's tool list stays current without polling. Needs no configuration: it is driven by ordinary node events, so adding, editing or removing a function announces itself.
+- **`resourceSubscriptions`** — per-URI resource updates, the same signal as `resources/subscribe`.
+
+The tools notification carries no payload; it means "call `tools/list` again". Bursts are coalesced, so installing a package that writes twenty functions produces one notification rather than twenty.
+
 ## Packaging a server
 
 Ship a turnkey server in a [package](../packages/creating-packages.md). Place the node at `content/mcp/{slug}/.node.yaml` and declare it in the manifest:

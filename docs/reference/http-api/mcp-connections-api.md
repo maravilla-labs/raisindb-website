@@ -204,4 +204,4 @@ max_response_bytes = 8388608
 default_timeout_ms = 30000
 ```
 
-Egress is checked when a connection is saved **and** before every call.
+Egress is checked when a connection is saved **and** before every dial, against the addresses the hostname actually resolves to. It also covers every URL in the OAuth discovery chain, all of which the remote side chooses — so an `allowed_hosts` list must include the authorization server's host as well as the MCP endpoint's.

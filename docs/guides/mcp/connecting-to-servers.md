@@ -130,7 +130,9 @@ Omitting the section keeps the safe defaults. Everything per-connection lives on
 
 ## Security
 
-**Egress is restricted by default.** Connections must be `https`, and private, loopback and link-local addresses — including cloud instance metadata at `169.254.169.254` — are refused. This is checked when you save a connection **and again before every call**, because a hostname that resolved publicly can be re-pointed afterwards. To reach an MCP server on `localhost`, set `allow_private_addresses = true`.
+**Egress is restricted by default.** Connections must be `https`, and private, loopback and link-local addresses — including cloud instance metadata at `169.254.169.254` — are refused. This is checked when you save a connection **and again before every dial**, where it resolves the hostname and judges every address that comes back: a name that resolved publicly at save time can be re-pointed at `127.0.0.1` afterwards. To reach an MCP server on `localhost`, set `allow_private_addresses = true`.
+
+**The policy covers the whole OAuth discovery chain.** Every URL after the endpoint you typed is chosen by the remote side — its `401` names the metadata document, that names the issuer, and the issuer's metadata names the registration and token endpoints. Each one is checked before it is dialled, so an allowlisted server cannot redirect RaisinDB at an internal address. If you set `allowed_hosts`, include the **authorization server's host**: it is usually different from the MCP endpoint's (`auth.linear.app` vs `mcp.linear.app`), and leaving it out makes **Discover** fail with a message saying so.
 
 **A remote tool sees what the model sends it.** The model has read the conversation and chooses the arguments. Nothing structurally prevents a remote server from being handed data you did not intend it to have. Bound it by exposing few tools, by the host allowlist, and by controlling who can attach a proxy to an agent.
 

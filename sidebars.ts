@@ -182,12 +182,13 @@ const sidebars: SidebarsConfig = {
         },
         {
           type: 'category',
-          label: 'MCP Servers',
+          label: 'Model Context Protocol',
           items: [
             'guides/mcp/overview',
             'guides/mcp/defining-servers',
             'guides/mcp/authentication',
             'guides/mcp/interactive-widgets',
+            'guides/mcp/connecting-to-servers',
           ],
         },
         {
@@ -332,6 +333,7 @@ const sidebars: SidebarsConfig = {
         'reference/http-api/query-api',
         'reference/http-api/locks-api',
         'reference/http-api/mcp-api',
+        'reference/http-api/mcp-connections-api',
         'reference/http-api/resource-serving-api',
       ],
     },

@@ -78,6 +78,18 @@ properties:
     - /lib/myapp/list-shifts
 ```
 
+### Tools from other MCP servers
+
+An agent's `tools:` array is not limited to functions in this repository. Register a connection to an external MCP server and its tools become ordinary `raisin:Function` nodes you list the same way:
+
+```yaml
+  tools:
+    - /lib/myapp/list-shifts        # your function
+    - /mcp/linear/search-issues     # a Linear tool
+```
+
+The model sees one flat list. See [Connecting to External Servers](../mcp/connecting-to-servers.md).
+
 ### Function-runtime traps
 
 The function runtime is **not** the client SDK — three things bite everyone

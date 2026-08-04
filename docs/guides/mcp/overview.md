@@ -19,6 +19,10 @@ You declare **what** a server exposes; RaisinDB does the rest:
 
 A repository can hold **many** servers, each with its own identity, policy, and access rules.
 
+:::tip Going the other way?
+This page is about RaisinDB **serving** tools. To let your agents call tools on *somebody else's* MCP server, see [Connecting to External Servers](./connecting-to-servers.md).
+:::
+
 ## The endpoint
 
 Each server is served over the MCP Streamable HTTP binding at a **branch-aware** URL:

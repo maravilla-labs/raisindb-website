@@ -97,6 +97,53 @@ Tool states:
 
 Discovery is incremental: a refresh where nothing changed writes nothing at all, so an hourly interval does not fill your history with revisions.
 
+## Live tool updates
+
+The refresh interval defaults to an hour, so on its own a tool added upstream
+stays invisible for that long. MCP's `notifications/tools/list_changed` closes
+that gap. The notification carries **no payload** — it means "re-list", nothing
+more — so receiving one simply schedules a discovery run.
+
+**Opportunistic updates need no configuration.** A server may attach the
+notification to the reply of any request, including an ordinary tool call, and
+RaisinDB acts on those. A connection your agents actually use therefore stays
+fresh within seconds, at no extra cost.
+
+**A held-open stream is opt-in.** Turn on **Live updates** on the connection to
+also cover a server whose tools change while nobody is calling it. It is off by
+default on purpose: a listener holds a socket open for hours against someone
+else's service, and upgrading RaisinDB should not silently start one per
+connection.
+
+The server has to actually offer the guarantee, too — either by speaking the
+2026-07-28 revision or by advertising `tools.listChanged`. One that offers
+neither falls back to the interval, which always remains the backstop. A server
+that acknowledges the subscription but declines tool notifications is logged and
+the listener stands down, rather than waiting forever on a stream that will stay
+silent.
+
+:::caution Clusters need Redis locks
+Exactly one node holds each stream, elected by a per-connection lease. With
+`[locks]` disabled or set to `inprocess` while replication is on, listeners are
+**refused outright** rather than started — every node would win its own election
+and hold a duplicate connection to the remote server.
+:::
+
+RaisinDB is on the other end of this as well: its own MCP server advertises
+`tools.listChanged` and emits the notification when a function changes, so one
+RaisinDB connected to another gets live updates in both directions.
+
+## Removing tools that are gone
+
+A tool that vanishes upstream is **disabled, never deleted** — deleting the proxy
+would make it disappear from any agent holding that path with no error anywhere.
+Those `missing` entries accumulate, so clearing them is a deliberate action:
+**Prune missing** on the tools table, or one tool at a time.
+
+Either way RaisinDB refuses first if an agent still lists the path, and tells you
+which agent. There is no automatic age-based prune: nothing in the system knows
+whether an agent still needs a path, and a timer knows less than you do.
+
 ## Test a connection
 
 **Run probe** performs a real handshake and `tools/list`, and reports what it found — the negotiated protocol version, the server's identity, and how many tools the current filter would expose. It never calls a tool: `tools/call` has side effects, and testing a connection must not file a ticket.

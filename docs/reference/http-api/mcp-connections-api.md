@@ -35,7 +35,7 @@ GET /api/mcp-connections/{repo}
       "credential_set": false,
       "oauth_connected": true,
       "tool_filter": { "allow": [], "deny": [] },
-      "refresh_policy": { "mode": "interval", "interval_secs": 3600, "on_save": true, "call_timeout_ms": 30000 },
+      "refresh_policy": { "mode": "interval", "interval_secs": 3600, "on_save": true, "notifications": false, "call_timeout_ms": 30000 },
       "tool_count": 12
     }
   ]
@@ -68,7 +68,7 @@ POST /api/mcp-connections/{repo}
 | `enabled` | no | Defaults to `false`. |
 | `auth_kind` | no | `none` \| `static` \| `oauth`. Defaults to `none`. |
 | `tool_filter` | no | `{ "allow": [], "deny": [] }` by remote tool name. Deny wins. |
-| `refresh_policy` | no | `{ mode, interval_secs, on_save, call_timeout_ms }`. |
+| `refresh_policy` | no | `{ mode, interval_secs, on_save, notifications, call_timeout_ms }`. |
 
 **Errors:** `409` if the slug exists. `400` for an invalid slug or a URL the egress policy refuses.
 
@@ -158,6 +158,17 @@ POST  /api/mcp-connections/{repo}/{slug}/refresh-tools
 
 `refresh-tools` enqueues discovery and returns `{ "ok": true, "job_id": "..." }`. It is refused with `400` when the connection is disabled.
 
+## Prune
+
+```bash
+DELETE /api/mcp-connections/{repo}/{slug}/tools/{remote_name}[?force=true]
+POST   /api/mcp-connections/{repo}/{slug}/prune-tools[?force=true]
+```
+
+Delete one proxy, or every proxy whose state is `missing`. Both return **409** listing the agent paths that still reference the tools; `?force=true` proceeds anyway.
+
+Discovery itself never deletes a proxy — it disables one that vanished upstream, because a deleted proxy disappears from an agent with no error anywhere. Pruning is the deliberate counterpart, and there is no automatic age-based version of it.
+
 ## OAuth 2.1
 
 ```bash
@@ -203,5 +214,7 @@ allow_private_addresses = false # loopback/private + plain http
 max_response_bytes = 8388608
 default_timeout_ms = 30000
 ```
+
+`refresh_policy.notifications` opts the connection into a held-open notification stream so tool changes arrive live instead of at the next interval. It defaults to `false`, and additionally requires the server to speak 2026-07-28 or advertise `tools.listChanged`. On a replicated cluster it requires `[locks]` with the `redis` backend — without it, listeners are refused rather than duplicated across nodes.
 
 Egress is checked when a connection is saved **and** before every dial, against the addresses the hostname actually resolves to. It also covers every URL in the OAuth discovery chain, all of which the remote side chooses — so an `allowed_hosts` list must include the authorization server's host as well as the MCP endpoint's.

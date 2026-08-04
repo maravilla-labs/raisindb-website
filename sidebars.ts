@@ -166,6 +166,8 @@ const sidebars: SidebarsConfig = {
             'guides/querying/time-travel-queries',
             'guides/querying/common-query-patterns',
             'guides/querying/pagination',
+            'guides/querying/nested-geospatial',
+            'guides/querying/geospatial-tracking',
           ],
         },
         {
@@ -277,6 +279,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'reference/sql/overview',
+        'reference/sql/schema-tables',
         {
           type: 'category',
           label: 'Statements',
@@ -302,6 +305,7 @@ const sidebars: SidebarsConfig = {
             'reference/sql/functions/aggregate-functions',
             'reference/sql/functions/window-functions',
             'reference/sql/functions/geospatial-functions',
+            'reference/sql/functions/crs-and-srid',
             'reference/sql/functions/fulltext-functions',
             'reference/sql/functions/vector-functions',
             'reference/sql/functions/graph-algorithms',

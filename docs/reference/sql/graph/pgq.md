@@ -45,13 +45,67 @@ FROM GRAPH_TABLE (
     COLUMNS (n.title, n.view_count)
 );
 
--- Match with inline WHERE filter
+-- Filter in the MATCH clause's own WHERE
 SELECT *
 FROM GRAPH_TABLE (
-    MATCH (n:Page WHERE n.status = 'published')
+    MATCH (n:Page)
+    WHERE n.status = 'published'
     COLUMNS (n.title, n.created_at)
 );
 ```
+
+:::warning A label is the node type's LOCAL name — and it matches every namespace
+Node types are namespaced — `news:Article`, `raisin:Folder` — but a pattern
+label carries **only the part after the colon**:
+
+```sql
+-- node_type is 'news:Article'
+MATCH (n:Article)        -- ✅
+MATCH (n:news:Article)   -- ❌ parse error: the label reads as `news`,
+                         --    and the second colon is unexpected
+```
+
+Matching is case-insensitive, and a label matches the node type when it equals
+it **or** when the type ends with `:label`. That suffix rule is what lets you
+name a type without hardcoding its package prefix.
+
+**If two packages share a local type name** — say `news:Article` and
+`studio:Article` — a bare `(n:Article)` matches **both**. To pin one, quote the
+full type: a backtick-quoted label is matched exactly.
+
+```sql
+MATCH (n:Article)              -- both namespaces
+MATCH (n:`news:Article`)       -- ✅ exactly one
+MATCH (n:news:Article)         -- ❌ parse error — quote it
+```
+
+Filtering on the column works too, and reads well when the rest of the query
+already has a `WHERE`:
+
+```sql
+SELECT * FROM GRAPH_TABLE (
+    MATCH (n:Article)-[:CITES]->(m:Article)
+    WHERE n.node_type = 'news:Article'
+    COLUMNS (n.title, m.title)
+);
+```
+:::
+
+:::note `MATCH (n)` sees only connected nodes
+A single-node pattern is resolved from the **relation index**, so it returns
+nodes that appear as the source or target of at least one relationship. A node
+with no relationships is not returned — a graph pattern describes the graph, not
+the whole workspace. Use an ordinary `SELECT` when you want every node.
+:::
+
+:::danger Inline `WHERE` is rejected
+A `WHERE` written **inside** a node or edge pattern — `(n:Page WHERE …)` or
+`-[r:LINKS_TO WHERE …]->` — is a parse error, deliberately. It once parsed into
+a field nothing read, so the predicate silently vanished and the query returned
+**unfiltered** rows. Failing loudly is the fix.
+
+Put the predicate in the `MATCH` clause's own `WHERE`, as shown above.
+:::
 
 ### Multi-Label Node Patterns
 
@@ -115,59 +169,182 @@ FROM GRAPH_TABLE (
 -- Variable length path
 SELECT *
 FROM GRAPH_TABLE (
-    MATCH (a:Page)-[:LINKS_TO*1..3]->(b:Page)
+    MATCH (a:Page)-[:LINKS_TO]->{1,3}(b:Page)
     COLUMNS (a.title, b.title)
 );
 ```
 
 ### Path Quantifiers
 
-Control the length of variable-length paths:
+Control the length of variable-length paths. The canonical form is the brace
+form, written **after** the arrow:
 
-| Quantifier | Description |
-|------------|-------------|
-| `*` | Any number of hops (0 or more) |
-| `*n` | Exactly n hops |
-| `*n..m` | Between n and m hops (inclusive) |
-| `*n..` | At least n hops |
-| `*..m` | At most m hops |
+| Quantifier | Hops |
+|------------|------|
+| `->{2}` | exactly 2 |
+| `->{1,3}` | 1 to 3 inclusive |
+| `->{2,}` | 2 or more (unbounded) |
+| `->*` | `{0,}` |
+| `->+` | `{1,}` |
+| `->?` | `{0,1}` |
 
 ```sql
--- Any number of hops
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a)-[:LINKS_TO*]->(b)
-    COLUMNS (a.title, b.title)
-);
-
 -- Exactly 2 hops
 SELECT *
 FROM GRAPH_TABLE (
-    MATCH (a)-[:LINKS_TO*2]->(b)
+    MATCH (a)-[:LINKS_TO]->{2}(b)
     COLUMNS (a.title AS start, b.title AS end)
 );
 
 -- Between 1 and 3 hops
 SELECT *
 FROM GRAPH_TABLE (
-    MATCH (a)-[:LINKS_TO*1..3]->(b)
+    MATCH (a)-[:LINKS_TO]->{1,3}(b)
     COLUMNS (a.title, b.title)
 );
 
--- At least 2 hops
+-- 2 or more hops — unbounded, so it needs a selector or a restrictor
 SELECT *
 FROM GRAPH_TABLE (
-    MATCH (a)-[:LINKS_TO*2..]->(b)
-    COLUMNS (a.title, b.title)
-);
-
--- At most 3 hops
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a)-[:LINKS_TO*..3]->(b)
+    MATCH TRAIL (a)-[:LINKS_TO]->{2,}(b)
     COLUMNS (a.title, b.title)
 );
 ```
+
+:::warning Rule Q-SCOPE
+An **unbounded** quantifier (`*`, `+`, `{m,}`) must sit inside the scope of a
+[path selector](#path-selectors) or a [path restrictor](#path-restrictors).
+
+`MATCH (a)-[:LINKS_TO]->*(b)` is a parse error. `MATCH ANY SHORTEST p = (a)-[:LINKS_TO]->*(b)`
+and `MATCH TRAIL (a)-[:LINKS_TO]->*(b)` are both fine. Bounded quantifiers such
+as `->{1,3}` need neither.
+
+Even under a selector or restrictor, an unbounded quantifier is capped at
+**10 hops**.
+:::
+
+#### Deprecated: the Cypher-style quantifier
+
+The older form, written **inside** the brackets, is still accepted but emits a
+deprecation warning that also shows up in `EXPLAIN`:
+
+| Deprecated | Canonical |
+|------------|-----------|
+| `-[:t*2]->` | `-[:t]->{2}` |
+| `-[:t*1..3]->` | `-[:t]->{1,3}` |
+| `-[:t*2..]->` | `-[:t]->{2,}` |
+| `-[:t*]->` | `-[:t]->{1,}` |
+
+The two forms sit in different syntactic slots, so they are never ambiguous —
+but they are **not interchangeable**:
+
+- legacy `*` means `{1,}`, while standard `*` means `{0,}`;
+- the legacy form is exempt from rule Q-SCOPE (it predates the rule) and is
+  capped at 10 hops instead.
+
+Cypher is a separate dialect where `*1..3` is native and not deprecated; this
+note applies to SQL/PGQ `GRAPH_TABLE` only.
+
+## Path Variables
+
+Binding a path to a variable lets you address it with the
+[path accessors](#path-accessors):
+
+```sql
+SELECT hops, stops
+FROM GRAPH_TABLE (
+    MATCH p = (a:Page)-[:LINKS_TO]->{1,3}(b:Page)
+    WHERE a.title = 'Home'
+    COLUMNS (path_length(p) AS hops, nodes(p) AS stops)
+);
+```
+
+The variable may be written before the selector (`p = ANY SHORTEST (...)`) or
+after the restrictor (`ANY SHORTEST TRAIL p = (...)`); both spellings are
+accepted. Selector before restrictor is fixed — the other order is a parse
+error that names the fix.
+
+:::note There is no PATH column type
+A path variable is not selectable on its own — no transport would know how to
+encode a path value. `COLUMNS (p)` is rejected with an error that names the
+accessors and shows a worked replacement, rather than returning something
+lossy. Select accessor results instead.
+:::
+
+### Path Selectors
+
+A selector limits how many matching paths are returned per pair of endpoints:
+
+| Selector | Meaning |
+|----------|---------|
+| *(none)* | Every path matching the pattern |
+| `ANY` | One arbitrary path per endpoint pair (**not** minimum-hop) |
+| `ANY SHORTEST` | One minimum-hop path per endpoint pair |
+| `ALL SHORTEST` | Every minimum-hop path per endpoint pair |
+| `ANY CHEAPEST` | One minimum-cost path — **RaisinDB extension**, requires `COST` |
+
+```sql
+-- Minimum-hop route between two pages
+SELECT hops
+FROM GRAPH_TABLE (
+    MATCH ANY SHORTEST p = (a:Page)-[:LINKS_TO]->{1,6}(b:Page)
+    WHERE a.title = 'Home' AND b.title = 'Pricing'
+    COLUMNS (path_length(p) AS hops)
+);
+
+-- Cheapest route by the weight carried on the edge (RaisinDB extension)
+SELECT hops
+FROM GRAPH_TABLE (
+    MATCH ANY CHEAPEST p = (a:Stop)-[r:ROUTE COST r.weight]->{1,8}(b:Stop)
+    COLUMNS (path_length(p) AS hops)
+);
+```
+
+`COST` needs a **bound edge variable**, and the expression must qualify through
+it. These are each rejected by name:
+
+- `-[:ROUTE COST r.weight]->` — anonymous edge, nothing to bind to;
+- `-[r:ROUTE COST s.weight]->` — references a different variable;
+- `-[r:ROUTE COST r.duration_min]->` — a RaisinDB relation has **no arbitrary
+  property map**. The only fields are `target`, `workspace`, `target_node_type`,
+  `relation_type` and `weight`, so an edge cost is `COST r.weight`;
+- `COST 0` — a literal cost must be a positive finite number.
+
+To weight edges by something domain-specific, write that value into the
+relation's `weight` when you create it.
+
+`ANY CHEAPEST` and `COST` are all-or-nothing: either without the other is a
+parse error. `SHORTEST k`, `SHORTEST k GROUP` and `ANY k` are not implemented
+and parse to a named error rather than being silently accepted.
+
+### Path Restrictors
+
+A restrictor controls whether a path may revisit nodes or edges:
+
+| Restrictor | Meaning |
+|------------|---------|
+| `WALK` | No distinctness requirement; nodes and edges may repeat |
+| `TRAIL` | Edge-distinct — no edge traversed twice |
+| `ACYCLIC` | Node-distinct — no node visited twice |
+
+**The default is `ACYCLIC`.** Variable-length traversal has always skipped
+already-visited nodes, so this preserves existing behaviour — request `WALK`
+explicitly if you want repeats. `SIMPLE` is not implemented.
+
+### Path Accessors
+
+These are the only way to read a path variable:
+
+| Accessor | Returns |
+|----------|---------|
+| `path_length(p)` | Hop count |
+| `nodes(p)` | The path's nodes, in order |
+| `edges(p)` | The path's edges, in order |
+| `path_first(p)` | First node |
+| `path_last(p)` | Last node |
+| `element_id(p)` | Stable identity string for the whole path |
+| `is_trail(p)` | Whether the path is edge-distinct |
+| `is_acyclic(p)` | Whether the path is node-distinct |
 
 ## Properties in GRAPH_TABLE
 

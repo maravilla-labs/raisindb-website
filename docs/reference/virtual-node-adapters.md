@@ -21,7 +21,7 @@ The entry point receives one argument, an object with four keys:
 
 | Key | Type | Notes |
 |-----|------|-------|
-| `operation` | string | One of the eight operations below. |
+| `operation` | string | One of the operations below. |
 | `params` | object | Operation-specific arguments. |
 | `credential` | object \| null | Decrypted account credential; `null` when none is needed. |
 | `mount` | object | Read-only mount snapshot. |
@@ -61,10 +61,11 @@ The snapshot is read-only; mutating it has no effect.
 | `capabilities` | `{}` | `Capabilities` |
 | `list` | `{ folder_id?, cursor?, limit? }` | `{ items: ExternalItem[], next_cursor: string \| null }` |
 | `get` | `{ item_id?, path? }` | `ExternalItem \| null` |
-| `get_content` | `{ item_id }` | `{ content, mime_type }` |
-| `create` | `{ parent_id, name, is_folder, content?, mime_type? }` | `ExternalItem` |
-| `update` | `{ item_id, name?, content?, mime_type?, etag? }` | `ExternalItem` |
-| `delete` | `{ item_id }` | `{ deleted: true }` |
+| `get_content` | `{ item_id, parent_item_id?, mime_type? }` | `{ content \| content_base64, mime_type }` |
+| `create` *(write)* | `{ payload, parent_id? }` | `{ external_id, etag? }` |
+| `update` *(write)* | `{ item_id, payload, fields?, etag? }` | `{ external_id, etag? } \| null` |
+| `delete` *(write)* | `{ item_id, policy, etag? }` | `{ deleted: true }` |
+| `submit` *(write, optional)* | `{ payload, external_id?, idempotency_key }` | `{ external_id, etag?, provider_id? }` |
 | `get_changes` | `{ since_token: string \| null, folder_id? }` | `{ items: Change[], next_token: string }` |
 
 Notes:
@@ -72,12 +73,32 @@ Notes:
 - **`capabilities`** must be cheap and side-effect-free; it is polled.
 - **`list`** returns one level of children; omit `folder_id` to list
   `mount.remote_root`. Return `next_cursor: null` on the last page.
-- **`update`** with an `etag` that no longer matches must throw `conflict`.
-- **`delete`** is idempotent — deleting an absent item still returns
-  `{ deleted: true }`.
+- **`create`** receives the whole object — a create has nothing to patch — and
+  **must return the id it created**. An adapter that answers without an
+  `external_id` leaves an orphan: the engine refuses to adopt the node, because a
+  node stamped with an id no remote object has would never converge and the next
+  reconcile would create a *second* copy at the provider.
+- **`update`** receives `payload` already narrowed to `fields`, the mount's
+  allow-list. Forward `payload` **verbatim** — never rebuild it from `fields`,
+  which are *node* property names; the mapper is the only authorized translator
+  between the two vocabularies. An `etag` that no longer matches must throw
+  `conflict`. Returning `null` means *gone*: the engine settles the node and
+  waits for the delta to re-import it, instead of retrying a doomed write
+  forever (provider ids are not always stable — a moved Graph message gets a
+  new one).
+- **`delete`** carries the mount's resolved `policy` — `"trash"` or `"purge"`,
+  never `"detach"` (detaching means not calling you at all). Serve them
+  differently or refuse the one you cannot serve; treating them the same makes
+  `supports_trash` a lie and turns a recoverable mistake into a permanent one.
+  It is idempotent: deleting an absent item still returns `{ deleted: true }`,
+  because a 404 already satisfies a delete's desired end state.
 - **`get_changes`** is the delta fast path. `next_token` must be durable and
   resumable. If the provider has no delta API, advertise `supports_changes:
   false` and you need not implement it — the engine full-lists instead.
+- **`get_content`** is called on demand, never during a sync. `parent_item_id`
+  is present when the item is not addressable on its own (a mail attachment
+  lives at `/messages/{message}/attachments/{attachment}`); adapters whose items
+  *are* self-addressing ignore it.
 
 ## `ExternalItem`
 
@@ -125,6 +146,26 @@ calls and how it syncs.
 | `supports_push` | boolean | Event-driven / push providers. |
 | `default_ttl` | number \| null | Suggested TTL (seconds) for ephemeral nodes. |
 | `max_file_size` | number \| null | Bytes; the engine skips larger items. |
+
+Write-path fields (all optional; every one defaults to `false`/empty, so an
+adapter that omits them is correctly treated as read-only):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `can_create` / `can_update` / `can_delete` / `can_submit` | boolean | Which write operations you actually implement. |
+| `mutable_fields` | string[] | The `state_only` allow-list — which node properties this provider accepts as writes. |
+| `default_delete_policy` | `"detach" \| "trash" \| "purge" \| null` | Your domain's recommended default. Mail usually wants `trash`; files and calendars usually want `detach`. |
+| `move_fields` | string[] | Which of `mutable_fields` express the object's LOCATION (folder, parent, label set). A move is an `update` carrying one of these, so this is what makes `move_policy` mean anything — the engine is domain-blind and cannot tell that `folder` relocates a message while `unread` does not. A name here that is not in `mutable_fields` is inert. |
+| `default_move_policy` | `"push" \| "detach" \| "reject" \| null` | |
+| `supports_trash` | boolean | `delete` can soft-delete rather than purge. |
+| `supports_idempotency_key` | boolean | `submit` can forward a provider idempotency key. |
+
+**`mutable_fields` is how you explain what "writable" means for your provider.**
+The engine has no domain knowledge — it does not know that a mail body is
+immutable while its read flag is not. Listing `["unread", "categories", "folder"]`
+tells it exactly which property edits you accept; an edit to anything else is
+rejected with a clear error instead of being silently dropped. Declare the
+narrowest honest set.
 
 ## Error codes
 
@@ -180,6 +221,57 @@ and returns the node to materialize, or `null` to skip the item:
 It must be pure and fast, and must **not** call `raisin.functions.call` (it runs
 in the sync hot loop). The engine always writes the reserved metadata (below) on
 top of whatever the mapping returns; you cannot suppress or set those yourself.
+
+### Both directions, one function
+
+Under the [write path](#the-write-path) a mapper gains a second direction and
+dispatches on `input.operation`:
+
+```javascript
+function handler(input) {
+  switch (input.operation) {
+    case "to_node":     // { external_item, mount }  — the call above
+      // -> { node_type, name?, properties } | null
+      return toNode(input.external_item, input.mount);
+
+    case "to_external": // { node, mount, fields?, intent }
+      // -> { payload, external_id? } | null
+      return toExternal(input.node, input.mount, input.fields, input.intent);
+  }
+}
+```
+
+Input with no `operation` still means `to_node`, so existing mappers keep working
+untouched.
+
+**Put the reverse translation here, not in your adapter.** The mapper is
+deliberately separate from the adapter so node shape can be customized without
+forking the adapter — which means a reverse mapping hardcoded in the adapter would
+silently write the wrong fields the moment someone points the mount at a custom
+mapper. Keeping both directions in one file gives them one author and one place to
+stay consistent.
+
+- When `fields` is present, emit **only** those keys — the engine is asking for a
+  patch, not a whole object.
+- **`intent`** is `"create"`, `"update"` or `"submit"`. Ignore it and your mapper
+  behaves exactly as before, but you cannot infer it: `fields` is empty for a
+  mirror update *as well as* for a create. The difference is not cosmetic. A
+  calendar exception, for instance, is perfectly updatable — it has its own
+  provider id — and impossible to create from nothing, because the provider mints
+  one only by diverging an occurrence of a live series; POSTing for one produces
+  a duplicate meeting the series still overlaps.
+- Return `null` from `to_external` to declare a node not writable; the write parks
+  with a stated reason instead of pushing a guess. Return `null` rather than an
+  empty payload when nothing is writable — an empty PATCH still bumps the
+  provider's change token, which invalidates every stored etag and makes the next
+  delta re-deliver the object for no reason.
+- A mapper without `to_external` makes its mount **read-only**, reported in the
+  mount's `writeback_supported` state so the console can explain why. Writability
+  belongs to the *mount* — adapter and mapper together.
+- Keep `to_external` pure and I/O-free, like `to_node`.
+- The built-in default mapping has no reverse: a mount with no `mapping_function`
+  is read-only by construction, because the default mapping is lossy and inverting
+  it would be guessing.
 
 ## Reserved metadata properties
 
@@ -287,10 +379,11 @@ Provider-level configuration, usually one per repository in `raisin:system`.
   Redis locks, sync is not cluster-safe and the engine logs a warning.
 - **v1 syncs metadata and links, not file bytes.** `get_content` exists in the
   contract but the engine never calls it.
-- **Write-through is not implemented.** The engine is read/reconcile-only and the
-  admin console hides the write-back controls — it is not a toggle. `write_config`
-  and the adapter's `create`/`update`/`delete` are inert; `remote_wins` is the
-  only conflict strategy and is relevant only once write-through exists.
+- **Writeback is off until a mount asks for it.** `write_config.mode` defaults to
+  `off`, and a mount only resolves to a write mode when the adapter declares the
+  operations that mode needs and the mapper implements `to_external`. The console
+  reports which of the two is missing rather than showing a control that does
+  nothing.
 - **The first sync of a large folder emits one node event per item.** A full
   reconcile writes every item, and each write fires a trigger. Expect an initial
   burst; scope triggers by path prefix and operation.
@@ -339,3 +432,143 @@ Force a sync outside the poll interval — the webhook-driven-refresh primitive.
 
 A `webhook`-mode mount (`sync_config.mode: "webhook"`) is skipped by the periodic
 driver entirely and is expected to be refreshed this way.
+
+## The write path
+
+The engine calls `create`, `update`, `delete`, `submit` and `get_content`. A mount
+resolves its write mode from your `capabilities` and its mapper together, so an
+adapter that declares nothing is correctly treated as read-only. Concept:
+[Virtual Nodes → The write path](../concepts/virtual-nodes.md#the-write-path).
+
+:::warning A write scope is not the scope you connected with
+Every shipped connector requests read-only OAuth scopes. Writing needs more —
+`Mail.ReadWrite` / `Calendars.ReadWrite` for Microsoft 365,
+`https://www.googleapis.com/auth/calendar.events` for Google Calendar — and
+widening it takes three steps, none skippable: grant the permission at the
+provider, add the scope to the **live** `raisin:Integration` node under
+`/integrations` (the `/connectors` template is package-owned and is overwritten
+on package update), and **reconnect each account**. Neither Microsoft nor Google
+issues a widened scope on a token refresh; only on fresh consent. Until then
+every write returns 403, which the shipped adapters report as a `config_error`
+naming the missing scope rather than as an expired token — because sending an
+operator to reconnect an account cannot fix a scope that was never requested.
+:::
+
+### What the engine owns, what you own
+
+The write path is deliberately thin and domain-blind. The engine knows "call
+`update` with these fields". It does **not** know what a calendar is, that a mail
+body is immutable, or what an outbox means. All of that is your package explaining
+itself — through `capabilities`, your node types, and your docs.
+
+| Layer | Owns |
+|-------|------|
+| **Engine** | change detection, ordering, the mount lease, write lifecycle, the already-pushed check, metadata stamp-back, safety rails, at-most-once semantics, error classification |
+| **Your adapter** | the remote API calls, node↔provider translation, declared capabilities, the optional conflict resolver |
+| **Your conventions** | which node types, which collections, outbox layout, mount templates |
+
+**Adapters never write nodes.** Take a request, hit the provider, return a result;
+the engine performs every local write. This is not a style preference — delegating
+writes would lose lease serialization (a concurrent sync clobbers your write), the
+metadata stamp-back that prevents infinite sync loops, the destructive-operation
+rails, and the sandbox boundary. Adapters run privileged with a system auth
+context, so an adapter that could write nodes could write *any* node.
+
+> **You decide what the remote becomes and perform the remote call.
+> The engine decides what the node becomes and performs the local write.**
+
+### Write modes belong to the mount
+
+The same adapter serves different modes on different mounts. You declare which
+operations you can perform; the mount decides which apply where.
+
+| mode | the node is… | a local change means | typical use |
+|------|--------------|----------------------|-------------|
+| `mirror` | the remote object | create / update / delete propagate | calendar events, files |
+| `state_only` | an immutable record with mutable state | only `mutable_fields` propagate; other edits are rejected | mail — body immutable, read/flags/folder are not |
+| `submit` | a **command** | creating it and queueing it performs the action once | send / reply / forward, RSVP |
+
+`submit` is how immutable resources become writable coherently. An email cannot be
+edited, so its write path is a *sending* path — which belongs in a separate mount
+whose members are intents rather than mirrors:
+
+```
+/mail/inbox    state_only   raisin:Mail
+/mail/sent     read-only    raisin:Mail          ← canonical sent message
+/mail/outbox   submit       raisin:OutboundMail  ← commands
+```
+
+Reply and forward then need no special casing: the outbox node names the action
+and the provider's own message id. The shape generalizes to any connector — a chat
+outbox, a refund queue, an order submission mount are all `submit` collections.
+
+### `submit` is at-most-once — never retried
+
+`submit` causes a side effect the provider cannot take back. A retried send is a
+duplicate email; a retried charge is a duplicate charge. So the engine treats it
+unlike every other operation:
+
+- The command is durably marked *sending* **before** the call, turning a crash
+  mid-flight into a bounded ambiguity rather than an unbounded one.
+- Success → *sent*, with `external_id` / `etag` stamped back.
+- `rate_limited` → requeued. **The only error that requeues**, because it is the
+  only one proving no side effect occurred.
+- `auth_expired`, `config_error`, `conflict` → *failed*. Definitive pre-effect
+  rejections.
+- **Anything else, including a timeout, parks at *unknown* and is never retried
+  automatically.** Only a human moves it back.
+
+This inverts the usual default: for reads an unrecognized error is transient and
+retried; for `submit` an unrecognized error is *ambiguous* and must not be. Throw
+precise codes.
+
+If your provider accepts an idempotency key, declare `supports_idempotency_key`
+and forward the engine's `idempotency_key` — that is what turns an ambiguous case
+into a safely resolvable one instead of a parked one.
+
+### Delete and move are policy
+
+Neither is fixed behaviour; the mount resolves them from your declared defaults.
+
+| `delete_policy` | Effect |
+|-----------------|--------|
+| `detach` | the node is removed locally, the remote untouched. **A later full reconcile re-imports it** — there is no suppression list. Say so in your docs. |
+| `trash` | the remote is soft-deleted (provider trash). `delete` is called with `mode: "trash"`. |
+| `purge` | the remote is hard-deleted. Never a default. |
+
+`move_policy` is `push`, `detach`, or `reject`. **There is no `move` operation** —
+a move is an `update` carrying the new parent/folder field, so a provider that
+reparents through its normal update call needs no extra code.
+
+### Conflict
+
+Writes carry the node's last-known provider etag. If it no longer matches, throw
+`conflict` rather than overwriting — that is the signal the mount's conflict
+policy acts on (`remote_wins` by default, or `local_wins`, or park for a human).
+
+A package may also ship a **conflict resolver function**, referenced by the mount
+as `resolver_function`. It is an ordinary function, invoked like a mapper, and
+receives both sides:
+
+```javascript
+// input:  { local, remote, base_etag, field_diff, mount }
+// return: { resolution: "local_wins" | "remote_wins" | "merged" | "park", node?, fields? }
+```
+
+This is where domain knowledge belongs: only a calendar package knows that two
+edits touching different fields of one event can be merged, while two edits to the
+same start time cannot. A throw parks the write — it is never silently dropped.
+
+### What the engine guarantees you
+
+So your adapter can stay simple:
+
+- **You are never called concurrently for the same mount.** Writes drain under the
+  same lease as sync, ahead of the read phase.
+- **You are not called for a write that already landed.** Stored provider metadata
+  is compared before every call; no-ops are skipped.
+- **You are not called with your own change.** Metadata stamped after your write
+  suppresses the echo when the next delta returns the item you just changed.
+- **You are not called for a runaway delete.** Proportional blast-radius rails
+  stop a mis-scoped bulk statement before it reaches the provider, park the
+  pending writes, and surface the block to an operator — without stopping reads.

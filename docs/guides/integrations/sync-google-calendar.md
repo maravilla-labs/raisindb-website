@@ -6,9 +6,16 @@ sidebar_position: 6
 
 :::caution Experimental / Preview
 The Google Calendar connector is an **experimental / preview** feature. Validate
-it against your own account before relying on it in production. It is
-**read-only** — events are brought *in* as nodes; nothing is written back to
-Google Calendar.
+it against your own account before relying on it in production.
+
+Events sync both ways: a mount can mirror them, so a create, edit or delete in
+RaisinDB reaches Google. Two provider facts are worth knowing before you enable
+it. **Google has no trash for events** — a delete is immediate and unrecoverable,
+so it does not propagate unless you explicitly set the mount's `delete_policy` to
+`purge`. And **Google mails every attendee** when an event with attendees
+changes, so every write sends `sendUpdates=none` unless the mount opts in.
+Writing also needs the `calendar.events` scope, which the connector does not
+request by default.
 :::
 
 This guide connects a Google account and mounts a calendar so its events appear

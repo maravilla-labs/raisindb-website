@@ -83,17 +83,18 @@ function handler(input) {
 The usual read-only `raisin.context` global is available. Because the engine
 calls the adapter **directly (not via a trigger)**, there is no `context.event`.
 
-## The eight operations
+## The operations
 
 | Operation | Params | Returns |
 |-----------|--------|---------|
 | `capabilities` | `{}` | A capabilities object (see below). |
 | `list` | `{ folder_id?, cursor?, limit? }` | `{ items: ExternalItem[], next_cursor }` |
 | `get` | `{ item_id?, path? }` | `ExternalItem` or `null` |
-| `get_content` | `{ item_id }` | `{ content, mime_type }` |
-| `create` | `{ parent_id, name, is_folder, content?, mime_type? }` | `ExternalItem` |
-| `update` | `{ item_id, name?, content?, mime_type?, etag? }` | `ExternalItem` |
-| `delete` | `{ item_id }` | `{ deleted: true }` |
+| `get_content` | `{ item_id, parent_item_id? }` | `{ content \| content_base64, mime_type }` |
+| `create` *(write)* | `{ payload, parent_id? }` | `{ external_id, etag? }` |
+| `update` *(write)* | `{ item_id, payload, fields?, etag? }` | `{ external_id, etag? }` or `null` |
+| `delete` *(write)* | `{ item_id, policy, etag? }` | `{ deleted: true }` |
+| `submit` *(write, optional)* | `{ payload, external_id?, idempotency_key }` | `{ external_id, etag? }` |
 | `get_changes` | `{ since_token, folder_id? }` | `{ items: Change[], next_token }` |
 
 You only need to implement what your provider supports — advertise the rest as
@@ -108,11 +109,28 @@ You only need to implement what your provider supports — advertise the rest as
 - **`get_changes`** returns everything that changed since `since_token` and a
   fresh `next_token`. Make `next_token` durable and resumable: the engine may
   re-run a page after a crash and relies on your results being idempotent.
-- **`get_content`**, **`create`**, **`update`**, **`delete`** back content sync
-  and write-through, which are **not implemented in the engine** — it is
-  read/reconcile-only, and the admin console hides the write-back controls.
-  Implement them for forward-compatibility if you like, but a v1 mount is
-  link-only and the engine never calls them.
+- **`get_content`**, **`create`**, **`update`**, **`delete`** and **`submit`**
+  back content sync and the write path, and the engine **calls all of them**.
+  They are optional: declare in `capabilities` only what you actually implement,
+  because a capability with nothing behind it is how a mount resolves to a mode
+  that throws at drain time — after the engine has already claimed its
+  candidates. Read
+  [the write path](../../reference/virtual-node-adapters.md#the-write-path)
+  before you start. Three things surprise people:
+  - **The write mode is chosen by the *mount*, not by your adapter.** You declare
+    which operations you can perform; a mount decides whether it mirrors, pushes
+    only a declared set of mutable fields, or submits commands.
+  - **`submit` is at-most-once and is never retried.** A retried send is a
+    duplicate email, so an ambiguous failure parks for a human instead of
+    retrying.
+  - **Your reverse mapping belongs in the mapper, not the adapter** — see below.
+
+:::danger Never write nodes from an adapter
+Return results and let the engine write. An adapter that writes nodes directly
+bypasses the mount lease, the metadata stamp-back that prevents infinite sync
+loops, and the rails that stop a runaway delete. Adapters run privileged, so one
+that can write nodes can write *any* node in the workspace.
+:::
 
 ## Error codes
 
@@ -255,6 +273,15 @@ per sync run — never once per item.
   `{ node_type, name?, properties }`, or `null` to skip the item. The same
   performance rules apply — it must be pure and fast, and must not call other
   functions.
+- Under the [write path](../../reference/virtual-node-adapters.md#the-write-path)
+  a mapper carries **both directions**, dispatching on `input.operation`:
+  `to_node` (the call above — still the default when no operation is given, so
+  existing mappers keep working) and `to_external`, which turns a node back into a
+  provider payload. Put the reverse translation **here, not in your adapter**: the
+  mapper is what a user swaps to customize node shape, so a reverse mapping living
+  in the adapter would silently write the wrong fields the moment someone does
+  that. A mapper without `to_external` makes its mount read-only, which the
+  console reports rather than failing quietly.
 
 ## Test the connection before you mount
 

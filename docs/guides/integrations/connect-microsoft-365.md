@@ -6,9 +6,16 @@ sidebar_position: 5
 
 :::caution Experimental / Preview
 The Microsoft 365 connector is an **experimental / preview** feature. Validate it
-against your own account before relying on it in production. It is **read-only** —
-mail, events, and files are brought *in* as nodes; nothing is written back to
-Microsoft 365.
+against your own account before relying on it in production.
+
+It reads mail, events and files, and it **writes**: a mail's read state, the
+calendar as a full mirror (create, edit, delete), and sending / RSVP as outbox
+commands. OneDrive stays read-only — a Graph drive write is an upload session
+rather than a JSON body. Every write mode is off unless a mount opts in, and
+none works until the connector carries a write scope: `Mail.ReadWrite`,
+`Mail.Send` or `Calendars.ReadWrite`, added to the **live** integration node and
+re-consented per account. Microsoft only issues a widened scope on fresh
+consent, never on a refresh.
 :::
 
 This guide connects a Microsoft 365 account over **Microsoft Graph v1.0**, then

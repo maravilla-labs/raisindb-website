@@ -14,8 +14,10 @@ it. **Google has no trash for events** — a delete is immediate and unrecoverab
 so it does not propagate unless you explicitly set the mount's `delete_policy` to
 `purge`. And **Google mails every attendee** when an event with attendees
 changes, so every write sends `sendUpdates=none` unless the mount opts in.
-Writing also needs the `calendar.events` scope, which the connector does not
-request by default.
+Writing also needs the `calendar.events` scope. Add it to the connector, then
+press **Reconnect** on the account — the console flags the shortfall for you,
+and reconnecting updates the account in place rather than creating a second one.
+Google issues a widened scope on fresh consent only.
 :::
 
 This guide connects a Google account and mounts a calendar so its events appear

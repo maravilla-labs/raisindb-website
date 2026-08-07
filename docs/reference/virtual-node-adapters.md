@@ -175,12 +175,42 @@ Throw an `Error` with a `code` property:
 |--------|---------|-----------------|
 | `auth_expired` | Access token rejected / account needs re-auth. | Sets mount status `auth_required` and **pauses** the mount until reconnected. Not retried. |
 | `rate_limited` | Provider throttling. | Exponential backoff; retried later. |
+| `config_error` | Something no retry can fix: a missing OAuth scope, a mount pointed at an id that does not exist. | On a WRITE it ends the drain, badges the mount `misconfigured` and stands off before trying again. Not retried per item. |
 | `conflict` | Write-through etag mismatch. | Surfaced to the writer; with `remote_wins` the local edit is dropped and a warning is emitted. |
 | *(anything else)* | Transient failure. | Retry with backoff; after the failure threshold the mount goes `degraded`. |
 
 Never return an empty result to signal an auth failure — an empty `list` /
 `get_changes` reads as "everything was deleted" and triggers a destructive
 reconcile.
+
+:::warning Classify a throttle as `rate_limited`, not as a transient failure
+The distinction looks cosmetic and is not. `rate_limited` backs off;
+*(anything else)* retries promptly — and on a throttled tenant that is
+self-sustaining. The walk is slow **because** the provider is throttling, the
+prompt retries make it slower, the run outlives the job watchdog's timeout and
+is killed before it can finish, and the mount is left reporting `syncing` having
+never completed an import. The next run starts over and does the same thing.
+
+Microsoft Graph answers 503 as well as 429 when it sheds load, and both mean
+"come back later" rather than "your request was wrong". Map every such status —
+429, 503, 504, and any provider-specific equivalent — to `rate_limited`.
+:::
+
+:::danger A write error that no retry can fix must say `config_error`
+A push that returns anything retryable is retried on the next drain, and the
+next. If the cause is a missing scope, that is a loop with no exit: the edit can
+never succeed, so it stays pending forever and every drain spends a provider
+call on it. This ran in production — one un-pushable calendar edit produced
+~78 drains a minute, burned a core, and used 303 of the tenant's rate-limit
+responses in 40 minutes.
+
+`config_error` is what stops it. The engine ends the drain at the first one
+(every remaining push would fail identically), badges the mount, and stands off
+for 15 minutes before trying again — long enough to stop the burn, short enough
+that an operator who fixes the scope sees writeback resume while they are still
+looking at the screen. Say `config_error` whenever the fix is a human changing
+something outside the system.
+:::
 
 ## Default mapping
 

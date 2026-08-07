@@ -206,9 +206,32 @@ else's mailbox or calendar, so it is something you turn on, never something you
 inherit.
 
 A write also needs an OAuth scope the connectors do not request by default —
-[the reference](../reference/virtual-node-adapters.md#the-write-path) covers the
-three steps that takes.
+see **Widening a permission** below.
 :::
+
+### Widening a permission
+
+Neither Microsoft nor Google ever upgrades a grant that already exists. A
+connector's scope list can be widened — by a package update, or by you editing
+it — and every account connected before that keeps exactly the permissions it
+had. The account stays healthy in every observable way: its token refreshes,
+reads keep working. The first sign of trouble is a write coming back 403, hours
+or days later and nowhere near the account that needs attention.
+
+So the console reports it directly. Each connection shows the scopes it was
+granted, and any the connector now asks for that it has not:
+
+> **Missing permissions — reconnect to grant:** `Calendars.ReadWrite`
+
+**Reconnect** re-runs sign-in for that account. It is the same authorization
+flow as connecting, and the account is matched by the provider's own identity,
+so it is **updated in place**: the account keeps its id and every mount pointing
+at it keeps working. You do not need to disconnect first — and you should not,
+because disconnecting is what breaks the reference those mounts depend on.
+
+An account that reports no scopes at all shows no warning. A provider declining
+to say what it granted is not evidence it granted nothing, and flagging every
+such account would make the warning worth ignoring.
 
 ### One mechanism, three shapes
 

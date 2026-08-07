@@ -13,9 +13,10 @@ calendar as a full mirror (create, edit, delete), and sending / RSVP as outbox
 commands. OneDrive stays read-only — a Graph drive write is an upload session
 rather than a JSON body. Every write mode is off unless a mount opts in, and
 none works until the connector carries a write scope: `Mail.ReadWrite`,
-`Mail.Send` or `Calendars.ReadWrite`, added to the **live** integration node and
-re-consented per account. Microsoft only issues a widened scope on fresh
-consent, never on a refresh.
+`Mail.Send` or `Calendars.ReadWrite`. Add it to the connector, then press
+**Reconnect** on the account — the console flags the shortfall for you, and
+reconnecting updates the account in place, so the mounts using it keep working.
+Microsoft only issues a widened scope on fresh consent, never on a refresh.
 :::
 
 This guide connects a Microsoft 365 account over **Microsoft Graph v1.0**, then

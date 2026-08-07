@@ -20,6 +20,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'tutorials/quickstart',
+        'tutorials/custom-connector',
       ],
     },
     {

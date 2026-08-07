@@ -66,13 +66,18 @@ The snapshot is read-only; mutating it has no effect.
 | `update` *(write)* | `{ item_id, payload, fields?, etag? }` | `{ external_id, etag? } \| null` |
 | `delete` *(write)* | `{ item_id, policy, etag? }` | `{ deleted: true }` |
 | `submit` *(write, optional)* | `{ payload, external_id?, idempotency_key }` | `{ external_id, etag?, provider_id? }` |
-| `get_changes` | `{ since_token: string \| null, folder_id? }` | `{ items: Change[], next_token: string }` |
+| `get_changes` | `{ since_token: string \| null, folder_id? }` | `{ items: Change[], next_token: string, has_more?: boolean }` |
 
 Notes:
 
 - **`capabilities`** must be cheap and side-effect-free; it is polled.
 - **`list`** returns one level of children; omit `folder_id` to list
   `mount.remote_root`. Return `next_cursor: null` on the last page.
+  **`folder_id` is not optional to honor**: the engine's full walk recurses
+  folders explicitly, naming the folder it wants on every call. An adapter
+  that always lists its configured root passes every flat-hierarchy test and
+  then silently never imports nested content, while the walk re-discovers the
+  same root folders forever.
 - **`create`** receives the whole object — a create has nothing to patch — and
   **must return the id it created**. An adapter that answers without an
   `external_id` leaves an orphan: the engine refuses to adopt the node, because a
@@ -95,6 +100,13 @@ Notes:
 - **`get_changes`** is the delta fast path. `next_token` must be durable and
   resumable. If the provider has no delta API, advertise `supports_changes:
   false` and you need not implement it — the engine full-lists instead.
+  **Declare `has_more`**: `true` means "mid-enumeration cursor, call me again
+  now"; `false` means "caught up — the token is next run's resume point".
+  Token identity is not a termination signal (Microsoft Graph mints a fresh
+  delta token on every poll of an idle feed); adapters that omit `has_more`
+  fall back to the engine's stop-on-first-empty-page heuristic. And **never
+  return `next_token: null` to mean "no changes"** — echo the cursor you were
+  given; a null token reads as "no resumable cursor exists".
 - **`get_content`** is called on demand, never during a sync. `parent_item_id`
   is present when the item is not addressable on its own (a mail attachment
   lives at `/messages/{message}/attachments/{attachment}`); adapters whose items

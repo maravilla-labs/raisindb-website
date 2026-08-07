@@ -95,7 +95,7 @@ calls the adapter **directly (not via a trigger)**, there is no `context.event`.
 | `update` *(write)* | `{ item_id, payload, fields?, etag? }` | `{ external_id, etag? }` or `null` |
 | `delete` *(write)* | `{ item_id, policy, etag? }` | `{ deleted: true }` |
 | `submit` *(write, optional)* | `{ payload, external_id?, idempotency_key }` | `{ external_id, etag? }` |
-| `get_changes` | `{ since_token, folder_id? }` | `{ items: Change[], next_token }` |
+| `get_changes` | `{ since_token, folder_id? }` | `{ items: Change[], next_token, has_more? }` |
 
 You only need to implement what your provider supports — advertise the rest as
 `false` in `capabilities` and the engine won't call them.
@@ -106,9 +106,21 @@ You only need to implement what your provider supports — advertise the rest as
   `get_changes` delta path; `false` forces a full listing (`list`) every time.
 - **`list`** enumerates one level of children — defaulting to `mount.remote_root`
   when `folder_id` is omitted — and pages via `cursor` / `next_cursor`.
+  **Always honor `params.folder_id`.** The engine recurses folders explicitly,
+  naming the folder it wants on every call; an adapter that always lists its
+  configured root passes every flat-hierarchy test and then silently never
+  imports nested content.
 - **`get_changes`** returns everything that changed since `since_token` and a
   fresh `next_token`. Make `next_token` durable and resumable: the engine may
   re-run a page after a crash and relies on your results being idempotent.
+  Two rules keep the delta loop sane:
+  - **Declare `has_more`.** `true` = "this is a mid-enumeration cursor, call me
+    again now"; `false` = "caught up — the token is the next run's resume
+    point". Do not expect the engine to infer this from the token: some
+    providers (Microsoft Graph) mint a *fresh* delta token on every poll of an
+    idle feed, so "the token stopped changing" never happens.
+  - **Never return `next_token: null` to mean "no changes."** Echo the cursor
+    you were given. A null token reads as "no resumable cursor exists at all".
 - **`get_content`**, **`create`**, **`update`**, **`delete`** and **`submit`**
   back content sync and the write path, and the engine **calls all of them**.
   They are optional: declare in `capabilities` only what you actually implement,
@@ -139,10 +151,12 @@ dispatches on `code`:
 
 | `code` | Meaning | Engine behavior |
 |--------|---------|-----------------|
-| `auth_expired` | The access token was rejected. | Marks the account for re-auth and **pauses the mount** (`auth_required`) until reconnected. Not retried. |
-| `rate_limited` | The provider is throttling. | Backs off and retries later. |
-| `conflict` | Write-through optimistic-concurrency failure (etag mismatch). | Surfaced to the writer; with `remote_wins` the local edit is dropped and a warning is emitted. |
-| *(anything else)* | Transient failure. | Retries with backoff; after repeated failures the mount goes `degraded`. |
+| `auth_expired` | The access token was rejected (401/403). | Marks the account for re-auth and **pauses the mount** (`auth_required`) until reconnected. Not retried. |
+| `rate_limited` | The provider is throttling (429, and treat 503/504 the same). | Backs off and retries later. The **only** code the write drain requeues. |
+| `config_error` | The request itself is wrong (400/404 on reads: bad folder id, missing scope) — the identical retry gets the identical rejection. | Badges the mount **misconfigured** with your message and stands off. Mapping these to "transient" instead is how an adapter hammers a provider on every tick, forever. |
+| `cursor_invalid` | The provider expired the delta cursor (Graph: 410 Gone, or 400 with `syncStateNotFound`). | Drops the stored cursor and falls back to a full reconcile **in the same run**. Normal operation, not a fault. |
+| `conflict` | Write-through optimistic-concurrency failure (etag mismatch). | Routed through the mount's conflict policy — never retried blindly. |
+| *(anything else)* | Transient failure. | **Reads**: retried with backoff; after repeated failures the mount goes `degraded`. **Writes invert this**: an unrecognized error on the drain is *not* retried — a retried send is a duplicate email. |
 
 ```javascript
 if (resp.status === 401) {

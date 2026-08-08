@@ -186,7 +186,7 @@ Throw an `Error` with a `code` property:
 | `code` | Meaning | Engine behavior |
 |--------|---------|-----------------|
 | `auth_expired` | Access token rejected / account needs re-auth. | Sets mount status `auth_required` and **pauses** the mount until reconnected. Not retried. |
-| `rate_limited` | Provider throttling. | Exponential backoff; retried later. |
+| `rate_limited` | Provider throttling. | Exponential backoff; retried later. Append `retry_after=<seconds>` to the message (from the provider's `Retry-After`) and the engine waits exactly that long instead of guessing — capped at one hour. |
 | `config_error` | Something no retry can fix: a missing OAuth scope, a mount pointed at an id that does not exist. | On a WRITE it ends the drain, badges the mount `misconfigured` and stands off before trying again. Not retried per item. |
 | `conflict` | Write-through etag mismatch. | Surfaced to the writer; with `remote_wins` the local edit is dropped and a warning is emitted. |
 | *(anything else)* | Transient failure. | Retry with backoff; after the failure threshold the mount goes `degraded`. |

@@ -119,6 +119,7 @@ const sidebars: SidebarsConfig = {
         'concepts/dcad',
         'concepts/workspaces',
         'concepts/access-control',
+        'concepts/secrets',
         'concepts/multi-tenancy',
         'concepts/replication',
         'concepts/virtual-nodes',

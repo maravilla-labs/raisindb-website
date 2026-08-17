@@ -397,8 +397,25 @@ workspace_patches:
         - blog:Author
 ```
 
+## Environment-Specific Values
+
+Any value that differs between dev, staging and production — a preview server
+URL, a public domain — belongs in an `{env:...}` token rather than in the YAML
+literally:
+
+```yaml
+properties:
+  domain: "{env:SITE_DOMAIN:-my-site.localhost}"
+  dev_url: "{env:PREVIEW_SERVER:-http://localhost:5173}"
+```
+
+The CLI resolves these from your shell or a `.env` file when the package is
+built, validated or pushed, so one source tree builds for every environment.
+See [Environment Variables](./environment-variables.md).
+
 ## Next Steps
 
 - [Installing Packages](./installing-packages.md) — Install packages into repositories
 - [Built-in Packages](./builtin-packages.md) — Packages that ship with RaisinDB
 - [Sync and Watch](./sync-and-watch.md) — Live development workflow
+- [Environment Variables](./environment-variables.md) — `{env:...}` substitution in package YAML

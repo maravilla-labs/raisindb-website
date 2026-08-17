@@ -152,8 +152,21 @@ push of content **and** schema (node types / archetypes / element types /
 mixins) without a full reinstall is available as
 `raisindb sync ./package --repo myapp --push`.
 
+Environment-specific values in the package YAML (preview URLs, public domains)
+should be `{env:...}` tokens, which the pipeline resolves from the same
+exported variables:
+
+```bash
+export PREVIEW_SERVER=https://preview.example.ch
+raisindb deploy ./package --repo myapp --install
+```
+
+An unset variable with no inline default fails the deploy instead of shipping
+a literal token — see [Environment Variables](./environment-variables.md).
+
 ## Next Steps
 
 - [Creating Packages](./creating-packages.md) — Package format and structure
 - [Installing Packages](./installing-packages.md) — Package lifecycle
 - [Built-in Packages](./builtin-packages.md) — Pre-installed packages
+- [Environment Variables](./environment-variables.md) — `{env:...}` substitution in package YAML

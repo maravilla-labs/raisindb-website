@@ -153,7 +153,17 @@ Validate a package folder without building a `.rap`: schema validation (manifest
 
 ```bash
 raisindb package validate ./package
+raisindb package validate ./package --env production
 ```
+
+| Option | Description |
+|--------|-------------|
+| `-e, --env <profile>` | Env profile for `{env:...}` tokens (loads `.env.<profile>`) |
+| `--env-file <path...>` | Additional env file(s) for `{env:...}` tokens |
+
+Validation runs against the **substituted** content, so an unset variable is
+reported here as an `UNRESOLVED_ENV_TOKEN` error with its file and line — see
+[Environment Variables](../../guides/packages/environment-variables.md).
 
 This is the final gate before a package is built or uploaded — `package create` and `package deploy` run the same validation automatically and abort on errors. Use `raisindb flow doctor` as the fast, focused loop while editing a single flow.
 
@@ -165,6 +175,7 @@ Create a `.rap` package file from a folder. Runs the full package validation (sc
 raisindb package create ./package
 raisindb package create ./package --check
 raisindb package create ./package -o custom-name.rap
+raisindb package create ./package --env production
 ```
 
 | Option | Description |
@@ -172,6 +183,13 @@ raisindb package create ./package -o custom-name.rap
 | `-o, --output <file>` | Output file path |
 | `--check` | Validate only (don't create package; same as `package validate`) |
 | `--no-validate` | Skip validation |
+| `-e, --env <profile>` | Env profile for `{env:...}` tokens (loads `.env.<profile>`) |
+| `--env-file <path...>` | Additional env file(s) for `{env:...}` tokens |
+
+`{env:NAME}` / `{env:NAME:-default}` tokens in the package's YAML are resolved
+into the built `.rap`. An unset variable with no default aborts the build and
+writes no file — see
+[Environment Variables](../../guides/packages/environment-variables.md).
 
 ### package deploy
 
@@ -192,6 +210,8 @@ raisindb deploy ./package --repo demo --branch staging --install
 | `-r, --repo <name>` | Repository name |
 | `-b, --branch <name>` | Target branch (default: `main`). Uploads — and, with `--install`, installs — onto this branch. |
 | `-i, --install` | Install after upload; waits until the package status is `installed` (fails on `failed` with the error detail) |
+| `-e, --env <profile>` | Env profile for `{env:...}` tokens (loads `.env.<profile>`) |
+| `--env-file <path...>` | Additional env file(s) for `{env:...}` tokens |
 
 ### package upload
 
@@ -257,6 +277,14 @@ raisindb sync ./package --repo demo --watch
 | `-s, --server <url>` | Server URL |
 | `-b, --branch <name>` | Branch to sync against (default: `main`) |
 | `--init` | Initialize sync configuration |
+| `-e, --env <profile>` | Env profile for `{env:...}` tokens (loads `.env.<profile>`) |
+| `--env-file <path...>` | Additional env file(s) for `{env:...}` tokens |
+
+Pushed files have their `{env:...}` tokens resolved first, and
+`.raisin-sync.yaml` may itself use them (`server: "{env:RAISIN_SERVER:-http://localhost:8080}"`).
+`--pull` refuses to overwrite a local file containing tokens unless `--force`
+is passed — see
+[Environment Variables](../../guides/packages/environment-variables.md).
 
 ### package clone
 

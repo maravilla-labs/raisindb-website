@@ -251,6 +251,7 @@ const sidebars: SidebarsConfig = {
             'guides/packages/installing-packages',
             'guides/packages/builtin-packages',
             'guides/packages/sync-and-watch',
+            'guides/packages/environment-variables',
           ],
         },
         {

@@ -86,6 +86,40 @@ raisindb deploy ./package --repo myapp --branch staging --install
 `deploy`, `sync`, and `install` all accept `-b, --branch <name>` (default
 `main`). See the [CLI commands reference](../../reference/cli/commands.md#package-deploy).
 
+## Promote Selected Nodes to Another Branch
+
+Merging moves a whole branch. When one branch holds work in progress and another
+holds what is live, you usually want to move *some* of it — a page and what it
+needs, not everything anyone has touched. `copyNodes` takes named roots:
+
+```typescript
+const at = await db.branches().getHead('main');   // pin: decide once, copy that
+
+await db.branches().copyNodes('main', 'live', {
+  workspace: 'content',
+  roots: ['/products/kettle'],
+  recursive: true,
+  sourceRevision: at,
+});
+```
+
+Two properties make this usable as a publishing step:
+
+- **Ids are preserved**, so promoting the same root again updates the same
+  target nodes. Repeat promotions are idempotent for a given source state, and
+  anything referencing a promoted node keeps resolving.
+- **The pin is a real snapshot.** Copying a large set takes time, and without
+  `sourceRevision` the source is read at HEAD as each node's turn comes — so a
+  write landing mid-copy ends up partly inside the result, with nothing to
+  report it. Pinning is what makes "publish what I reviewed" true rather than
+  "publish whatever is there when the copy gets to it".
+
+The copy carries the whole node, translation overlays included, and lands in one
+atomic commit. Each root's parent must already exist on the target branch.
+
+See the [Branches SDK reference](../../reference/javascript-client/branches.md#copynodes)
+for the full argument list.
+
 ## Next Steps
 
 - [Merging Changes](./merging-changes.md)

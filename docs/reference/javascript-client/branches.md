@@ -108,7 +108,76 @@ resolve via the HTTP `resolve-merge` endpoint.
 | `options.strategy` | `string?` | `'ThreeWay'` (default) or `'FastForward'` |
 | `options.message` | `string?` | Merge commit message |
 
+### copyNodes
+
+Copy a set of nodes from one branch onto another — branch **promotion**. Unlike
+a merge, which takes a whole branch, this takes named roots, so it suits a model
+where one branch holds work in progress and another holds what is live.
+
+```typescript
+await db.branches().copyNodes('main', 'live', {
+  workspace: 'content',
+  roots: ['/products/kettle'],
+  recursive: true,
+});
+```
+
+Node **ids are preserved**, so promoting the same root again updates the same
+target nodes rather than creating new ones — repeat promotions are idempotent
+for a given source state, and references to a promoted node keep resolving. The
+whole set lands in one atomic commit and the target branch HEAD advances once.
+
+A promotion carries the whole node: properties, archetype, every index
+(path, property, reference, relation, ordered-children), branch-scoped secrets,
+and **translation overlays**, node-level and block-level.
+
+Each root's parent path must already exist on the target branch; a missing one
+fails the call rather than writing a dangling subtree.
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `sourceBranch` | `string` | Branch to copy **from** |
+| `targetBranch` | `string` | Branch to copy **onto** |
+| `options.workspace` | `string` | Workspace the nodes live in |
+| `options.roots` | `string[]` | Node paths to copy (non-empty) |
+| `options.recursive` | `boolean?` | Also copy descendants (default `true`) |
+| `options.deleteMissing` | `boolean?` | Prune target nodes under the roots that are absent from the copied set — one-way sync (default `false`) |
+| `options.sourceRevision` | `string?` | Read the source AS OF this revision instead of its HEAD |
+
+#### Pinning a promotion to a revision
+
+Copying a large set is not instantaneous. Without a pin the source is read at
+HEAD as each node's turn comes, so a write that lands mid-copy ends up partly
+inside the result — a torn snapshot, and nothing reports it, because every node
+copied cleanly, just not all from the same moment.
+
+Capture the head when the promotion is decided and pass it back:
+
+```typescript
+const at = await db.branches().getHead('main');
+
+// …minutes later, after a review step, and while other people keep working
+await db.branches().copyNodes('main', 'live', {
+  workspace: 'content',
+  roots: ['/products'],
+  recursive: true,
+  sourceRevision: at,
+});
+```
+
+The target branch is always resolved at its head: the pin says **what** to copy,
+never where to put it. An unparseable revision is an error rather than a silent
+fall back to "latest" — copying newer data than intended is the thing the pin
+exists to prevent.
+
+This matters for any review gate. If a change is approved minutes after it was
+proposed, an unpinned copy promotes whatever HEAD holds at approval time, not
+what the approver looked at.
+
+Requires server **0.3.15** or later; earlier servers ignore the field and copy
+at HEAD.
+
 :::note
-Branch **merge** and **compare** require a server running the RocksDB storage
-backend (the default).
+Branch **merge**, **compare** and **copyNodes** require a server running the
+RocksDB storage backend (the default).
 :::

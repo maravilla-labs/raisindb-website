@@ -364,6 +364,13 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Function API',
+      items: [
+        'reference/function-api/crypto',
+      ],
+    },
+    {
+      type: 'category',
       label: 'MCP UI Client',
       items: [
         'reference/mcp-ui-client/overview',

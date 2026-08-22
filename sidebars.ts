@@ -202,6 +202,7 @@ const sidebars: SidebarsConfig = {
             'guides/auth/authentication-setup',
             'guides/auth/roles-and-permissions',
             'guides/auth/row-level-security',
+            'guides/auth/outbound-email',
           ],
         },
         {
@@ -367,6 +368,7 @@ const sidebars: SidebarsConfig = {
       label: 'Function API',
       items: [
         'reference/function-api/crypto',
+        'reference/function-api/email',
       ],
     },
     {

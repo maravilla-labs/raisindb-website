@@ -351,6 +351,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'reference/javascript-client/overview',
         'reference/javascript-client/connection',
+        'reference/javascript-client/identity-auth',
         'reference/javascript-client/node-operations',
         'reference/javascript-client/schema-management',
         'reference/javascript-client/branches',

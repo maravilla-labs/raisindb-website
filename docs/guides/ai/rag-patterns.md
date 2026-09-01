@@ -38,9 +38,9 @@ Structure your knowledge base as a content hierarchy. Each piece of knowledge is
 
 ```sql
 -- Create a knowledge base article
-INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
+INSERT INTO 'knowledge' (path, name, node_type, properties) VALUES (
+  '/docs/guides/getting-started',
   'getting-started',
-  '/docs/guides',
   'kb:Article',
   '{
     "title": "Getting Started Guide",
@@ -48,7 +48,7 @@ INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
     "author": "docs-team",
     "tags": ["introduction", "setup"],
     "status": "published"
-  }'
+  }'::jsonb
 );
 ```
 
@@ -59,32 +59,44 @@ When the node is created, RaisinDB automatically generates an embedding from the
 When chunking is enabled in your embedding configuration, RaisinDB automatically splits long documents into chunks, generates embeddings for each chunk via the batch embedding API, and indexes them in the HNSW vector store. No manual chunking is needed.
 
 ```yaml
-defaults:
-  chunking:
-    strategy: "tokens"
-    chunk_size: 512
-    chunk_overlap: 50
+chunking:
+  chunk_size: 512
+  splitter: recursive     # recursive | fixed_size | markdown | code
+  overlap:
+    type: Tokens          # Tokens (a count) or Percentage (0.0–0.5)
+    value: 64
 ```
 
-Chunks are stored as child nodes in the content hierarchy, preserving the relationship to their source document. Results are fused per **node**, so one long document does not fill your result set; `chunk_index` tells you which chunk answered.
+These are the `chunking` settings on a [processing rule](./asset-processing.md#tasks),
+so you can chunk a legal contract differently from a changelog.
 
-If you need manual control over chunking, you can still create chunks as child nodes explicitly:
+:::info Automatic chunks are not nodes
+Chunks produced by the embedding pipeline live in the embedding index, keyed by
+`(source node, chunk index)` — they are **not** child nodes and will not appear
+in a `SELECT` over the workspace. That is why retrieval returns one row per
+**node** with a `chunk_index` telling you which chunk answered, rather than
+separate chunk rows.
+:::
+
+If you want chunks to be first-class content — separately addressable, editable,
+or permissioned — model them as child nodes yourself. That is an ordinary
+content-modelling choice, and those nodes are embedded like any other:
 
 ```sql
 -- Parent document
-INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
+INSERT INTO 'knowledge' (path, name, node_type, properties) VALUES (
+  '/docs/architecture/architecture-overview',
   'architecture-overview',
-  '/docs/architecture',
   'kb:Article',
-  '{"title": "Architecture Overview", "content": "Introduction to the system architecture..."}'
+  '{"title": "Architecture Overview", "content": "Introduction to the system architecture..."}'::jsonb
 );
 
 -- Manual chunks as child nodes
-INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
+INSERT INTO 'knowledge' (path, name, node_type, properties) VALUES (
+  '/docs/architecture/architecture-overview/chunk-1',
   'chunk-1',
-  '/docs/architecture/architecture-overview',
   'kb:Chunk',
-  '{"content": "The storage layer uses RocksDB with 40+ column families...", "position": 1, "source_doc": "architecture-overview"}'
+  '{"content": "The storage layer uses RocksDB with 40+ column families...", "position": 1, "source_doc": "architecture-overview"}'::jsonb
 );
 ```
 
@@ -95,10 +107,9 @@ INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
 Find the most relevant chunks for a user query:
 
 ```sql
--- $1 = embedding vector generated from the user's question
 SELECT
-  id,
-  name,
+  node_id,
+  path,
   properties->>'content'::String AS content,
   properties->>'source_doc'::String AS source,
   vector_distance,
@@ -156,11 +167,12 @@ This is where RaisinDB's content graph adds value beyond a flat vector store. Af
 ### Get Parent Document for a Chunk
 
 ```sql
--- After finding chunk-2 as relevant, get its parent article
-SELECT id, properties->>'title'::String AS title, properties->>'content'::String AS content
+-- Having retrieved a chunk node at /docs/architecture/architecture-overview/chunk-1,
+-- fetch the article it belongs to.
+SELECT path, properties->>'title'::String AS title,
+       properties->>'content'::String AS content
 FROM 'knowledge'
-WHERE PARENT(path) = '/docs/architecture'
-  AND node_type = 'kb:Article'
+WHERE path = '/docs/architecture/architecture-overview'
 ```
 
 ### Get Sibling Chunks
@@ -179,11 +191,13 @@ ORDER BY properties->>'position'::String ASC
 Use graph queries to find related content:
 
 ```sql
--- Find documents related to a given document via Cypher
-SELECT * FROM cypher('
-  MATCH (source:Article {id: "architecture-overview"})-[:REFERENCES]->(related:Article)
-  RETURN related.title, related.content
-')
+-- Find documents this one points at
+SELECT * FROM GRAPH_TABLE(
+  knowledge
+  MATCH (source:Article)-[:REFERENCES]->(related:Article)
+  WHERE source.path = '/docs/architecture/architecture-overview'
+  COLUMNS (related.path AS path, related.title AS title)
+)
 ```
 
 ### Combine Vector + Graph in a Single Pipeline
@@ -201,26 +215,28 @@ With retrieved context, build the prompt for your LLM:
 ```javascript
 // In a RaisinDB function
 async function handler(input) {
-  // 1. Generate embedding for the user's question
-  const queryEmbedding = await raisin.ai.embed(input.question);
-
-  // 2. Vector search for relevant chunks
-  const results = await raisin.sql.query(
+  // 1. Retrieve. KNN embeds the query text for you, so no separate embed
+  //    call is needed — see the note below for when you would make one.
+  const { rows, error } = raisin.sql.query(
     `SELECT path, properties->>'content'::String AS content, vector_distance
      FROM KNN($1, 5, workspaces => 'knowledge')`,
-    [queryEmbedding]
+    [input.question]
   );
+  if (error) throw new Error(error);
 
-  // 3. Build context from results
-  const context = results.map(r => r.content).join('\n\n');
+  // 2. Build context from the retrieved rows
+  const context = rows.map(r => r.content).join('\n\n');
 
-  // 4. Call LLM with context
-  const answer = await raisin.ai.generate({
-    prompt: `Answer the question based on the following context:\n\n${context}\n\nQuestion: ${input.question}`,
-    model: 'claude-sonnet-4-20250514'
+  // 3. Call the LLM with that context
+  const answer = raisin.ai.completion({
+    model: 'claude-sonnet-5',
+    messages: [
+      { role: 'user',
+        content: `Answer the question based on the following context:\n\n${context}\n\nQuestion: ${input.question}` }
+    ]
   });
 
-  return { answer: answer.text, sources: results.map(r => r.id) };
+  return { answer: answer.content, sources: rows.map(r => r.path) };
 }
 ```
 
@@ -229,9 +245,9 @@ async function handler(input) {
 Store the generated answer as a node for future retrieval — your RAG system learns from its own answers:
 
 ```sql
-INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
+INSERT INTO 'knowledge' (path, name, node_type, properties) VALUES (
+  '/answers/2026-03/answer-12345',
   'answer-12345',
-  '/answers/2026-03',
   'kb:Answer',
   '{
     "question": "How does the storage layer work?",
@@ -239,7 +255,7 @@ INSERT INTO 'knowledge' (name, path, node_type, properties) VALUES (
     "sources": ["chunk-1", "chunk-2"],
     "confidence": 0.94,
     "generated_at": "2026-03-31T12:00:00Z"
-  }'
+  }'::jsonb
 );
 ```
 
@@ -252,22 +268,37 @@ The `HYBRID_SEARCH` table function combines full-text and vector search using Re
 ```javascript
 async function handler(input) {
   // Use HYBRID_SEARCH for combined full-text + vector retrieval
-  const results = await raisin.sql.query(
-    `SELECT node_id, name, score, properties
+  const { rows, error } = raisin.sql.query(
+    `SELECT node_id, path, name, score, properties
      FROM HYBRID_SEARCH($1, 10, workspaces => 'knowledge')`,
     [input.question]
   );
+  if (error) throw new Error(error);
 
-  const context = results.map(r => r.properties.content).join('\n\n');
+  const context = rows.map(r => r.properties.content).join('\n\n');
 
-  const answer = await raisin.ai.generate({
-    prompt: `Answer based on this context:\n\n${context}\n\nQuestion: ${input.question}`,
-    model: 'claude-sonnet-4-20250514'
+  const answer = raisin.ai.completion({
+    model: 'claude-sonnet-5',
+    messages: [
+      { role: 'user',
+        content: `Answer based on this context:\n\n${context}\n\nQuestion: ${input.question}` }
+    ]
   });
 
-  return { answer: answer.text, sources: results.map(r => r.node_id) };
+  return { answer: answer.content, sources: rows.map(r => r.path) };
 }
 ```
+
+:::note API shapes
+`raisin.sql.query(sql, params)` returns `{ rows, error }` — a failed query
+resolves rather than throwing, so check `error`. `raisin.ai.completion` takes
+`{ model, messages }` and returns `{ content, model, finish_reason, tool_calls }`.
+
+You rarely need `raisin.ai.embed` in a RAG handler, because the search functions
+embed the query for you. When you do want the raw vector, it takes an object and
+returns one: `raisin.ai.embed({ model: 'text-embedding-3-small', input: 'text' })`
+→ `{ embedding, dimensions }`. Both `model` and `input` are required.
+:::
 
 :::tip
 Use `HYBRID_SEARCH` when your knowledge base contains content where exact terminology matters (e.g., product names, error codes, API endpoints) alongside content where semantic understanding is important.
@@ -293,7 +324,7 @@ Use [agent branches](./agent-memory-with-branches.md) to let a RAG agent build u
 
 ```sql
 -- Create a branch for the RAG agent's session
-INSERT INTO 'raisin:branches' (name, from_branch) VALUES ('agent/rag-session-001', 'main');
+CREATE BRANCH 'agent/rag-session-001' FROM 'main';
 
 -- Agent stores generated answers and extracted facts on its branch
 -- These can be reviewed and merged later

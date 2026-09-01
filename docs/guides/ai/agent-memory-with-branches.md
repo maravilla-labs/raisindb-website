@@ -266,10 +266,8 @@ Each branch has its own vector index. This means an agent's embeddings are isola
 ```sql
 -- Search for similar content within the agent's branch
 -- (connected to agent/researcher branch)
-SELECT id, name, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-ORDER BY __distance ASC
+SELECT path, name, vector_distance
+FROM KNN('what did I learn about caching', 10, workspaces => 'default')
 ```
 
 When branches merge, their vector indexes are reconciled. See [Embeddings and Vector Search](./embeddings-and-vector-search.md) for details.

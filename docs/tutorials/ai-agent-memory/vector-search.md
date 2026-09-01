@@ -72,16 +72,21 @@ Embedding generation is asynchronous — the embedding worker picks up the job, 
 
 ## Step 3: Run a Basic Vector Search
 
-Once embeddings are generated, use `VECTOR_SEARCH` in SQL:
+Once embeddings are generated, query them with the `KNN` table function:
 
 ```sql
-SELECT id, name, properties->>'title'::String AS title, __distance
-FROM 'knowledge'
-WHERE VECTOR_SEARCH(embedding, EMBEDDING('how do databases work'), 10)
-ORDER BY __distance ASC;
+SELECT path, name, properties->>'title'::String AS title, vector_distance
+FROM KNN('how do databases work', 10, workspaces => 'knowledge');
 ```
 
 Results are ranked by cosine distance — lower values mean higher similarity.
+
+The query text is embedded with your tenant's provider. `KNN(EMBEDDING('…'))`
+is identical, and you can also pass a literal vector or `VECTOR_OF('ws:/path')`
+to search by a node's own stored vector.
+
+The `workspaces` scope is **required** — a name, a comma-separated list, a glob
+such as `'content-*'`, or `'ALL READABLE'` for every workspace you may read.
 
 ## Step 4: Interpret Distance Scores
 
@@ -118,11 +123,9 @@ Combine vector similarity with property filters:
 
 ```sql
 -- Vector search + node type filter
-SELECT id, name, properties->>'title'::String AS title, __distance
-FROM 'knowledge'
-WHERE VECTOR_SEARCH(embedding, EMBEDDING('graph relationships'), 20)
-  AND node_type = 'kb:Article'
-ORDER BY __distance ASC
+SELECT path, name, properties->>'title'::String AS title, vector_distance
+FROM KNN('graph relationships', 20, workspaces => 'knowledge')
+WHERE node_type = 'kb:Article'
 LIMIT 10;
 ```
 
@@ -130,27 +133,26 @@ For combined full-text + vector search, use the `HYBRID_SEARCH` table function:
 
 ```sql
 SELECT node_id, name, score, fulltext_rank, vector_rank, vector_distance
-FROM HYBRID_SEARCH('database relationships', 10);
+FROM HYBRID_SEARCH('database relationships', 10,
+                   workspaces => 'knowledge');
 ```
 
 This uses Reciprocal Rank Fusion (RRF) to merge keyword matches and semantic similarity into a single ranked result set.
 
-## Step 7: Search Modes
+## Step 7: Chunks and Citations
 
-RaisinDB supports two search modes for multi-chunk documents:
+Long documents are chunked and each chunk is embedded separately, but results
+are fused per **node** — a 40-page handbook does not occupy ten of your ten
+slots. `chunk_index` tells you which chunk answered, which is exactly what you
+need to cite the right passage:
 
 ```sql
--- Documents mode (default): deduplicates by source document
-SELECT id, name, __distance
-FROM 'knowledge'
-WHERE VECTOR_SEARCH(embedding, EMBEDDING('SQL queries'), 10)
-ORDER BY __distance ASC;
-
--- Chunks mode: returns all matching chunks
--- Useful when you need the exact passage within a long document
+SELECT path, chunk_index, vector_distance
+FROM KNN('SQL queries', 10, workspaces => 'knowledge');
 ```
 
-Documents mode returns the best matching chunk per document — typically what you want for RAG applications.
+`chunk_index` is `0` for a document that was never chunked, and `NULL` when the
+hit came from the lexical leg only.
 
 ## Step 8: Monitor Index Health
 
@@ -177,10 +179,11 @@ VERIFY VECTOR INDEX;
 Use `EXPLAIN` to understand how vector queries are executed:
 
 ```sql
-EXPLAIN SELECT id, name, __distance
+EXPLAIN SELECT path, name,
+       embedding <=> EMBEDDING('search query') AS distance
 FROM 'knowledge'
-WHERE VECTOR_SEARCH(embedding, EMBEDDING('search query'), 10)
-ORDER BY __distance ASC;
+ORDER BY distance
+LIMIT 10;
 ```
 
 This shows the `VectorScan` plan details including candidate count, distance metric, and threshold filtering.

@@ -187,21 +187,19 @@ SELECT * FROM GRAPH_TABLE (
 ### Basic Search
 
 ```sql
-SELECT id, path, __score
-FROM 'default'
-WHERE FULLTEXT_SEARCH(properties, 'content management')
-ORDER BY __score DESC
+SELECT path, score
+FROM FULLTEXT_SEARCH('content management', 'en', workspaces => 'default')
+ORDER BY score DESC
 LIMIT 20;
 ```
 
 ### Search with NodeType Filter
 
 ```sql
-SELECT id, path, properties->>'title'::String AS title, __score
-FROM 'default'
-WHERE FULLTEXT_SEARCH(properties, 'raisindb')
-  AND node_type = 'blog:Article'
-ORDER BY __score DESC
+SELECT path, properties->>'title'::String AS title, score
+FROM FULLTEXT_SEARCH('raisindb', 'en', workspaces => 'default')
+WHERE node_type = 'blog:Article'
+ORDER BY score DESC
 LIMIT 10;
 ```
 
@@ -210,23 +208,19 @@ LIMIT 10;
 ### Find Similar Content
 
 ```sql
-SELECT id, path, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-ORDER BY __distance ASC;
+SELECT path, vector_distance
+FROM KNN('how do vector indexes work', 10, workspaces => 'default');
 ```
 
-The second argument is the query vector, and the third is the number of results (k).
+The first argument is the query (text is embedded for you; a literal vector or `VECTOR_OF('ws:/path')` also work), the second is the number of results (k), and `workspaces` is required.
 
 ### Hybrid Search (Vector + Filter)
 
 ```sql
-SELECT id, path, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 20)
-  AND node_type = 'blog:Article'
+SELECT path, vector_distance
+FROM KNN('sustainable packaging', 20, workspaces => 'default')
+WHERE node_type = 'blog:Article'
   AND properties->>'status'::String = 'published'
-ORDER BY __distance ASC
 LIMIT 10;
 ```
 
@@ -401,11 +395,10 @@ SELECT * FROM GRAPH_TABLE (
 Search only within a subtree:
 
 ```sql
-SELECT id, path, __score
-FROM 'default'
-WHERE FULLTEXT_SEARCH(properties, 'database')
-  AND PATH_STARTS_WITH(path, '/content/docs/')
-ORDER BY __score DESC
+SELECT path, score
+FROM FULLTEXT_SEARCH('database', 'en', workspaces => 'default')
+WHERE PATH_STARTS_WITH(path, '/content/docs/')
+ORDER BY score DESC
 LIMIT 10;
 ```
 

@@ -221,59 +221,136 @@ LIMIT 10;
 
 ---
 
-## HYBRID_SEARCH
+## Search table functions: `KNN`, `FULLTEXT_SEARCH`, `HYBRID_SEARCH`
 
-Run a combined full-text and vector similarity search using Reciprocal Rank Fusion (RRF).
+Three entry points over **one** engine. `KNN` is `HYBRID_SEARCH` with the
+lexical leg switched off; `FULLTEXT_SEARCH` is the same with the vector leg off.
+All three return the same columns and apply the same row-level security.
 
 ### Syntax
 
-```sql
-SELECT * FROM HYBRID_SEARCH(query, k)
+```text
+HYBRID_SEARCH  ( query [, limit] [, workspace] [, named …] )
+FULLTEXT_SEARCH( query ,  language            [, named …] )
+KNN            ( query [, limit]              [, named …] )
 ```
+
+Positionals must precede named arguments, and each value may be given once.
+Unknown named arguments are **rejected**, not ignored.
 
 ### Parameters
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| query | TEXT | The search query text |
-| k | INTEGER | Maximum number of results to return |
+| Named argument | `HYBRID_SEARCH` | `FULLTEXT_SEARCH` | `KNN` | Default |
+|---|:-:|:-:|:-:|---|
+| `workspaces` | ✅ | ✅ | ✅ | **required** |
+| `limit` | ✅ | ✅ | ✅ | 10 (100 for `FULLTEXT_SEARCH`) |
+| `language` | ✅ | ✅ (also positional #2) | — | the repo's default |
+| `vector_weight` | ✅ | — | — | 1.0 |
+| `fulltext_weight` | ✅ | — | — | 1.0 |
+| `max_distance` | ✅ | — | ✅ | 0.6 |
+| `kind` | ✅ | — | ✅ | `'text'` |
 
-### Return Columns
+`language` must be an **ISO 639-1 code** (`'en'`, not `'english'`) — the index
+stores two-letter codes. `kind` selects the embedding space: `'text'`,
+`'image'` or `'all'`; it defaults to `'text'` so that adding an image tower
+cannot silently change existing queries.
+
+Setting `fulltext_weight => 0` skips the lexical leg entirely;
+`vector_weight => 0` skips the vector leg, including embedding-provider
+resolution — so a tenant with no embedder can still run a hybrid query.
+
+### The `workspaces` scope is required
+
+Omitting it is an error, not a repo-wide search. There are four spellings:
+
+```sql
+workspaces => 'library'              -- one workspace
+workspaces => 'library, handbook'    -- a list; every name must resolve
+workspaces => 'content-*'            -- a glob; matching nothing is fine
+workspaces => 'ALL READABLE'         -- every workspace this caller may read
+```
+
+A **name** is an assertion (one that does not resolve is an error); a **glob**
+is a question (matching nothing is not). `'*'` and `'ALL'` are rejected.
+
+### The query argument
+
+`KNN`'s first argument accepts five forms:
+
+```sql
+KNN('some text')                        -- embedded with the tenant's provider
+KNN(EMBEDDING('some text'))             -- identical; the wrapper is unwrapped
+KNN(ARRAY[0.1, 0.2, ...])               -- a vector literal
+KNN('[0.1, 0.2, ...]')                  -- the pgvector text form
+KNN(VECTOR_OF('library:/winter-layup')) -- a node's own stored vector
+```
+
+The last two are what make binding a vector as a query parameter work.
+`VECTOR_OF` and raw vectors are **`KNN`-only**: they have no lexical surface, so
+a `HYBRID_SEARCH` built on one would be a vector-only search reported as hybrid.
+
+`VECTOR_OF(node_ref [, chunk])` requires a workspace prefix
+(`'workspace:/path'` or `'workspace:<node-id>'`), because embeddings are keyed
+by the workspace the node lives in, which is not necessarily one being searched.
+The source node is excluded from its own results.
+
+### Return columns
 
 | Column | Type | Description |
 |--------|------|-------------|
-| node_id | TEXT | The matched node ID |
+| node_id | TEXT | The matched node ID — unique only *within* its workspace |
+| workspace_id | TEXT | The workspace the hit came from |
 | name | TEXT | Node name |
 | path | TEXT | Node path in the content hierarchy |
 | node_type | TEXT | Node type |
-| score | DOUBLE | Combined RRF score (higher = more relevant) |
-| fulltext_rank | DOUBLE | Full-text search rank |
-| vector_rank | DOUBLE | Vector similarity rank |
-| vector_distance | DOUBLE | Raw vector distance |
-| properties | JSON | Node properties |
+| score | DOUBLE | Fused RRF score (higher = more relevant) |
+| fulltext_rank | INTEGER | 1-based rank in the lexical leg; `NULL` if it did not match |
+| vector_rank | INTEGER | 1-based rank in the vector leg; `NULL` if it did not match |
+| vector_distance | DOUBLE | Cosine distance of the vector hit; `NULL` when `vector_rank` is |
+| chunk_index | INTEGER | Which chunk answered; `0` for an unchunked document |
+| embedding_kind | TEXT | `'text'` or `'image'` — which space produced the vector hit |
+| revision | INTEGER | Node revision |
+| created_at, updated_at | TEXT | Timestamps |
+| properties | JSON | Node properties, already field-filtered by the granting permission |
 
 ### Examples
 
 ```sql
 -- Basic hybrid search
-SELECT * FROM HYBRID_SEARCH('how does authentication work', 10);
+SELECT path, score, fulltext_rank, vector_rank, vector_distance
+FROM HYBRID_SEARCH('how does authentication work', 10,
+                   workspaces => 'docs');
 
--- Use hybrid search results in a subquery
+-- Filter the results: a residual WHERE is applied AFTER fusion,
+-- so `limit` still means rows delivered.
 SELECT node_id, name, score
-FROM HYBRID_SEARCH('database replication', 20)
+FROM HYBRID_SEARCH('database replication', 20, workspaces => 'ALL READABLE')
 WHERE node_type = 'kb:Article'
 ORDER BY score DESC
 LIMIT 10;
+
+-- Semantic only, across a family of workspaces
+SELECT path, chunk_index, vector_distance
+FROM KNN('storing a boat over winter', 5, workspaces => 'content-*');
+
+-- Lexical only, German analyzer
+SELECT path, score
+FROM FULLTEXT_SEARCH('Bremsbeläge', 'de', workspaces => 'library');
+
+-- More like this, from a node's own stored vector
+SELECT path, vector_distance
+FROM KNN(VECTOR_OF('library:/winter-layup'), 4,
+         workspaces => 'ALL READABLE');
 ```
 
 ### Notes
 
-- Combines full-text search and vector similarity into a single ranked result set
-- Uses Reciprocal Rank Fusion (RRF) to merge rankings from both search methods
-- Requires both full-text indexing and embedding configuration to be enabled
-- Results include both ranking metrics for transparency
-
----
+- Fusion is **rank-based**, never score-based: `score(doc) = Σ weight / (60 + rank)`.
+  Distances from two embedding spaces are not commensurable, so they are
+  reported (as `vector_distance`, beside `embedding_kind`) but never combined.
+- Results are fused per **node**, not per chunk — one long document does not
+  fill the result set. `chunk_index` names the chunk that answered.
+- A query vector of the wrong width is refused rather than degraded.
 
 ## Distance Filtering in WHERE Clauses
 
@@ -368,7 +445,7 @@ LIMIT 5;
 ```sql
 -- Use the HYBRID_SEARCH table function for combined ranking
 SELECT node_id, name, score, fulltext_rank, vector_rank
-FROM HYBRID_SEARCH('database management', 10);
+FROM HYBRID_SEARCH('database management', 10, workspaces => 'docs');
 
 -- Or combine vector distance with full-text manually
 SELECT

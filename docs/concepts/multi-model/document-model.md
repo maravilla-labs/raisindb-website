@@ -133,7 +133,7 @@ The document model is the foundation. Every node you create is also:
 
 - A **graph vertex** — connect nodes with typed edges using `RELATE` and query with `GRAPH_TABLE`
 - A **searchable document** — full-text indexed via Tantivy for `FULLTEXT_SEARCH` queries
-- A **vector point** — embeddings stored per-node for `VECTOR_SEARCH` similarity queries
+- A **vector point** — embeddings stored per-node for `KNN` / `HYBRID_SEARCH` similarity queries
 
 You don't choose one model — you use all of them on the same data.
 

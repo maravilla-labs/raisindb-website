@@ -18,39 +18,41 @@ RaisinDB includes a built-in full-text search engine powered by [Tantivy](https:
 ### Basic Search
 
 ```sql
-SELECT id, path, properties->>'title'::String AS title, __score
-FROM 'default'
-WHERE FULLTEXT_SEARCH(properties, 'content management')
-ORDER BY __score DESC
+SELECT path, properties->>'title'::String AS title, score
+FROM FULLTEXT_SEARCH('content management', 'en', workspaces => 'default')
+ORDER BY score DESC
 LIMIT 20;
 ```
 
-- `properties` tells the engine which fields to search
 - `'content management'` is the search query
-- `__score` is the relevance score (higher = more relevant)
+- `'en'` is the analyzer language — an **ISO 639-1 code**; the index stores
+  two-letter codes, so `'english'` is rejected rather than matching nothing
+- `workspaces` is **required**: a name, a comma-separated list, a glob such as
+  `'content-*'`, or `'ALL READABLE'`
+- `score` is the relevance score (higher = more relevant)
+- Which fields are searched is decided by the node type's index configuration,
+  not by the query
 
 ### Search with Filters
 
 Combine full-text search with standard SQL filters:
 
 ```sql
-SELECT id, path, __score
-FROM 'default'
-WHERE FULLTEXT_SEARCH(properties, 'database')
-  AND node_type = 'blog:Article'
+SELECT path, score
+FROM FULLTEXT_SEARCH('database', 'en', workspaces => 'default')
+WHERE node_type = 'blog:Article'
   AND properties->>'status'::String = 'published'
-ORDER BY __score DESC
+ORDER BY score DESC
 LIMIT 10;
 ```
 
 ### Search Within a Subtree
 
 ```sql
-SELECT id, path, __score
-FROM 'default'
-WHERE FULLTEXT_SEARCH(properties, 'tutorial')
-  AND PATH_STARTS_WITH(path, '/content/docs/')
-ORDER BY __score DESC;
+SELECT path, score
+FROM FULLTEXT_SEARCH('tutorial', 'en', workspaces => 'default')
+WHERE PATH_STARTS_WITH(path, '/content/docs/')
+ORDER BY score DESC;
 ```
 
 ## Features
@@ -133,8 +135,8 @@ In addition to full-text search, RaisinDB maintains **property indexes** for eff
 | **Query type** | Keywords and phrases | Semantic meaning |
 | **Best for** | Exact matches, known terminology | "Find similar content", fuzzy concepts |
 | **Engine** | Tantivy (inverted index) | HNSW (approximate nearest neighbor) |
-| **SQL function** | `FULLTEXT_SEARCH()` | `VECTOR_SEARCH()` |
-| **Score field** | `__score` (relevance) | `__distance` (cosine distance) |
+| **SQL function** | `FULLTEXT_SEARCH()` | `KNN()` |
+| **Score field** | `score` (fused rank score) | `vector_distance` (cosine distance) |
 | **Zero config** | Yes (set `indexable: true`) | Requires embedding provider setup |
 
 Use full-text search when users search by keywords. Use vector search when you need semantic similarity. You can use both on the same data.

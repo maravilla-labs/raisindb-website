@@ -45,22 +45,36 @@ silently.
 
 ## Vector Search with SQL
 
-RaisinDB integrates vector search directly into the SQL engine using the `VECTOR_SEARCH` function.
+RaisinDB exposes search through **three table functions over one engine**, plus a
+distance operator you can use in an ordinary query:
+
+| Surface | Legs | Use it for |
+|---|---|---|
+| `KNN(query, limit, …)` | vector only | meaning; cross-lingual; "more like this" |
+| `FULLTEXT_SEARCH(query, language, …)` | lexical only | exact words, names, codes, phrases |
+| `HYBRID_SEARCH(query, limit, …)` | both, rank-fused | the default for RAG and site search |
+| `embedding <=> EMBEDDING('…')` | vector only | a distance column in a normal `SELECT` |
+
+All three functions return the same columns, apply the same row-level security,
+and take the same **required** workspace scope.
 
 ### Basic Vector Search
 
 Find the 10 most similar nodes to a query vector:
 
 ```sql
-SELECT id, name, properties, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-ORDER BY __distance ASC
+SELECT path, name, vector_distance, chunk_index
+FROM KNN('how do vector indexes work', 10, workspaces => 'default');
 ```
 
-- `$1` is the query vector (typically generated from a text query using the same embedding model)
-- `10` is the number of results (top-k)
-- `__distance` is the cosine distance (lower = more similar)
+- The first argument is the **query**. Plain text is embedded with your tenant's
+  provider; you can also pass `EMBEDDING('…')`, a literal vector (`ARRAY[…]` or
+  the pgvector text form `'[0.1,0.2]'`), or `VECTOR_OF('ws:/path')` to use a
+  node's own stored vector.
+- `10` is the number of results (top-k). Default is 10.
+- `workspaces` is **required** — see below.
+- `vector_distance` is the cosine distance (lower = more similar).
+- `chunk_index` names which chunk of a long document answered.
 
 ### Understanding Distance Scores
 
@@ -79,23 +93,66 @@ K-nearest neighbor queries return the `k` closest vectors to your query:
 
 ```sql
 -- Find 5 articles most similar to a query
-SELECT id, name, properties->>'title'::String AS title, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 5)
-  AND node_type = 'article'
-ORDER BY __distance ASC
+SELECT path, properties->>'title'::String AS title, vector_distance
+FROM KNN('quarterly revenue', 5, workspaces => 'default')
+WHERE node_type = 'article';
 ```
 
-You can combine `VECTOR_SEARCH` with additional `WHERE` clauses. The vector search runs first to identify candidates, then additional filters are applied.
+The vector leg runs first to identify candidates; the residual `WHERE` is applied to the rows it emits, so `limit` still means rows delivered.
 
-### Search Modes
+### The workspace scope is required
 
-RaisinDB supports two search modes for handling multi-chunk documents:
+The universe a search covers is the most consequential thing about it, so it is
+written in the query and cannot be defaulted. There are exactly four spellings:
 
-- **Documents mode** (default) — deduplicates results by source document, returning the best matching chunk per document
-- **Chunks mode** — returns all matching chunks ranked by similarity
+```sql
+workspaces => 'library'              -- one workspace
+workspaces => 'library, handbook'    -- a list; every name must resolve
+workspaces => 'content-*'            -- a glob; matching nothing is fine
+workspaces => 'ALL READABLE'         -- every workspace this caller may read
+```
 
-Documents mode is typically what you want for RAG applications, where you need unique source documents rather than multiple chunks from the same document.
+A **name** is an assertion, so one that does not resolve is an error. A **glob**
+is a question, so matching nothing is not. `'*'` and `'ALL'` are rejected on
+purpose: `'ALL READABLE'` is two uppercase words that appear in no other
+context, so "which of our queries go repo-wide?" is one grep.
+
+Omitting the scope is an error, not a repo-wide search.
+
+### One row per node, and `chunk_index` tells you which chunk
+
+Long documents are chunked and each chunk is embedded separately, but results
+are fused per **node** — a 40-page handbook does not occupy ten of your ten
+slots. `chunk_index` tells you which chunk matched, which is exactly what a RAG
+caller needs to cite the right passage. It is `0` for a document that was never
+chunked, and `NULL` when the hit had no vector leg.
+
+### Result columns
+
+Every entry point emits the same row:
+
+| Column | Meaning |
+|---|---|
+| `node_id`, `workspace_id` | the hit's identity — a node id is unique only *within* its workspace |
+| `name`, `path`, `node_type` | from the node |
+| `score` | the fused rank score |
+| `fulltext_rank` | 1-based rank in the lexical leg, `NULL` if it did not match |
+| `vector_rank` | 1-based rank in the vector leg, `NULL` if it did not match |
+| `vector_distance` | cosine distance of the vector hit, `NULL` when `vector_rank` is |
+| `chunk_index` | which chunk answered; `0` for an unchunked document |
+| `embedding_kind` | `'text'` or `'image'` — which embedding space produced the hit |
+| `revision`, `created_at`, `updated_at` | from the node |
+| `properties` | the node's properties, already field-filtered by the permission that granted access |
+
+They behave like ordinary columns — project them, filter on them, order by them.
+A residual `WHERE` is applied *after* fusion, so `limit` still means rows
+delivered:
+
+```sql
+SELECT path, node_type, score
+FROM HYBRID_SEARCH('winter storage', 10, workspaces => 'ALL READABLE')
+WHERE workspace_id = 'library';
+```
 
 ## Distance Filtering in WHERE Clauses
 
@@ -127,21 +184,22 @@ Combine vector similarity with traditional SQL filters for more precise results:
 
 ```sql
 -- Vector search + keyword filter
-SELECT id, name, properties->>'title'::String AS title, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 20)
-  AND properties->>'category'::String = 'technology'
-ORDER BY __distance ASC
-LIMIT 10
+SELECT path, properties->>'title'::String AS title, vector_distance
+FROM KNN('neural network training', 20, workspaces => 'default')
+WHERE properties->>'category'::String = 'technology'
+LIMIT 10;
 ```
 
 ```sql
--- Vector search + path hierarchy
-SELECT id, name, __distance
+-- Vector search + path hierarchy.
+-- The operator form is an ordinary scan, so structural predicates compose
+-- naturally and are pushed into it.
+SELECT path, name,
+       embedding <=> EMBEDDING('index maintenance') AS distance
 FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-  AND PATH_STARTS_WITH(path, '/knowledge-base/docs/')
-ORDER BY __distance ASC
+WHERE PATH_STARTS_WITH(path, '/knowledge-base/docs/')
+ORDER BY distance
+LIMIT 10;
 ```
 
 This lets you scope vector search to specific categories, content types, or locations in the content hierarchy.
@@ -151,7 +209,8 @@ This lets you scope vector search to specific categories, content types, or loca
 The `HYBRID_SEARCH` table function combines full-text search and vector similarity using Reciprocal Rank Fusion (RRF) to produce a single ranked result set. This is the recommended approach when you want the best of both keyword matching and semantic search:
 
 ```sql
-SELECT * FROM HYBRID_SEARCH('how does authentication work', 10);
+SELECT * FROM HYBRID_SEARCH('how does authentication work', 10,
+                            workspaces => 'default');
 ```
 
 This returns up to 10 results with the following columns:
@@ -178,11 +237,9 @@ Restrict vector search to specific node types:
 
 ```sql
 -- Only search within FAQ entries
-SELECT id, name, properties->>'question'::String AS question, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-  AND node_type = 'faq:Entry'
-ORDER BY __distance ASC
+SELECT path, properties->>'question'::String AS question, vector_distance
+FROM KNN('how do I reset my password', 10, workspaces => 'default')
+WHERE node_type = 'faq:Entry';
 ```
 
 ## Branch-Scoped Vector Search
@@ -196,10 +253,8 @@ HNSW indexes are scoped to tenant, repository, and branch. When you create a new
 ```sql
 -- Search on a specific branch (set via connection context)
 -- psql -U tenant1/repo1/feature-branch
-SELECT id, name, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-ORDER BY __distance ASC
+SELECT path, name, vector_distance
+FROM KNN('release checklist', 10, workspaces => 'default');
 ```
 
 ## Scoring Configuration
@@ -244,10 +299,11 @@ These commands are available via SQL and pgwire, making them accessible from `ps
 Use `EXPLAIN` to inspect how vector queries are executed:
 
 ```sql
-EXPLAIN SELECT id, name, __distance
+EXPLAIN SELECT path, name,
+       embedding <=> EMBEDDING('index maintenance') AS distance
 FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-ORDER BY __distance ASC;
+ORDER BY distance
+LIMIT 10;
 ```
 
 This shows the `VectorScan` plan details, including the number of candidates, distance metric, and any threshold filtering applied.

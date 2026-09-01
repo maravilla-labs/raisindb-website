@@ -199,10 +199,8 @@ trigger:
 ```javascript
 async function handler(input) {
   const results = await raisin.sql.query(
-    `SELECT id, properties->>'content'::String AS content, __distance
-     FROM 'knowledge'
-     WHERE VECTOR_SEARCH(embedding, $1, 5)
-     ORDER BY __distance ASC`,
+    `SELECT path, properties->>'content'::String AS content, vector_distance
+     FROM KNN($1, 5, workspaces => 'knowledge')`,
     [input.queryVector]
   );
 
@@ -251,10 +249,8 @@ async function handler(input) {
 
   // 2. Search for relevant context
   const context = await raisin.sql.query(
-    `SELECT properties->>'content'::String AS content, __distance
-     FROM 'knowledge'
-     WHERE VECTOR_SEARCH(embedding, $1, 5)
-     ORDER BY __distance ASC`,
+    `SELECT properties->>'content'::String AS content, vector_distance
+     FROM KNN($1, 5, workspaces => 'knowledge')`,
     [input.messageEmbedding]
   );
 
@@ -284,7 +280,7 @@ async function handler(input) {
   await raisin.events.emit("message.processed", {
     conversationId,
     entityCount: entities.items.length,
-    contextRelevance: context.length > 0 ? context[0].__distance : null
+    contextRelevance: context.length > 0 ? context[0].vector_distance : null
   });
 
   return {

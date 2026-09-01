@@ -17,7 +17,7 @@ User Query
 Generate query embedding
     │
     ▼
-Vector search (VECTOR_SEARCH)  ──►  Candidate nodes
+Vector search (KNN / HYBRID_SEARCH)  ──►  Candidate nodes
     │
     ▼
 Enrich with graph context       ──►  Related nodes via hierarchy/relations
@@ -66,7 +66,7 @@ defaults:
     chunk_overlap: 50
 ```
 
-Chunks are stored as child nodes in the content hierarchy, preserving the relationship to their source document. `VECTOR_SEARCH` in **Documents mode** automatically deduplicates results by source document.
+Chunks are stored as child nodes in the content hierarchy, preserving the relationship to their source document. Results are fused per **node**, so one long document does not fill your result set; `chunk_index` tells you which chunk answered.
 
 If you need manual control over chunking, you can still create chunks as child nodes explicitly:
 
@@ -101,11 +101,10 @@ SELECT
   name,
   properties->>'content'::String AS content,
   properties->>'source_doc'::String AS source,
-  __distance
-FROM 'knowledge'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-  AND node_type = 'kb:Chunk'
-ORDER BY __distance ASC
+  vector_distance,
+  chunk_index
+FROM KNN('how do I rotate an API key', 10, workspaces => 'knowledge')
+WHERE node_type = 'kb:Chunk';
 ```
 
 ### Scoped Retrieval by Workspace
@@ -114,16 +113,12 @@ Use workspaces to separate knowledge domains. A customer support bot searches th
 
 ```sql
 -- Support bot searches only support knowledge
-SELECT id, properties->>'content'::String AS content, __distance
-FROM 'support'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-ORDER BY __distance ASC
+SELECT path, properties->>'content'::String AS content, vector_distance
+FROM KNN('refund policy', 10, workspaces => 'support');
 
 -- Engineering bot searches only engineering knowledge
-SELECT id, properties->>'content'::String AS content, __distance
-FROM 'engineering'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-ORDER BY __distance ASC
+SELECT path, properties->>'content'::String AS content, vector_distance
+FROM KNN('deployment rollback', 10, workspaces => 'engineering');
 ```
 
 ### Scoped Retrieval by Path
@@ -131,12 +126,15 @@ ORDER BY __distance ASC
 Use the content hierarchy to scope retrieval to specific areas:
 
 ```sql
--- Only search within the API documentation
-SELECT id, properties->>'content'::String AS content, __distance
+-- Only search within the API documentation.
+-- The operator form is an ordinary scan, so structural predicates are
+-- pushed into it.
+SELECT path, properties->>'content'::String AS content,
+       embedding <=> EMBEDDING('pagination cursors') AS distance
 FROM 'knowledge'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-  AND PATH_STARTS_WITH(path, '/docs/api/')
-ORDER BY __distance ASC
+WHERE PATH_STARTS_WITH(path, '/docs/api/')
+ORDER BY distance
+LIMIT 10;
 ```
 
 ### Filtered Retrieval
@@ -144,13 +142,11 @@ ORDER BY __distance ASC
 Combine vector search with property filters:
 
 ```sql
--- Only retrieve published, recent content
-SELECT id, properties->>'content'::String AS content, __distance
-FROM 'knowledge'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-  AND properties->>'status'::String = 'published'
-  AND node_type = 'kb:Article'
-ORDER BY __distance ASC
+-- Only retrieve published content
+SELECT path, properties->>'content'::String AS content, vector_distance
+FROM KNN('single sign-on setup', 10, workspaces => 'knowledge')
+WHERE properties->>'status'::String = 'published'
+  AND node_type = 'kb:Article';
 ```
 
 ## Step 4: Enrich with Graph Context
@@ -210,10 +206,8 @@ async function handler(input) {
 
   // 2. Vector search for relevant chunks
   const results = await raisin.sql.query(
-    `SELECT id, properties->>'content'::String AS content, __distance
-     FROM 'knowledge'
-     WHERE VECTOR_SEARCH(embedding, $1, 5)
-     ORDER BY __distance ASC`,
+    `SELECT path, properties->>'content'::String AS content, vector_distance
+     FROM KNN($1, 5, workspaces => 'knowledge')`,
     [queryEmbedding]
   );
 
@@ -260,7 +254,7 @@ async function handler(input) {
   // Use HYBRID_SEARCH for combined full-text + vector retrieval
   const results = await raisin.sql.query(
     `SELECT node_id, name, score, properties
-     FROM HYBRID_SEARCH($1, 10)`,
+     FROM HYBRID_SEARCH($1, 10, workspaces => 'knowledge')`,
     [input.question]
   );
 
@@ -284,20 +278,13 @@ Use `HYBRID_SEARCH` when your knowledge base contains content where exact termin
 Search across multiple knowledge domains and let the LLM synthesize:
 
 ```sql
--- Search support knowledge
-SELECT 'support' AS source_workspace, properties->>'content'::String AS content, __distance
-FROM 'support'
-WHERE VECTOR_SEARCH(embedding, $1, 5)
-
-UNION ALL
-
--- Search engineering knowledge
-SELECT 'engineering' AS source_workspace, properties->>'content'::String AS content, __distance
-FROM 'engineering'
-WHERE VECTOR_SEARCH(embedding, $1, 5)
-
-ORDER BY __distance ASC
-LIMIT 10
+-- One query, several workspaces: the scope takes a list, and `workspace_id`
+-- comes back as a column, so no UNION is needed.
+SELECT workspace_id, path,
+       properties->>'content'::String AS content,
+       vector_distance
+FROM KNN('why did the deploy fail', 10,
+         workspaces => 'support, engineering');
 ```
 
 ### RAG with Branch Isolation
@@ -318,11 +305,14 @@ Because RaisinDB tracks revisions, you can build a RAG system that answers quest
 
 ```sql
 -- What did the docs say at revision 50?
-SELECT properties->>'content'::String AS content
+-- The operator form is an ordinary scan, so the __revision predicate
+-- applies exactly as it does to any other query.
+SELECT path, properties->>'content'::String AS content,
+       embedding <=> EMBEDDING('rate limit policy') AS distance
 FROM 'knowledge'
-WHERE VECTOR_SEARCH(embedding, $1, 5)
-  AND __revision = 50
-ORDER BY __distance ASC
+WHERE __revision = 50
+ORDER BY distance
+LIMIT 5
 ```
 
 ## Next Steps

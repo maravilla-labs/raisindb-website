@@ -10,7 +10,7 @@ RaisinDB stores vector embeddings alongside your content and provides fast appro
 
 1. **Generate embeddings** — RaisinDB sends node content to a configured embedding provider (OpenAI, Anthropic, local models, etc.) and stores the resulting vectors
 2. **Index with HNSW** — Vectors are indexed using Hierarchical Navigable Small World graphs for O(log n) approximate nearest neighbor search
-3. **Query via SQL** — Use `VECTOR_SEARCH` in standard SQL queries, optionally combined with filters
+3. **Query via SQL** — Use the `KNN` / `HYBRID_SEARCH` table functions, or the `<=>` distance operator in an ordinary query, optionally combined with filters
 
 ## Embedding Storage
 
@@ -27,15 +27,14 @@ Each node can have an associated embedding vector. Embeddings are generated asyn
 Find the 10 nodes most similar to a query vector:
 
 ```sql
-SELECT id, path, properties->>'title'::String AS title, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-ORDER BY __distance ASC;
+SELECT path, properties->>'title'::String AS title, vector_distance
+FROM KNN('how do vector indexes work', 10, workspaces => 'default');
 ```
 
-- `$1` is the query vector (generated from your search text by the same embedding model)
+- The first argument is the query — plain text is embedded with your tenant's provider; `EMBEDDING('…')`, a literal vector, or `VECTOR_OF('ws:/path')` also work
 - `10` is the number of results (k)
-- `__distance` is the cosine distance (lower = more similar)
+- `workspaces` is **required**: a name, a comma-separated list, a glob such as `'content-*'`, or `'ALL READABLE'`
+- `vector_distance` is the cosine distance (lower = more similar)
 
 ### Interpreting Distance
 
@@ -70,12 +69,10 @@ ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5';
 Combine vector similarity with property filters:
 
 ```sql
-SELECT id, path, __distance
-FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 20)
-  AND node_type = 'blog:Article'
+SELECT path, vector_distance
+FROM KNN('sustainable packaging', 20, workspaces => 'default')
+WHERE node_type = 'blog:Article'
   AND properties->>'status'::String = 'published'
-ORDER BY __distance ASC
 LIMIT 10;
 ```
 
@@ -86,7 +83,8 @@ Request more results from the vector index (20) than you need (10) to account fo
 The `HYBRID_SEARCH` table function combines full-text search and vector similarity using Reciprocal Rank Fusion (RRF):
 
 ```sql
-SELECT * FROM HYBRID_SEARCH('how does authentication work', 10);
+SELECT * FROM HYBRID_SEARCH('how does authentication work', 10,
+                            workspaces => 'default');
 ```
 
 This produces a single ranked result set that merges keyword matches and semantic similarity, returning columns for both fulltext and vector ranks alongside a combined score. This approach avoids the weaknesses of either search method alone — pure vector search can miss exact keyword matches, while pure full-text search misses semantically equivalent terms.
@@ -94,23 +92,27 @@ This produces a single ranked result set that merges keyword matches and semanti
 ### Search Within a Subtree
 
 ```sql
-SELECT id, path, __distance
+SELECT path, embedding <=> EMBEDDING('index maintenance') AS distance
 FROM 'default'
-WHERE VECTOR_SEARCH(embedding, $1, 10)
-  AND PATH_STARTS_WITH(path, '/content/docs/')
-ORDER BY __distance ASC;
+WHERE PATH_STARTS_WITH(path, '/content/docs/')
+ORDER BY distance
+LIMIT 10;
 ```
 
-## Search Modes
+## One row per node, with `chunk_index`
 
-HNSW supports two modes for multi-chunk documents:
+The unit the index stores is a **chunk**, but results are fused per **node** — a
+40-page handbook does not occupy ten of your ten slots. The `chunk_index` column
+tells you which chunk answered, which is what lets a RAG caller cite the right
+passage:
 
-| Mode | Behavior |
-|------|----------|
-| **Documents** (default) | Deduplicates by source document, returning the best chunk per document |
-| **Chunks** | Returns all matching chunks ranked by similarity |
+```sql
+SELECT path, chunk_index, vector_distance
+FROM KNN('rotating an API key', 5, workspaces => 'handbook');
+```
 
-Document mode is best for most use cases. Chunk mode is useful when you need to locate the exact passage within a long document.
+`chunk_index` is `0` for a document that was never chunked, and `NULL` when the
+hit came from the lexical leg only.
 
 ## Chunk-Aware Scoring
 

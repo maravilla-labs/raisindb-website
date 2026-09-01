@@ -187,18 +187,20 @@ ORDER BY created_at DESC;`,
   {
     id: 'vector',
     label: 'Vector',
-    code: `SELECT path,
-       DISTANCE(embedding, $query_vec) AS score
-FROM 'default'
-ORDER BY score
-LIMIT 10;`,
+    code: `SELECT node_id, path, vector_distance
+FROM KNN(
+  'how do I rotate a key',
+  10,
+  workspaces => 'default'
+);`,
   },
   {
     id: 'fulltext',
     label: 'Full-Text',
-    code: `SELECT * FROM SEARCH(
-  'default',
-  'kubernetes AND deployment'
+    code: `SELECT * FROM FULLTEXT_SEARCH(
+  'kubernetes AND deployment',
+  'en',
+  workspaces => 'default'
 );`,
   },
   {
@@ -352,7 +354,7 @@ function FeatureGrid() {
               Tantivy-powered search with multi-language stemming, fuzzy matching, wildcards, and relevance scoring. Indexes update with your data automatically.
             </p>
             <div className={styles.bentoCode}>
-              <code>SELECT * FROM SEARCH('main', 'content:database AND type:article')</code>
+              <code>SELECT * FROM FULLTEXT_SEARCH('database AND article', 'en', workspaces =&gt; 'main')</code>
             </div>
           </div>
 
@@ -518,7 +520,7 @@ public class ArticleRepository {
       FROM content
       WHERE DESCENDANT_OF('/articles')
         AND node_type = 'news:Article'
-        AND properties->>'status'::TEXT = 'published'
+        AND properties->>'status'::String = 'published'
       ORDER BY properties->>'publishing_date' DESC
       LIMIT ?
       """, articleMapper, limit);

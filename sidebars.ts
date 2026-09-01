@@ -178,6 +178,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'guides/ai/ai-provider-configuration',
             'guides/ai/embeddings-and-vector-search',
+            'guides/ai/asset-processing',
             'guides/ai/agent-memory-with-branches',
             'guides/ai/rag-patterns',
             'guides/ai/function-based-tool-use',

@@ -82,3 +82,12 @@ X-RateLimit-Reset: 1642348800
 - [Branches API](./branches-api.md)
 - [Functions API](./functions-api.md)
 - [Query API](./query-api.md)
+- [Locks API](./locks-api.md)
+- [MCP API](./mcp-api.md)
+- [MCP Connections API](./mcp-connections-api.md)
+- [Resource Serving API](./resource-serving-api.md)
+
+Asset-processing rules (`/api/repository/{repo}/ai/rules`) and the server
+capability report (`/api/admin/management/plugins`) are documented with the
+feature they belong to, in
+[Asset Processing](../../guides/ai/asset-processing.md#http-api).

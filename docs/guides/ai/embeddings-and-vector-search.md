@@ -33,6 +33,16 @@ Embedding generation is **asynchronous** — it runs through the job system so w
 
 To enable automatic embedding generation, ensure your tenant has an embedding provider configured (see [AI Provider Configuration](./ai-provider-configuration.md)). Embeddings are generated for node content based on your configuration.
 
+:::tip Uploaded files take one more step
+The above describes node **content** — properties written directly. An uploaded
+binary has to be read first: its text is extracted into `__extracted_text`, and
+only then chunked and embedded. Which files that happens to, and what to check
+when a document is not searchable, is [Asset Processing](./asset-processing.md).
+The core server reads PDFs and nothing else, so a `.docx` on a stock server is
+inert until a plugin is installed — visibly, via `__extract_status`, not
+silently.
+:::
+
 ## Vector Search with SQL
 
 RaisinDB integrates vector search directly into the SQL engine using the `VECTOR_SEARCH` function.
@@ -207,6 +217,11 @@ When chunking is enabled in your embedding configuration, long documents are aut
 
 No manual chunking is needed — the pipeline handles splitting, embedding, and indexing automatically when nodes are created or updated.
 
+This is also why extraction hands text back to the server rather than doing its
+own indexing: chunk ids follow a fixed grammar, and an index built with ids the
+live search path never produces returns zero rows while reporting no fault. See
+[Asset Processing](./asset-processing.md#handing-text-back-raisinassetssetextractedtext).
+
 ## Vector Index Management
 
 RaisinDB provides SQL commands to manage and monitor HNSW indexes:
@@ -249,6 +264,7 @@ The HNSW index provides:
 
 ## Next Steps
 
+- [Asset Processing](./asset-processing.md) — how an uploaded file becomes searchable in the first place
 - [RAG Patterns](./rag-patterns.md) — build end-to-end retrieval-augmented generation pipelines
 - [Agent Memory with Branches](./agent-memory-with-branches.md) — use branches for isolated AI agent work
 - [AI Provider Configuration](./ai-provider-configuration.md) — set up embedding providers

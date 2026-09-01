@@ -19,6 +19,8 @@ my-package-1.0.0.rap
     blog_Category.yaml
   workspaces/                # Workspace configuration files
     blog.yaml
+  processing-rules/          # Asset-processing rules (optional)
+    assets.yaml
   content/                   # Content organized by workspace
     blog/                    # Workspace name
       posts/                 # Directory structure
@@ -201,6 +203,53 @@ This is your first post. Edit it to get started!
 ```
 
 Associated files (code, templates, images) are stored alongside `node.yaml` and bundled automatically.
+
+## Adding Processing Rules
+
+`processing-rules/*.yaml` ships the routing table for uploaded binaries — which
+files get text extraction, which get a thumbnail, which are deliberately
+ignored. One file may hold a single rule or a list; prefer a list for rules that
+only make sense together, because splitting them across files hides the
+**order**, and matching is first-match-wins.
+
+```yaml
+# processing-rules/assets.yaml
+- id: blog-pdfs
+  name: PDFs
+  order: 10
+  matcher:
+    type: mime_type
+    mime_type: application/pdf
+  settings:
+    tasks: [extract_text]
+    store_extracted_text: true
+    trigger_embedding: true
+
+- id: blog-images
+  name: Images
+  order: 20
+  matcher:
+    type: mime_type
+    mime_type: image/*
+  settings:
+    tasks: [image_embedding]
+```
+
+This exists so an application's handling of uploaded files travels with the
+application. Otherwise a package could ship the node type for its documents, the
+workspace they live in and the trigger that captions them — and still need a
+human to retype the rules into a console, or the uploads would sit unindexed
+with nothing saying why.
+
+**Reinstalling never overwrites a rule id that already exists.** An operator who
+adjusted a rule on their server keeps their version across every redeploy. Note
+this differs from a workspace, which merges `allowed_node_types` additively: a
+rule's matcher and task list are one decision, and half your rule combined with
+half the operator's is a third rule neither of you wrote. To push a change,
+rename the id.
+
+See [Asset Processing](../ai/asset-processing.md) for the matcher forms, the
+task vocabulary, and how to check what a given server will actually run.
 
 ## Workspace Patches
 

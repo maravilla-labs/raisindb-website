@@ -122,7 +122,7 @@ The normalized representation of one external object. All timestamps are ISO
 | `external_id` | string | **Required.** Stable across renames/moves — the upsert key. |
 | `name` | string | **Required.** Display name. |
 | `is_folder` | boolean | **Required.** Drives the default mapping. |
-| `mime_type` | string \| null | |
+| `mime_type` | string \| null | Omit it and the engine fills it in from `name`'s extension before mapping (a provider-supplied value always wins; folders never get one). Do not rely on leaving it null: **processing rules match on mimetype**, and a node without one matches no rule at all — no extraction, no thumbnail, and no error, because "no rule matched" is a legitimate outcome. |
 | `size_bytes` | number \| null | |
 | `parent_id` | string \| null | Provider parent id (`null` at root). |
 | `created_at` | string \| null | ISO 8601. |
@@ -156,6 +156,7 @@ calls and how it syncs.
 | `supports_webhooks` | boolean | |
 | `supports_search` | boolean | |
 | `supports_push` | boolean | Event-driven / push providers. |
+| `supports_browse` | boolean | You implement the optional `browse` operation. The engine never calls it — it is carried so the console can render a remote picker (a mailbox, a site, a drive) for a mount bundle prompt. |
 | `default_ttl` | number \| null | Suggested TTL (seconds) for ephemeral nodes. |
 | `max_file_size` | number \| null | Bytes; the engine skips larger items. |
 
@@ -166,6 +167,7 @@ adapter that omits them is correctly treated as read-only):
 |-------|------|-------|
 | `can_create` / `can_update` / `can_delete` / `can_submit` | boolean | Which write operations you actually implement. |
 | `mutable_fields` | string[] | The `state_only` allow-list — which node properties this provider accepts as writes. |
+| `accepts_content` | boolean | You want a node's **file bytes** on `create` / `update`, not just its properties. Off by default, and the default is what every pre-content adapter did. See the warning below. |
 | `default_delete_policy` | `"detach" \| "trash" \| "purge" \| null` | Your domain's recommended default. Mail usually wants `trash`; files and calendars usually want `detach`. |
 | `move_fields` | string[] | Which of `mutable_fields` express the object's LOCATION (folder, parent, label set). A move is an `update` carrying one of these, so this is what makes `move_policy` mean anything — the engine is domain-blind and cannot tell that `folder` relocates a message while `unread` does not. A name here that is not in `mutable_fields` is inert. |
 | `default_move_policy` | `"push" \| "detach" \| "reject" \| null` | |
@@ -178,6 +180,20 @@ immutable while its read flag is not. Listing `["unread", "categories", "folder"
 tells it exactly which property edits you accept; an edit to anything else is
 rejected with a clear error instead of being silently dropped. Declare the
 narrowest honest set.
+
+:::warning `accepts_content` is what makes an *edit* push at all
+`mutable_fields` describes properties, and replacing a file's contents changes
+no property a sensible allow-list would name. So a drive mount without
+`accepts_content` pushes on **rename** and on **create** and never on an edit:
+someone replaces a document, the node's `title` is unchanged, and the new
+version silently never reaches the provider. The engine tests byte divergence
+separately, and only for a mount whose adapter opted in — that is the entire
+reason the flag reaches the candidate scan.
+
+Opting in also means opting into a second request shape: an object over the
+inline ceiling arrives as a descriptor carrying no bytes, and the adapter must
+answer with an upload URL or fail.
+:::
 
 ## Error codes
 
@@ -327,6 +343,8 @@ ordinary SQL works against them.
 | `__external_id` | string | Provider item id — the upsert-match key. |
 | `__etag` | string | Provider change token at last sync (drives skip-write). |
 | `__synced_at` | string | ISO 8601 timestamp of the last sync write. |
+| `__pushed_state` | object | **Write-back baseline** — the watched fields as they were last pushed (or last received). Divergence is a value comparison against this; there is no dirty flag. Written only on a mount that watches fields. |
+| `__content_cached_at` | string | When this node's cached file bytes were last fetched. Present only while the node holds bytes. |
 
 ```sql
 SELECT * FROM 'default' WHERE properties->>'__mount_id'::String = $1
@@ -354,7 +372,7 @@ at a workspace path.
 | `mapping_function` | no | Custom per-item mapping; omit for the built-in default. |
 | `enabled` | no | Defaults to `true`. |
 | `sync_config` | no | Sync schedule and filters (below). |
-| `write_config` | no | **Inert in this release.** `{ writeback, conflict }`. The engine has no write-through path; a mount requesting `write_through` records `writeback_supported: false` in `state`. |
+| `write_config` | no | Opt-in write-back for this mount (below). Absent, or `mode: "off"`, means read-only — which is every mount by default. |
 | `state` | — | **Engine-managed.** Do not edit by hand. |
 
 ### Branch model
@@ -380,6 +398,79 @@ not where the mount is scanned from. Therefore:
 | `ephemeral` | `false` | Auto-delete synced nodes older than `ttl_seconds`. |
 | `ttl_seconds` | — | Required for ephemeral mounts. |
 
+### `write_config`
+
+Absent, or `mode: "off"`, on every mount by default. A write configuration
+reaches somebody else's mailbox or calendar, so it is opted into per mount and
+never inherited.
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `writeback` | `"off"` | Master switch. |
+| `mode` | `"off"` | `"off" \| "state_only" \| "mirror" \| "submit"`. A property of the **mount**, not of the adapter — the same Graph adapter serves a `state_only` inbox and a `submit` outbox. An unrecognized value is refused out loud, never demoted to `off`. |
+| `mutable_fields` | `[]` | The update allow-list, read by `state_only` and `mirror` alike. Empty means nothing is pushable. There is no "all fields" value on purpose. The effective list is the **intersection** of this and the adapter's `mutable_fields`. |
+| `conflict` | `remote_wins` | `"remote_wins" \| "local_wins" \| "error" \| "resolver_function"`. An unrecognized value is refused, never demoted — `local_wins` overwrites another writer irreversibly, so a typo must not resolve to it *or* away from it. |
+| `delete_policy` | adapter's | `"detach" \| "trash" \| "purge"`. `purge` is never a default at any layer. |
+| `move_policy` | adapter's | `"push" \| "detach" \| "reject"`. A move is an `update` carrying the new folder/parent field — there is no `move` operation. |
+| `max_deletes_per_run` | — | A **floor**, not a cap: the allowance is `max(this, max_delete_ratio x mount size)`, so a large mount is governed by the ratio and a tiny one by this. |
+| `max_delete_ratio` | — | Proportional delete allowance. |
+| `require_confirmation_on_bulk` | `true` | Park a delete whose originating transaction was wide enough to be a bulk operation, however few deletes reach any one drain. |
+| `command_node_types` | `[]` | `submit` only: which node types under the mount path are commands. |
+| `create_node_types` | `[]` | `mirror` only: which locally-authored node types may be created at the provider. See below. |
+
+:::danger A locally-created node is not adopted by the mount unless you say so
+Every other write path starts from the mount's index, which holds only nodes
+carrying both `__mount_id` and `__external_id` — i.e. nodes this mount
+materialized. A file someone uploads into a mounted folder has neither. It is a
+real node with real bytes rendering under the mount path, and the mount is
+structurally unaware of it.
+
+`create_node_types` is the only thing that changes that, and it is **empty by
+default**, so out of the box such a node is never pushed anywhere. The default
+is deliberate: an ordinary content node under a mount path is ambiguous by
+nature — the read path tolerates foreign content there — and guessing wrong
+uploads private content to a third party, which fixing the config afterwards
+does not undo.
+
+To adopt local creates you need all of: `mode: mirror`, the node's type named in
+`create_node_types`, an adapter declaring `can_create` (and `accepts_content` if
+the bytes must travel), and a mapper whose `to_external` handles a node with no
+`fields` subset. Miss any one and the node stays local, silently.
+
+Neither `sync` nor `remap` is an escape hatch here — both walk the **provider's**
+items, so neither can discover a node the provider has never heard of.
+:::
+
+### Sync modes
+
+The mode is chosen by the caller of a manual sync
+(`POST /api/integrations/{repo}/mounts/{mount_id}/sync` with `{ "mode": ... }`,
+default `delta`); an unknown value is rejected rather than run as something else.
+
+| mode | What it does |
+|------|--------------|
+| `delta` | The ordinary run. Uses `get_changes` when the adapter declares `supports_changes`, and skips any item whose `etag` matches what is stored. |
+| `full` | Full enumeration via `list`, then a reconcile that prunes what the provider no longer has. |
+| `remap` | Re-materializes **every** item through the current mapper and path template, **ignoring etags**. |
+
+:::info `remap` is the migration path for a changed mapper
+The etag skip-write is what stops a re-sync minting a revision per unchanged
+item and re-firing every downstream trigger. But that skip returns *before* the
+mapper's output is applied — so a changed mapper (a new node type, a renamed
+property, a new folder hierarchy) is invisible to everything already synced. An
+ordinary sync will never pick it up. `remap` is the deliberate,
+operator-triggered exception, and it writes a revision per item, so it is not
+something to run on a schedule.
+
+Engine-derived properties survive it: the thumbnail and the `__extract_*`
+artifacts are carried forward, because a mapper cannot know them and rebuilding
+the property map from mapper output would erase them. That erasure is worse than
+a missing picture — `__extract_fingerprint` is what tells the enqueue gate the
+binary was already read, so losing it makes every remapped asset re-extract and
+re-embed. An adapter that genuinely owns one of those keys still wins; the
+carry-forward only fills a gap.
+:::
+
 ### `state` (engine-managed)
 
 Read-only from your perspective; the engine writes it after each sync.
@@ -391,7 +482,8 @@ Read-only from your perspective; the engine writes it after each sync.
 | `last_error` | Last failure message, if any. |
 | `consecutive_failures` | Drives interval backoff and the `degraded` transition. |
 | `status` | `"ok" \| "syncing" \| "auth_required" \| "degraded" \| "misconfigured"`. |
-| `writeback_supported` | `false` when the mount requests `write_through` but the engine cannot honour it (always, in this release). The UI reads it to explain the limitation. |
+| `writeback_supported` | `true` once the mount's requested mode resolves against the adapter's capabilities and the mapper's `to_external`; `false` when it was requested and refused, with the cause in `writeback_last_error`. `null` when no write mode was requested. |
+| `writeback_last_error` | Why writeback was refused, or the last push failure. This is the field to read when a mount "silently does not write". |
 | `last_fencing_token` | Lease token guarding against stale writes in a cluster. |
 
 ## `raisin:Integration` configuration

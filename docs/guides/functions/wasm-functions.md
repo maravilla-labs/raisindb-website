@@ -4,8 +4,8 @@ sidebar_position: 4
 
 # WebAssembly Functions
 
-Write a RaisinDB function in **Rust, Go or TypeScript**, compile it to a
-WebAssembly component, and deploy it like any other function.
+Write a RaisinDB function in **Rust or Go**, compile it to a WebAssembly
+component, and deploy it like any other function.
 
 WebAssembly is a first-class runtime alongside QuickJS and Starlark: same
 `raisin:Function` node, same `raisin.*` API, same triggers, same execution
@@ -15,10 +15,14 @@ logs. What differs is that you ship a compiled artifact instead of source.
 
 | You want | Use |
 |---|---|
-| Fastest execution and lowest tail latency | **WebAssembly** |
+| Fastest execution and lowest tail latency | **WebAssembly** (Rust, Go) |
+| Existing Rust or Go libraries in a function | **WebAssembly** |
 | Edit-in-console, no build step | QuickJS (JavaScript) |
 | Small deterministic config logic | Starlark |
-| Existing Rust/Go libraries in a function | **WebAssembly** |
+
+All of them are created the same way — `raisindb create function --lang …`
+takes `rust`, `go`, `js` and `starlark`. Only the compiled languages have a
+build step.
 
 Measured on one server, a function doing one node read plus a SQL query over
 25 nodes (debug build, so treat these as a floor):
@@ -33,8 +37,7 @@ For CPU-bound work the gap is far larger: a 50k-iteration loop is 1 ms in
 WebAssembly, 14 ms in QuickJS, 149 ms in Starlark.
 
 The one cost is **cold start**. The first call to a given artifact after a
-server start compiles it (roughly 150 ms for a small Rust component, more for
-a large TypeScript one). Every later call reuses the compiled form, and
+server start compiles it (roughly 150 ms for a small Rust component). Every later call reuses the compiled form, and
 artifacts with identical bytes share it.
 
 ## The shape of a wasm function
@@ -69,9 +72,8 @@ entry_file: main.wasm:default
 entry_file: ../greet/main.wasm:shout
 ```
 
-The second node has no artifact of its own. This matters most for TypeScript,
-where each component embeds a JavaScript engine and is 8–15 MB: twenty
-functions in one artifact ship once, not twenty times.
+The second node has no artifact of its own. This keeps a package small when many
+functions share a codebase: one artifact uploaded once, not one per handler.
 
 A parent-relative `entry_file` must stay inside the `functions` workspace.
 
@@ -79,7 +81,7 @@ A parent-relative `entry_file` must stay inside the `functions` workspace.
 
 ```bash
 # 1. Scaffold — creates the node, the project, and a unit test
-raisindb create function greet --lang rust --ns demo
+raisindb create function greet --lang rust --ns demo   # or: go | js | starlark
 
 # 2. Build the component
 raisindb function build wasm/demo/greet
@@ -94,6 +96,25 @@ raisindb function run wasm/demo/greet --input '{"name":"Ada"}'
 # 5. Ship it
 raisindb deploy . --install
 ```
+
+### What `function build` actually runs
+
+It is a thin wrapper around your language's real toolchain, not a compiler of
+its own. It reads `raisin.build.yaml` in the project and runs:
+
+| `--lang` | command |
+|---|---|
+| `rust` | `cargo build --release --target wasm32-wasip2` |
+| `go` | `tinygo build -target=wasip2 --wit-package ./wit --wit-world function .` |
+
+Then it copies the resulting component into the Function node's directory as
+its artifact, prints the size and sha256, and lists every Function node that
+artifact backs. You can run those commands yourself; `function build` exists so
+you do not have to remember the target triple, and so the artifact lands where
+the node's `entry_file` expects it.
+
+`raisin.build.yaml` carries a `command:` key if your project needs something
+else — a workspace flag, a different profile, a wrapper script.
 
 `raisindb function doctor` checks the parts that otherwise fail late: that your
 toolchain is installed, that every `entry_file` handler name is actually
@@ -143,7 +164,9 @@ its immutable compiled code.
 
 ## Next steps
 
-- [Rust quickstart](./wasm-rust.md)
-- [Go quickstart](./wasm-go.md)
-- [TypeScript quickstart](./wasm-typescript.md)
+- [Rust quickstart](./wasm-rust.md) — smallest artifacts, fastest
+- [Go quickstart](./wasm-go.md) — built with TinyGo
 - [The WIT contract and host ABI](../../reference/function-api/wasm-abi.md)
+
+AssemblyScript is planned as a third guest language: TypeScript-shaped syntax
+compiling straight to a small module, with no embedded JavaScript engine.

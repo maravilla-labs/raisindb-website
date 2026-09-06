@@ -136,6 +136,11 @@ You only need to implement what your provider supports — advertise the rest as
     duplicate email, so an ambiguous failure parks for a human instead of
     retrying.
   - **Your reverse mapping belongs in the mapper, not the adapter** — see below.
+  - **`accepts_content` is a separate flag, and files need it.** `mutable_fields`
+    describes properties; replacing a file's contents changes no property such a
+    list would name. Without `accepts_content` a drive mount pushes on rename and
+    on create and **never on an edit** — the new version silently never reaches
+    the provider. Declare it if your `create` / `update` should receive bytes.
 
 :::danger Never write nodes from an adapter
 Return results and let the engine write. An adapter that writes nodes directly
@@ -192,6 +197,15 @@ function capabilities() {
     supports_push: false,
     default_ttl: null,
     max_file_size: null,
+    // Write path — every one defaults to false/empty, so a read-only adapter
+    // can simply omit them. Declare only what you have actually implemented.
+    can_create: false,
+    can_update: false,
+    can_delete: false,
+    can_submit: false,
+    accepts_content: false,   // true if create/update should receive file BYTES
+    mutable_fields: [],       // the properties this provider accepts as writes
+    move_fields: [],          // which of those relocate the object
   };
 }
 
@@ -200,7 +214,7 @@ function toItem(row) {
     external_id: row.id,          // stable across renames — REQUIRED
     name: row.title,              // REQUIRED
     is_folder: row.kind === "folder", // REQUIRED
-    mime_type: row.mime || null,
+    mime_type: row.mime || null,   // omit and the engine guesses from `name`
     size_bytes: row.bytes ?? null,
     parent_id: row.parent || null,
     created_at: row.created,      // ISO 8601
@@ -296,6 +310,82 @@ per sync run — never once per item.
   in the adapter would silently write the wrong fields the moment someone does
   that. A mapper without `to_external` makes its mount read-only, which the
   console reports rather than failing quietly.
+- **The engine learns that from a third operation, `mapper_capabilities`.** Once
+  per run it calls your mapper with `{ operation: "mapper_capabilities" }` and
+  looks for exactly `{ to_external: true }`. Anything else — a missing operation,
+  a falsy value, a throw — resolves the mount to read-only and records the reason
+  in `state.writeback_last_error`. It is a separate operation rather than a
+  probe call with a null node, so your `to_external` never has to tolerate being
+  handed nothing. A mount with **no** `mapping_function` at all is read-only by
+  construction: the built-in mapping is lossy, so inverting it would be guessing.
+
+## The write path in practice
+
+The read path is the one you get for free; the write path is where adapters go
+wrong quietly. Four things to build against.
+
+**The mount picks the mode, you declare the operations.** `state_only` pushes an
+allow-list of properties; `mirror` adds creates and deletes behind blast-radius
+rails; `submit` treats the node as a command to perform once. A mode your
+capabilities cannot serve is refused at drain time — after the engine has already
+claimed the candidates — so declare honestly and declare narrowly.
+
+**Divergence is a value comparison, not a dirty flag.** The engine stamps
+`__pushed_state` on each node with the watched fields as last pushed, and
+nominates anything that no longer matches. Two consequences: your `to_external`
+receives **only the fields that actually diverged**, possibly one of them, and it
+must return a valid payload for *every* single-field subset — returning null for
+one makes that push a no-op, and the node is re-nominated every drain forever
+with no request going out and no error surfaced. And your `update` must return a
+receipt whose `etag` is exactly what the next read will compute for the
+post-write state; a null etag means the next read sees a mismatch, rebuilds the
+node from the remote item, and reverts the local edit.
+
+**Bytes are a second kind of divergence.** See `accepts_content` above. Without
+it, a file mount never pushes an edit.
+
+**A locally-created node is not yours unless the mount says so.** This is the
+limitation people hit first, so it is worth stating plainly:
+
+:::warning Uploading a file into a mounted folder does not send it to the provider
+Every write path except one starts from the mount's index, and that index holds
+only the nodes the mount **materialized** — the ones carrying `__mount_id` and
+`__external_id`. A file uploaded into a mounted folder in Studio has neither. It
+renders under the mount path, it is a real asset with real bytes, and the mount
+is structurally unaware of it. Neither a sync nor a remap adopts it: both walk
+the *provider's* items, so neither can discover a node the provider has never
+heard of.
+
+The one exception is a mount that opted in explicitly: `mode: mirror` plus the
+node's type named in `write_config.create_node_types` (empty by default) plus an
+adapter declaring `can_create`. Only then does the drain scan the mount path for
+unadopted nodes and create them at the provider.
+
+The default is deliberate rather than an oversight — an ordinary content node
+under a mount path is ambiguous, and guessing wrong uploads private content to a
+third party, which fixing the config afterwards does not undo.
+:::
+
+## Changing your mapper later
+
+An ordinary sync skips any item whose `etag` is unchanged, and that skip happens
+**before** the mapper runs. So a change to your mapper — a new node type, a
+renamed property, a different folder layout — is invisible to everything already
+synced, however many times you sync. Nothing reports this; the mount just keeps
+looking healthy while serving the old shape.
+
+The migration is a **remap**:
+
+```bash
+POST /api/integrations/{repo}/mounts/{mount_id}/sync   { "mode": "remap" }
+```
+
+It re-applies the current mapper and path template to every item, ignoring
+etags, and moves nodes if the template now resolves a different path. It writes a
+revision per item and re-fires downstream triggers, so it is an operator action,
+not something to schedule. Engine-derived properties — the thumbnail, the
+`__extract_*` extraction artifacts — are carried across it, because your mapper
+cannot know them.
 
 ## Test the connection before you mount
 

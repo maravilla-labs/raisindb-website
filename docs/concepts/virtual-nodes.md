@@ -44,6 +44,7 @@ a mode you choose per mount. Be precise about the boundary:
 | **Sending mail** and **RSVP** as outbox commands | **Yes — experimental / preview** (`submit`), Microsoft 365 only. IMAP cannot send — that needs SMTP, which is planned and not built. |
 | Conflict handling — `remote_wins`, `local_wins`, `error`, or your own resolver function | **Yes — experimental / preview.** `remote_wins` is the default. |
 | Downloading file **content** into the binary store | **On demand.** Sync writes metadata only; the bytes are fetched when something asks, so a mailbox import is not multiplied by whole documents. Mail attachments arrive as `raisin:Asset` children with `file == null` until then. |
+| **Adopting a node created locally under a mount path** (a file uploaded into a mounted folder) | **Only when opted in.** It needs a `mirror` mount naming the node type in `create_node_types`; otherwise the mount never sees it. See [Locally-created nodes](#locally-created-nodes-are-not-adopted-by-default). |
 | On-demand read resolution (resolve a path live on access) | **No** — deferred by design; nodes appear only on the sync interval. |
 
 ## The content-hub pitch
@@ -296,6 +297,41 @@ engine writes.
 
 That boundary is also the security boundary: connectors run privileged, so a
 connector that could write nodes could write *any* node in the workspace.
+
+### Locally-created nodes are not adopted by default
+
+A mount knows the nodes it materialized — they carry its id and the provider's
+item id — and every write path but one starts from that set. A node someone
+creates under the mount path carries neither. Upload a file into a mounted
+folder and you get a real asset with real bytes, rendering where you put it, that
+the mount is structurally unaware of. Syncing does not adopt it and neither does
+a remap: both walk the *provider's* items, and the provider has never heard of
+this one.
+
+Adopting local creates is opt-in per mount and per node type — a `mirror` mount
+naming the type in `create_node_types`, against a connector that declares it can
+create. The default is not an oversight. An ordinary content node under a mount
+path is genuinely ambiguous: the read path deliberately tolerates content that
+isn't the mount's, and guessing wrong means uploading somebody's private
+document to a third party, which changing the setting afterwards does not undo.
+So the mount says which types it means, type by type, in the same spirit as the
+writable-field list having no "all fields" value.
+
+### Changing a mapper needs a remap
+
+A sync skips any item whose change token is unchanged, and it skips it *before*
+the mapping function runs. That is what stops a re-sync writing a revision per
+unchanged item and re-firing every trigger downstream — and it also means a
+changed mapper is invisible to everything already synced. The mount goes on
+looking healthy while serving the old shape, however often it syncs.
+
+**Remap** is the deliberate exception: re-apply the current mapper and path
+template to everything, ignoring change tokens, moving nodes whose path template
+now resolves elsewhere. It writes a revision per item, so it is an operator
+action rather than a schedule. Work the engine derived from the bytes — a
+rendered thumbnail, extracted text — survives it, because a mapper cannot know
+those and rebuilding a node purely from mapper output would silently destroy
+them.
 
 ## Branches: where config lives and where nodes land
 

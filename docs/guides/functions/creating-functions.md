@@ -10,16 +10,24 @@ Create serverless functions to extend RaisinDB with custom logic.
 
 Functions in RaisinDB run in a sandboxed environment with configurable resource limits. Supported runtimes:
 
-| Runtime | Language | Engine |
-|---------|----------|--------|
-| QuickJS | JavaScript | QuickJS embedded runtime |
-| **WebAssembly** | **Rust, Go, TypeScript** | **wasmtime (Component Model)** |
-| Starlark | Python-like | Starlark interpreter |
-| SQL | SQL | RaisinDB SQL engine |
+| Runtime | Language | `--lang` | Build step |
+|---------|----------|----------|------------|
+| QuickJS | JavaScript | `js` | none — source ships |
+| Starlark | Python-like | `starlark` | none — source ships |
+| [WebAssembly](./wasm-functions.md) | Rust, Go | `rust`, `go` | compiled to a component |
+| SQL | SQL | — | none |
 
-[WebAssembly functions](./wasm-functions.md) are the fastest option and the one
-to reach for when you want to use existing Rust or Go libraries: you compile a
-component and upload the artifact instead of shipping source.
+Whichever you choose, the CLI starts it the same way:
+
+```bash
+raisindb create function send-welcome-email --lang js
+raisindb create function price-quote        --lang rust
+```
+
+That scaffolds the `raisin:Function` node and its source (or its toolchain
+project), ready to deploy. [WebAssembly](./wasm-functions.md) is the fastest
+option and the one to reach for when you want existing Rust or Go libraries;
+JavaScript is the quickest to iterate on.
 
 Functions can:
 - Process data

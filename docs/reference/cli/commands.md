@@ -341,6 +341,116 @@ Print the lowered execution plan the engine will actually run for a flow definit
 raisindb flow explain ./package/content/flows/onboarding.yaml
 ```
 
+## Functions
+
+Scaffold, build and run server functions. `create function` starts one in any
+language; `function build` and `doctor` are offline, `run` and `test --server`
+talk to a server.
+
+### create function
+
+Scaffold a `raisin:Function` node and its source (or its toolchain project).
+
+```bash
+raisindb create function greet --lang rust --ns demo          # compiled to wasm
+raisindb create function hello --lang js --ns demo            # source, no build
+raisindb create function greet-shout --into wasm/demo/greet --handler shout
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --lang <lang>` | `rust`, `go`, `assemblyscript`, `ts` (compiled to WebAssembly) or `js`, `starlark` (source, no build step) |
+| `--ns <namespace>` | Namespace under `content/functions/lib` (default: package name) |
+| `-d, --dir <path>` | Package directory (default: nearest `manifest.yaml` above cwd) |
+| `--handler <name>` | Handler name (default `default`, or the function name with `--into`) |
+| `--into <project>` | Add a SECOND handler to an existing wasm project, sharing its artifact |
+| `--description <text>` | Description for the Function node |
+
+Compiled languages get a project under `wasm/<ns>/<name>/` and only the built
+`main.wasm` ships; source languages get their code beside the node, which is
+what ships. See [Creating Functions](../../guides/functions/creating-functions.md).
+
+### function build
+
+Build a wasm project and copy the artifact into its Function node.
+
+```bash
+raisindb function build wasm/demo/greet
+raisindb function build --all --watch
+```
+
+It is a wrapper around your own toolchain, not a compiler: it reads
+`raisin.build.yaml` and runs `cargo build --release --target wasm32-wasip2`,
+the TinyGo equivalent, or for AssemblyScript `asc` followed by
+`wasm-tools component embed` and `component new`. Then it copies the result to
+the node's artifact path and prints the size, sha256 and every Function node
+that artifact backs.
+
+| Option | Description |
+|--------|-------------|
+| `--all` | Build every wasm project in the package |
+| `-w, --watch` | Rebuild on change until interrupted |
+| `--release` / `--debug` | Profile (release is the default) |
+
+### function doctor
+
+Offline checks that otherwise fail late.
+
+```bash
+raisindb function doctor            # every function in the package
+raisindb function doctor wasm/demo/greet
+```
+
+Reports missing toolchains, an `entry_file` that does not resolve or escapes
+the functions workspace, an artifact over the server's 32 MiB cap, and a
+handler name a node asks for that the source does not define.
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Machine-readable output |
+| `--strict` | Treat warnings as failures |
+
+### function run
+
+Invoke a function against a server, uploading the local code first when it
+differs from what is deployed. Works for wasm, JavaScript and Starlark.
+
+```bash
+raisindb function run wasm/demo/greet --input '{"name":"Ada"}'
+raisindb function run content/functions/lib/demo/hello --input-file in.json
+```
+
+| Option | Description |
+|--------|-------------|
+| `-i, --input <json>` / `--input-file <path>` | Input for the handler |
+| `--handler <name>` | Call a different handler than the node's `entry_file` names |
+| `-t, --timeout <ms>` | Timeout |
+| `-s, --server` / `-r, --repo` / `-b, --branch` | Target |
+| `--json` | One JSON object instead of the live view |
+
+### function test
+
+```bash
+raisindb function test wasm/demo/greet             # native tests, no server
+raisindb function test wasm/demo/greet --server    # scenarios against a server
+```
+
+For a compiled language this runs the project's **native** tests — `cargo test`
+or `go test ./...` against a mock host, so no server is needed. With `--server`
+it runs the scenarios in `tests/server.json`.
+
+JavaScript and Starlark functions have no native test step (nothing to compile,
+no mock host), so they need `--server`. Their scenarios live in a **hidden**
+`.tests.json` beside the node — hidden because everything else under
+`content/` is uploaded, and a visible file would become a node:
+
+```json
+[{ "input": { "name": "Ada" }, "expect": { "greeting": "Hello, Ada" } }]
+```
+
+An object in `expect` is matched as a SUBSET, so a case asserts the fields it
+names and ignores the rest.
+
 ## Repository Administration
 
 Repo commands operate over the HTTP API with your stored token — they work identically against local and remote servers.

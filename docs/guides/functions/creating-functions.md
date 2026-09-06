@@ -14,7 +14,7 @@ Functions in RaisinDB run in a sandboxed environment with configurable resource 
 |---------|----------|----------|------------|
 | QuickJS | JavaScript | `js` | none — source ships |
 | Starlark | Python-like | `starlark` | none — source ships |
-| [WebAssembly](./wasm-functions.md) | Rust, Go | `rust`, `go` | compiled to a component |
+| [WebAssembly](./wasm-functions.md) | Rust, Go, AssemblyScript | `rust`, `go`, `assemblyscript` | compiled to a component |
 | SQL | SQL | — | none |
 
 Whichever you choose, the CLI starts it the same way:
@@ -22,6 +22,7 @@ Whichever you choose, the CLI starts it the same way:
 ```bash
 raisindb create function send-welcome-email --lang js
 raisindb create function price-quote        --lang rust
+raisindb create function resize-batch       --lang assemblyscript
 ```
 
 That scaffolds the `raisin:Function` node and its source (or its toolchain
@@ -32,7 +33,7 @@ Where the code lives depends on whether it needs building:
 | `--lang` | what the scaffold writes | what the `.rap` ships |
 |---|---|---|
 | `js`, `starlark` | `.node.yaml` + the source, together under `content/` | both — the source **is** the deliverable |
-| `rust`, `go` | `.node.yaml` under `content/`, the project under `wasm/` | `.node.yaml` + the built `main.wasm` only |
+| `rust`, `go`, `assemblyscript` | `.node.yaml` under `content/`, the project under `wasm/` | `.node.yaml` + the built `main.wasm` only |
 
 For a compiled language the guest source stays out of `content/` (where `sync`
 would upload it as an asset) and out of the package (`.rapignore` excludes
@@ -144,3 +145,27 @@ const result = await client.functions.invoke('send-welcome-email', {
 
 - [Triggers](./triggers.md)
 - [Execution Logs](./execution-logs.md)
+
+## Testing a function
+
+```bash
+raisindb function test wasm/demo/greet             # native tests, no server
+raisindb function test wasm/demo/greet --server    # scenarios against a server
+raisindb function run  wasm/demo/greet --input '{"name":"Ada"}'
+```
+
+A compiled function has **native** tests: `cargo test` or `go test ./...` run
+against a mock host, so they need no server at all. With `--server` the
+scenarios in `tests/server.json` are invoked for real.
+
+JavaScript and Starlark functions have no native test step — there is nothing
+to compile and no mock host — so they need `--server`. Their scenarios live in
+a hidden `.tests.json` beside the node:
+
+```json
+[{ "input": { "name": "Ada" }, "expect": { "greeting": "Hello, Ada" } }]
+```
+
+It is hidden because everything else under `content/` is uploaded; a visible
+`tests/server.json` there would become a node. An object in `expect` is matched
+as a subset, so a case asserts the fields it names and ignores the rest.

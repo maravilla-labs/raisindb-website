@@ -4,8 +4,8 @@ sidebar_position: 4
 
 # WebAssembly Functions
 
-Write a RaisinDB function in **Rust or Go**, compile it to a WebAssembly
-component, and deploy it like any other function.
+Write a RaisinDB function in **Rust, Go or AssemblyScript**, compile it to a
+WebAssembly component, and deploy it like any other function.
 
 WebAssembly is a first-class runtime alongside QuickJS and Starlark: same
 `raisin:Function` node, same `raisin.*` API, same triggers, same execution
@@ -16,12 +16,13 @@ logs. What differs is that you ship a compiled artifact instead of source.
 | You want | Use |
 |---|---|
 | Fastest execution and lowest tail latency | **WebAssembly** (Rust, Go) |
+| TypeScript-like syntax in a small artifact | **WebAssembly** (AssemblyScript) |
 | Existing Rust or Go libraries in a function | **WebAssembly** |
 | Edit-in-console, no build step | QuickJS (JavaScript) |
 | Small deterministic config logic | Starlark |
 
 All of them are created the same way — `raisindb create function --lang …`
-takes `rust`, `go`, `js` and `starlark`. Only the compiled languages have a
+takes `rust`, `go`, `assemblyscript`, `js` and `starlark`. Only the compiled languages have a
 build step.
 
 Measured on one server, a function doing one node read plus a SQL query over
@@ -149,6 +150,7 @@ its own. It reads `raisin.build.yaml` in the project and runs:
 |---|---|
 | `rust` | `cargo build --release --target wasm32-wasip2` |
 | `go` | `tinygo build -target=wasip2 --wit-package ./wit --wit-world function .` |
+| `assemblyscript` | `asc …` then `wasm-tools component embed` + `component new` (three steps — see its guide) |
 
 Then it copies the resulting component into the Function node's directory as
 its artifact, prints the size and sha256, and lists every Function node that
@@ -209,7 +211,5 @@ its immutable compiled code.
 
 - [Rust quickstart](./wasm-rust.md) — smallest artifacts, fastest
 - [Go quickstart](./wasm-go.md) — built with TinyGo
+- [AssemblyScript quickstart](./wasm-assemblyscript.md) — TypeScript-like syntax, ~8 KB artifacts
 - [The WIT contract and host ABI](../../reference/function-api/wasm-abi.md)
-
-AssemblyScript is planned as a third guest language: TypeScript-shaped syntax
-compiling straight to a small module, with no embedded JavaScript engine.

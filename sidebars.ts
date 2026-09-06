@@ -228,6 +228,7 @@ const sidebars: SidebarsConfig = {
               items: [
                 'guides/functions/wasm-rust',
                 'guides/functions/wasm-go',
+                'guides/functions/wasm-assemblyscript',
               ],
             },
           ],

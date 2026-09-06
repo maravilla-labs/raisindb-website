@@ -97,6 +97,49 @@ raisindb function run wasm/demo/greet --input '{"name":"Ada"}'
 raisindb deploy . --install
 ```
 
+### What `create function` actually produces
+
+`raisindb create function greet --lang rust --ns demo` writes two things in two
+places, and the split is deliberate:
+
+```
+my-package/
+  content/functions/lib/demo/greet/
+    .node.yaml            the raisin:Function node — language, entry_file, limits
+    main.wasm             the built component (appears after `function build`)
+  wasm/demo/greet/
+    raisin.build.yaml     lang, node_dir, artifact, optional command override
+    Cargo.toml            pinned to the SDK at a release tag
+    src/lib.rs            your handler
+    tests/handlers.rs     a native unit test against the mock host
+    tests/server.json     scenarios for `function test --server`
+    README.md
+  .rapignore              contains `wasm/`
+```
+
+**Why the source is not under `content/`.** `raisindb sync` maps every non-YAML
+file under `content/` to a node, so a `Cargo.toml` sitting there would be
+uploaded as an asset. Guest source belongs to your build, not to your content
+tree.
+
+**What ships.** The `.rap` package contains `.node.yaml` and `main.wasm`. It
+does **not** contain `Cargo.toml`, `go.mod` or `src/` — `.rapignore` excludes
+`wasm/`. The artifact is the deliverable; the source is yours and stays in your
+repository.
+
+This means a package you receive from someone else is not a way to read their
+guest source. That is the intended trade: the thing that runs is what ships.
+
+For `--lang js` and `--lang starlark` there is no second directory at all. The
+source *is* the deliverable, so it lives beside its `.node.yaml` under
+`content/` and ships with the package:
+
+```
+content/functions/lib/demo/greet/
+  .node.yaml              language: javascript, entry_file: index.js:handler
+  index.js                ships as the function's code
+```
+
 ### What `function build` actually runs
 
 It is a thin wrapper around your language's real toolchain, not a compiler of

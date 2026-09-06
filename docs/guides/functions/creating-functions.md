@@ -25,7 +25,19 @@ raisindb create function price-quote        --lang rust
 ```
 
 That scaffolds the `raisin:Function` node and its source (or its toolchain
-project), ready to deploy. [WebAssembly](./wasm-functions.md) is the fastest
+project), ready to deploy.
+
+Where the code lives depends on whether it needs building:
+
+| `--lang` | what the scaffold writes | what the `.rap` ships |
+|---|---|---|
+| `js`, `starlark` | `.node.yaml` + the source, together under `content/` | both — the source **is** the deliverable |
+| `rust`, `go` | `.node.yaml` under `content/`, the project under `wasm/` | `.node.yaml` + the built `main.wasm` only |
+
+For a compiled language the guest source stays out of `content/` (where `sync`
+would upload it as an asset) and out of the package (`.rapignore` excludes
+`wasm/`). The artifact is what ships; the source stays in your repository. See
+[WebAssembly functions](./wasm-functions.md) for the full layout. [WebAssembly](./wasm-functions.md) is the fastest
 option and the one to reach for when you want existing Rust or Go libraries;
 JavaScript is the quickest to iterate on.
 

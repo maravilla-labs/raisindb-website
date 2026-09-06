@@ -13,8 +13,13 @@ Functions in RaisinDB run in a sandboxed environment with configurable resource 
 | Runtime | Language | Engine |
 |---------|----------|--------|
 | QuickJS | JavaScript | QuickJS embedded runtime |
+| **WebAssembly** | **Rust, Go, TypeScript** | **wasmtime (Component Model)** |
 | Starlark | Python-like | Starlark interpreter |
 | SQL | SQL | RaisinDB SQL engine |
+
+[WebAssembly functions](./wasm-functions.md) are the fastest option and the one
+to reach for when you want to use existing Rust or Go libraries: you compile a
+component and upload the artifact instead of shipping source.
 
 Functions can:
 - Process data

@@ -1,0 +1,149 @@
+---
+sidebar_position: 4
+---
+
+# WebAssembly Functions
+
+Write a RaisinDB function in **Rust, Go or TypeScript**, compile it to a
+WebAssembly component, and deploy it like any other function.
+
+WebAssembly is a first-class runtime alongside QuickJS and Starlark: same
+`raisin:Function` node, same `raisin.*` API, same triggers, same execution
+logs. What differs is that you ship a compiled artifact instead of source.
+
+## When to choose it
+
+| You want | Use |
+|---|---|
+| Fastest execution and lowest tail latency | **WebAssembly** |
+| Edit-in-console, no build step | QuickJS (JavaScript) |
+| Small deterministic config logic | Starlark |
+| Existing Rust/Go libraries in a function | **WebAssembly** |
+
+Measured on one server, a function doing one node read plus a SQL query over
+25 nodes (debug build, so treat these as a floor):
+
+| runtime | latency | throughput at saturation | p99 under load |
+|---|---:|---:|---:|
+| WebAssembly | 11 ms | 452 req/s | 106 ms |
+| QuickJS | 14 ms | 324 req/s | 175 ms |
+| Starlark | 31 ms | 175 req/s | 281 ms |
+
+For CPU-bound work the gap is far larger: a 50k-iteration loop is 1 ms in
+WebAssembly, 14 ms in QuickJS, 149 ms in Starlark.
+
+The one cost is **cold start**. The first call to a given artifact after a
+server start compiles it (roughly 150 ms for a small Rust component, more for
+a large TypeScript one). Every later call reuses the compiled form, and
+artifacts with identical bytes share it.
+
+## The shape of a wasm function
+
+A `raisin:Function` node with `language: wasm` and a `main.wasm` artifact
+uploaded as a child asset:
+
+```yaml
+node_type: raisin:Function
+properties:
+  title: Greet
+  language: wasm
+  entry_file: main.wasm:default    # artifact:handler
+  execution_mode: both
+  enabled: true
+  resource_limits:
+    timeout_ms: 5000
+    max_memory_bytes: 67108864
+```
+
+### One artifact can hold many handlers
+
+`entry_file` is `artifact:handler`. A bare `main.wasm` means the handler named
+`default`. Because the handler name is data rather than a separate export,
+**one artifact can serve many functions**:
+
+```yaml
+# content/functions/lib/demo/greet/.node.yaml
+entry_file: main.wasm:default
+
+# content/functions/lib/demo/greet-shout/.node.yaml  — SAME artifact
+entry_file: ../greet/main.wasm:shout
+```
+
+The second node has no artifact of its own. This matters most for TypeScript,
+where each component embeds a JavaScript engine and is 8–15 MB: twenty
+functions in one artifact ship once, not twenty times.
+
+A parent-relative `entry_file` must stay inside the `functions` workspace.
+
+## The development loop
+
+```bash
+# 1. Scaffold — creates the node, the project, and a unit test
+raisindb create function greet --lang rust --ns demo
+
+# 2. Build the component
+raisindb function build wasm/demo/greet
+
+# 3. Test it with NO server running (mock host)
+raisindb function test wasm/demo/greet
+
+# 4. Run it against your local server
+raisindb server start
+raisindb function run wasm/demo/greet --input '{"name":"Ada"}'
+
+# 5. Ship it
+raisindb deploy . --install
+```
+
+`raisindb function doctor` checks the parts that otherwise fail late: that your
+toolchain is installed, that every `entry_file` handler name is actually
+registered in the source, that the artifact is under the size cap, and that
+the component imports only what the host provides.
+
+### Adding a second handler to an existing project
+
+```bash
+raisindb create function greet-shout --lang rust --into wasm/demo/greet --handler shout
+```
+
+This adds a handler to the existing project and creates a Function node
+pointing at the same artifact.
+
+## What a function can and cannot do
+
+Everything in the [`raisin.*` API](../../reference/function-api/wasm-abi.md)
+is available — nodes, SQL, HTTP, secrets, locks, AI, assets — through the same
+registry every runtime uses.
+
+Not available, deliberately:
+
+- **No sockets and no direct HTTP.** Network access goes through
+  `raisin.http.*`, which enforces the per-function network policy and blocks
+  loopback and private ranges. A component importing `wasi:sockets` is
+  rejected at upload with the import named.
+- **No filesystem.** The interface is linked with no preopened directories, so
+  guests that expect it start cleanly but every open fails.
+- **No timers or background work.** A handler runs, returns, and its instance
+  is destroyed.
+
+## Limits
+
+| Limit | Default | Source |
+|---|---|---|
+| Wall clock | 30 s | `resource_limits.timeout_ms` |
+| Memory | 128 MiB | `resource_limits.max_memory_bytes` |
+| Artifact size | 32 MiB | `[functions.wasm] max_artifact_bytes` |
+
+Memory is a **store-wide** budget: a component with several linear memories
+shares one allowance rather than getting the limit each.
+
+Every execution gets a fresh instance. Nothing survives between calls — no
+globals, no cached state — so two tenants running the same artifact share only
+its immutable compiled code.
+
+## Next steps
+
+- [Rust quickstart](./wasm-rust.md)
+- [Go quickstart](./wasm-go.md)
+- [TypeScript quickstart](./wasm-typescript.md)
+- [The WIT contract and host ABI](../../reference/function-api/wasm-abi.md)

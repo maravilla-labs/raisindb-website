@@ -221,6 +221,10 @@ const sidebars: SidebarsConfig = {
             'guides/functions/creating-functions',
             'guides/functions/triggers',
             'guides/functions/execution-logs',
+            'guides/functions/wasm-functions',
+            'guides/functions/wasm-rust',
+            'guides/functions/wasm-go',
+            'guides/functions/wasm-typescript',
           ],
         },
         {
@@ -371,6 +375,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'reference/function-api/crypto',
         'reference/function-api/email',
+        'reference/function-api/wasm-abi',
       ],
     },
     {

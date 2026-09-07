@@ -117,6 +117,12 @@ SELECT path FROM 'blog' WHERE properties->>'featured'::Boolean = true;
 
 -- ISO 8601 date strings compare correctly as text
 SELECT path FROM 'blog' WHERE properties->>'published_at'::String > '2026-02-15';
+
+-- relative to now: NOW() / CURRENT_TIMESTAMP and INTERVAL arithmetic
+SELECT path FROM 'blog' WHERE properties->>'published_at'::String < NOW() - INTERVAL '30 days';
+
+-- regex: ~ / ~* / !~ / !~* / SIMILAR TO — see filtering-data.md for the full set
+SELECT path FROM 'blog' WHERE properties->>'slug'::String ~ '^[a-z0-9-]+$';
 ```
 
 Cast names are `String`, `Integer` (or `int`), `Boolean`, `Double` and
@@ -124,12 +130,11 @@ Cast names are `String`, `Integer` (or `int`), `Boolean`, `Double` and
 `properties->>'views'::Integer`, not `(properties->>'views')::numeric`.
 
 :::note Two forms of a property filter
-`properties->>'status' = 'published'` without a cast is answered from the
-property index, which is fast for equality. The cast form
-`properties->>'status'::String = 'published'` is evaluated row by row and is
-always correct, including for `LIKE` and range comparisons and when combined
-with other predicates. Prefer the cast form unless you have measured a
-difference.
+`properties->>'status' = 'published'` (no cast) and
+`properties->>'status'::String = 'published'` (cast) both use the same index
+when one is available — the cast form is no longer slower. Always use the
+cast form: it is guaranteed correct, including for `LIKE`, range comparisons,
+and when combined with other predicates, with no performance trade-off.
 :::
 
 A missing property reads as `NULL`:

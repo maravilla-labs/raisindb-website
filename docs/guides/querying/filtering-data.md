@@ -71,6 +71,10 @@ SELECT path FROM 'blog' WHERE properties->>'status'::String NOT IN ('draft');
 
 -- date strings in ISO 8601 order correctly as text
 SELECT path FROM 'blog' WHERE properties->>'published_at'::String > '2026-02-15';
+
+-- relative to now: NOW() / CURRENT_TIMESTAMP and INTERVAL arithmetic work directly
+SELECT path FROM 'blog' WHERE properties->>'published_at'::String < NOW() - INTERVAL '30 days';
+SELECT path FROM 'blog' WHERE updated_at >= NOW() - INTERVAL '7 days';
 ```
 
 `!=` and `NOT` treat a missing property as "not equal", so a row without
@@ -90,8 +94,14 @@ equality index and does not evaluate patterns correctly. For word-level search
 across many nodes use [full-text search](./full-text-search.md) instead of
 `LIKE`.
 
-<!-- TODO(sql-ext): regex operators (~, ~*) are being implemented. Intended example:
-SELECT path FROM 'blog' WHERE properties->>'phone'::String ~ '^\+1\d{10}$'; -->
+Regex operators are supported too — `~` (match), `~*` (case-insensitive),
+`!~` / `!~*` (negated), and `SIMILAR TO` (anchored SQL pattern):
+
+```sql
+SELECT path FROM 'blog' WHERE properties->>'phone'::String ~ '^\+1\d{10}$';
+SELECT path FROM 'blog' WHERE properties->>'slug'::String !~ '[A-Z]';
+SELECT path FROM 'blog' WHERE properties->>'title'::String SIMILAR TO 'Guide%';
+```
 
 ### Missing and present
 
@@ -115,8 +125,12 @@ SELECT path FROM 'blog' WHERE properties->'author'->>'name' = 'Jane';
 SELECT path FROM 'blog' WHERE JSON_VALUE(properties, '$.author.name') = 'Jane';
 ```
 
-<!-- TODO(sql-ext): ANY/ALL are being implemented. Intended example:
-SELECT path FROM 'blog' WHERE 'tech' = ANY(properties->'tags'); -->
+`= ANY(...)` / `<> ALL(...)` compare a value against every element of an array:
+
+```sql
+SELECT path FROM 'blog' WHERE 'tech' = ANY(properties->'tags');
+SELECT path FROM 'blog' WHERE node_type = ANY(ARRAY['blog:Post', 'blog:Page']);
+```
 
 ## Combining predicates
 

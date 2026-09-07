@@ -4,439 +4,358 @@ sidebar_position: 7
 
 # Common Query Patterns
 
-A recipe book of frequently used SQL patterns in RaisinDB. Each recipe includes a working SQL example and a brief explanation.
+A recipe book of SQL patterns that come up when building on RaisinDB. Each
+recipe was run against a `blog` workspace that allows `raisin:Page` and
+`raisin:Folder` nodes.
 
-## CRUD Operations
+## CRUD
 
-### Create a Node
+### Create a node
 
 ```sql
-INSERT INTO 'default' (path, node_type, properties) VALUES (
-  '/content/blog/hello-world',
-  'blog:Article',
-  '{"title": "Hello World", "status": "draft"}'
+INSERT INTO 'blog' (path, node_type, name, properties) VALUES (
+  '/posts/hello-world',
+  'raisin:Page',
+  'hello-world',
+  '{"title": "Hello World", "status": "draft"}'::jsonb
 );
 ```
 
-### Read a Node by Path
+`name` is optional; it defaults to the last path segment. The JSON literal
+needs the `::jsonb` cast. The parent (`/posts`) must already exist.
+
+### Read a node by path
 
 ```sql
-SELECT * FROM 'default'
-WHERE path = '/content/blog/hello-world';
+SELECT * FROM 'blog' WHERE path = '/posts/hello-world';
 ```
 
-### Update Node Properties
+### Replace all properties
+
+`SET properties = …` replaces the whole object. Properties you leave out are
+removed.
 
 ```sql
-UPDATE 'default'
-SET properties = '{"title": "Hello World (Updated)", "status": "published"}'
-WHERE path = '/content/blog/hello-world';
+UPDATE 'blog'
+SET properties = '{"title": "Hello World (Updated)", "status": "published"}'::jsonb
+WHERE path = '/posts/hello-world';
 ```
 
-### Delete a Node
+### Change one property
 
 ```sql
-DELETE FROM 'default'
-WHERE path = '/content/blog/hello-world';
+UPDATE 'blog'
+SET properties = JSONB_SET(properties, '{status}', 'published')
+WHERE path = '/posts/hello-world';
+
+-- a non-string value
+UPDATE 'blog'
+SET properties = JSONB_SET(properties, '{views}', 999)
+WHERE path = '/posts/hello-world';
 ```
 
-## JSON Property Filtering
-
-Use the `->>` operator with `::String` cast on the **key** to query JSON properties.
-
-### Filter by String Property
+### Delete a node
 
 ```sql
-SELECT * FROM 'default'
-WHERE properties->>'status'::String = 'published';
+DELETE FROM 'blog' WHERE path = '/posts/hello-world';
 ```
 
-### Filter by Multiple Properties
+Deleted nodes stay readable at earlier revisions; see
+[Time-Travel Queries](./time-travel-queries.md).
+
+## Property filters
+
+Cast the **key** to the type you compare against:
 
 ```sql
-SELECT * FROM 'default'
+SELECT path FROM 'blog' WHERE properties->>'status'::String = 'published';
+
+SELECT path FROM 'blog'
 WHERE properties->>'status'::String = 'published'
-  AND properties->>'category'::String = 'technology';
-```
+  AND properties->>'category'::String = 'tech';
 
-### Parameterized Property Query
-
-Use positional parameters for prepared statements:
-
-```sql
-SELECT * FROM 'default'
+-- bound parameters
+SELECT path FROM 'blog'
 WHERE properties->>'user_id'::String = $1
   AND properties->>'email'::String = $2;
 ```
 
-:::warning JSON Cast Syntax
-Always cast the **key**, not the result:
+Numbers and booleans use `::Integer`, `::Double` and `::Boolean`. The uncast
+form `properties->>'status' = 'published'` is served from the property index
+and is fine for plain equality; use the cast form for `LIKE`, ranges and
+anything combined with other predicates. Details in
+[Filtering Data](./filtering-data.md).
+
+## Hierarchy
+
+### Everything under a path
 
 ```sql
--- Correct
-WHERE properties->>'email'::String = 'user@example.com'
-
--- Wrong (causes type coercion error)
-WHERE (properties->>'email')::String = 'user@example.com'
-```
-:::
-
-## Hierarchical Queries
-
-### Find All Nodes Under a Path
-
-```sql
-SELECT * FROM 'default'
-WHERE PATH_STARTS_WITH(path, '/content/blog/');
+SELECT path FROM 'blog' WHERE DESCENDANT_OF('/posts');
+-- same thing as a prefix test
+SELECT path FROM 'blog' WHERE PATH_STARTS_WITH(path, '/posts/');
 ```
 
-`PATH_STARTS_WITH` is optimized into a RocksDB prefix scan — it does not scan the entire workspace.
+Both become a prefix scan over the path index rather than a workspace scan.
 
-### Find Direct Children
+### Direct children
 
 ```sql
-SELECT * FROM 'default'
-WHERE PARENT(path) = '/content/blog';
+SELECT path FROM 'blog' WHERE CHILD_OF('/posts');
 ```
 
-### Filter by Depth
+### By depth
 
 ```sql
--- Find all top-level nodes (depth 1)
-SELECT * FROM 'default'
-WHERE DEPTH(path) = 1;
+-- top-level nodes
+SELECT path FROM 'blog' WHERE depth = 1;
 
--- Find nodes exactly 3 levels deep
-SELECT * FROM 'default'
-WHERE DEPTH(path) = 3;
+-- exactly three levels deep
+SELECT path FROM 'blog' WHERE DEPTH(path) = 3;
 ```
 
-### Combine Hierarchy with Property Filters
+### Hierarchy plus property filters
 
 ```sql
-SELECT * FROM 'default'
-WHERE PATH_STARTS_WITH(path, '/content/')
-  AND node_type = 'blog:Article'
+SELECT path FROM 'blog'
+WHERE DESCENDANT_OF('/posts')
+  AND node_type = 'raisin:Page'
   AND properties->>'status'::String = 'published'
-ORDER BY properties->>'published_date'::String DESC
+ORDER BY properties->>'published_at'::String DESC
 LIMIT 10;
 ```
 
-## Graph Traversal
+## Graph
 
-### Create a Relationship
+### Create a relationship
 
 ```sql
-RELATE FROM path='/content/blog/post1'
-       TO path='/users/jane'
-       TYPE 'AUTHORED_BY';
+RELATE FROM path='/posts/post-1' IN WORKSPACE 'blog'
+       TO   path='/about'        IN WORKSPACE 'blog'
+       TYPE 'RELATED_TO';
 ```
 
-### Find Neighbors
+`UNRELATE FROM … TO …` removes it. Either side can be given as `id='…'`
+instead of a path.
+
+### Pattern matching with GRAPH_TABLE
 
 ```sql
--- Outgoing neighbors of a specific type
-SELECT * FROM NEIGHBORS('/users/jane', 'OUT', 'AUTHORED');
-
--- All neighbors in any direction
-SELECT * FROM NEIGHBORS('/content/blog/post1', 'BOTH', NULL);
-```
-
-### Pattern Matching with GRAPH_TABLE
-
-```sql
-SELECT * FROM GRAPH_TABLE (
-  default
-  MATCH (author:Profile)-[r:AUTHORED]->(article:Article)
-  WHERE author.path = '/users/jane'
-  COLUMNS (
-    article.path AS article_path,
-    article.properties->>'title' AS title
-  )
-);
-```
-
-### Multi-Hop Traversal
-
-```sql
--- Find articles two hops away
-SELECT * FROM GRAPH_TABLE (
-  default
-  MATCH (a:Article)-[:RELATED_TO]->(b:Article)-[:RELATED_TO]->(c:Article)
-  WHERE a.path = '/content/blog/post1'
-  COLUMNS (
-    b.path AS intermediate,
-    c.path AS destination
-  )
-);
-```
-
-### Variable-Length Paths
-
-```sql
-SELECT * FROM GRAPH_TABLE (
-  default
-  MATCH (a:Article)-[:RELATED_TO]->{1,3}(b:Article)
-  WHERE a.path = '/content/blog/post1'
+SELECT * FROM GRAPH_TABLE(
+  MATCH (a)-[:RELATED_TO]->(b)
+  WHERE a.path = '/posts/post-1'
   COLUMNS (a.path AS source, b.path AS target)
 );
 ```
 
-## Full-Text Search
+```json
+{"columns":["source","target"],"rows":[{"source":"/posts/post-1","target":"/about"}]}
+```
 
-### Basic Search
+### Multi-hop and variable-length paths
+
+```sql
+-- exactly two hops
+SELECT * FROM GRAPH_TABLE(
+  MATCH (a)-[:RELATED_TO]->(b)-[:RELATED_TO]->(c)
+  WHERE a.path = '/posts/post-1'
+  COLUMNS (b.path AS intermediate, c.path AS destination)
+);
+
+-- one to three hops
+SELECT * FROM GRAPH_TABLE(
+  MATCH (a)-[:RELATED_TO]->{1,3}(b)
+  WHERE a.path = '/posts/post-1'
+  COLUMNS (a.path AS source, b.path AS target)
+);
+```
+
+See [Graph Queries](./graph-queries.md) for labels, direction and costs.
+
+## Full-text search
 
 ```sql
 SELECT path, score
-FROM FULLTEXT_SEARCH('content management', 'en', workspaces => 'default')
+FROM FULLTEXT_SEARCH('content management', 'en', workspaces => 'blog')
 ORDER BY score DESC
 LIMIT 20;
-```
 
-### Search with NodeType Filter
-
-```sql
-SELECT path, properties->>'title'::String AS title, score
-FROM FULLTEXT_SEARCH('raisindb', 'en', workspaces => 'default')
-WHERE node_type = 'blog:Article'
+-- restricted by type and status
+SELECT path, properties->>'title' AS title, score
+FROM FULLTEXT_SEARCH('raisindb', 'en', workspaces => 'blog')
+WHERE node_type = 'raisin:Page'
+  AND properties->>'status'::String = 'published'
 ORDER BY score DESC
 LIMIT 10;
+
+-- restricted to a subtree
+SELECT path, score
+FROM FULLTEXT_SEARCH('database', 'en', workspaces => 'blog')
+WHERE PATH_STARTS_WITH(path, '/posts/')
+ORDER BY score DESC;
 ```
 
-## Vector Similarity Search
+The second argument is the ISO 639-1 language code and `workspaces` is
+required. See [Full-Text Search](./full-text-search.md).
 
-### Find Similar Content
+## Vector similarity
 
 ```sql
 SELECT path, vector_distance
-FROM KNN('how do vector indexes work', 10, workspaces => 'default');
-```
+FROM KNN('how do vector indexes work', 10, workspaces => 'blog');
 
-The first argument is the query (text is embedded for you; a literal vector or `VECTOR_OF('ws:/path')` also work), the second is the number of results (k), and `workspaces` is required.
-
-### Hybrid Search (Vector + Filter)
-
-```sql
+-- with filters
 SELECT path, vector_distance
-FROM KNN('sustainable packaging', 20, workspaces => 'default')
-WHERE node_type = 'blog:Article'
+FROM KNN('sustainable packaging', 20, workspaces => 'blog')
+WHERE node_type = 'raisin:Page'
   AND properties->>'status'::String = 'published'
 LIMIT 10;
 ```
 
+The first argument is the query text (a literal vector or
+`VECTOR_OF('blog:/path')` also work), the second is k, and `workspaces` is
+required. `KNN` and `HYBRID_SEARCH` need an embedding configuration for the
+tenant; without one they fail with a message saying so.
+
 ## Pagination
 
-Recipes below; see [Pagination](./pagination.md) for choosing between offset and
-keyset, picking a cursor column, and the HTTP / JavaScript client equivalents.
+Recipes only; [Pagination](./pagination.md) explains how to choose a cursor.
 
-### Offset-Based Pagination
+### Offset
 
 ```sql
-SELECT * FROM 'default'
-WHERE node_type = 'blog:Article'
+SELECT path FROM 'blog'
+WHERE node_type = 'raisin:Page'
 ORDER BY created_at DESC
 LIMIT 20 OFFSET 40;
 ```
 
-### Keyset Pagination (Better Performance)
-
-For large datasets, paginate using a sort key from the last row:
+### Keyset on a timestamp
 
 ```sql
-SELECT * FROM 'default'
-WHERE node_type = 'blog:Article'
-  AND created_at < $1
+-- $1 = created_at of the last row on the previous page
+SELECT path, created_at FROM 'blog'
+WHERE node_type = 'raisin:Page' AND created_at < $1
 ORDER BY created_at DESC
 LIMIT 20;
 ```
 
-Pass the `created_at` value of the last row from the previous page as `$1`.
-
-Keyset cursors also work over paths — useful for hierarchical listings, since
-sibling paths sort naturally:
+### Keyset on the path
 
 ```sql
--- Page through the children of /blog, 20 at a time
-SELECT * FROM 'default'
-WHERE CHILD_OF('/blog') AND path > $1   -- $1 = last path of the previous page
+-- children of /posts, 20 at a time; $1 = last path of the previous page
+SELECT path FROM 'blog'
+WHERE CHILD_OF('/posts') AND path > $1
 ORDER BY path
 LIMIT 20;
 ```
 
-### Previous / Next Node
-
-Because RaisinDB is hierarchical, "the node before/after this one" is a
-single keyset query — no window functions needed:
+### Previous and next node
 
 ```sql
--- Next sibling of /blog/post-3 (path order)
-SELECT * FROM 'default'
-WHERE CHILD_OF('/blog') AND path > '/blog/post-3'
+-- next sibling of /posts/post-3 in path order
+SELECT path FROM 'blog'
+WHERE CHILD_OF('/posts') AND path > '/posts/post-3'
 ORDER BY path ASC LIMIT 1;
 
--- Previous sibling
-SELECT * FROM 'default'
-WHERE CHILD_OF('/blog') AND path < '/blog/post-3'
+-- previous sibling
+SELECT path FROM 'blog'
+WHERE CHILD_OF('/posts') AND path < '/posts/post-3'
 ORDER BY path DESC LIMIT 1;
 ```
 
-For a blog's "older / newer post" links, cursor on the publish date instead
-of the path:
+For "older / newer post" links, cursor on the publish date instead:
 
 ```sql
--- Next (newer) article after the current one ($1 = current published_at)
-SELECT * FROM 'default'
-WHERE DESCENDANT_OF('/blog')
-  AND properties->>'published_at'::String > $1
+-- $1 = the current article's published_at
+SELECT path FROM 'blog'
+WHERE DESCENDANT_OF('/posts') AND properties->>'published_at'::String > $1
 ORDER BY properties->>'published_at'::String ASC LIMIT 1;
-
--- Previous (older) article
-SELECT * FROM 'default'
-WHERE DESCENDANT_OF('/blog')
-  AND properties->>'published_at'::String < $1
-ORDER BY properties->>'published_at'::String DESC LIMIT 1;
 ```
 
-### Editorial (drag-and-drop) Order
+### Editorial (drag-and-drop) order
 
-RaisinDB keeps a **manual order** for every parent's children — what an editor
-sets by dragging in the admin console. Two columns expose it, and both work as
-keyset cursors:
+Every parent keeps a manual order for its children, the one editors set by
+dragging in the console. Two columns expose it and both work as cursors:
 
 | Column | Orders a node | Use for |
-| --- | --- | --- |
-| `__order` | among its **siblings** | paging one parent's children |
-| `__tree_order` | within a **subtree** (document order) | paging a whole tree |
+|---|---|---|
+| `__order` | among its siblings | paging one parent's children |
+| `__tree_order` | within a subtree, in document order | paging a whole tree |
 
 ```sql
--- Page 1: a menu's items in the order the editor arranged them
-SELECT name, __order
-FROM 'default'
+-- page 1
+SELECT name, __order FROM 'blog'
 WHERE CHILD_OF('/menu')
 ORDER BY __order
 LIMIT 20;
 
--- Page 2 — $1 = the __order value of the last row from page 1
-SELECT name, __order
-FROM 'default'
+-- page 2: $1 = the __order value of the last row from page 1
+SELECT name, __order FROM 'blog'
 WHERE CHILD_OF('/menu') AND __order > $1
 ORDER BY __order
 LIMIT 20;
-```
 
-To page an entire tree rather than one level, cursor on `__tree_order`. It sorts
-into document order: each node appears before its descendants, and a subtree stays
-contiguous, so a whole navigation tree pages correctly.
-
-```sql
-SELECT path, __tree_order
-FROM 'default'
+-- a whole tree in document order
+SELECT path, __tree_order FROM 'blog'
 WHERE DESCENDANT_OF('/menu') AND __tree_order > $1
 ORDER BY __tree_order
 LIMIT 20;
 ```
 
-Both values are opaque. Pass them back as **bound parameters**, exactly as
-received — don't parse, construct, or interpolate them.
+The values are opaque tokens such as `8180::1a07802e4f60000000000000000`.
+Pass them back as bound parameters exactly as received.
 
-Changing the order is a write, not a property edit — you name a position or a
-neighbour and the server assigns the key:
+`path` sorts siblings alphabetically; `__order` sorts them editorially. They
+agree only while the manual order happens to be alphabetical, so page a menu
+on `__order`. The cursor column and the `ORDER BY` column must be the same
+column, otherwise rows are skipped or repeated.
 
-```ts
-await ws.nodes().reorder('/menu', 'about', 0);              // move to the front
-await ws.nodes().moveChildBefore('/menu', 'about', 'home');
-await ws.nodes().moveChildAfter('/menu', 'about', 'contact');
+Changing the order is a node operation, not a property edit. From the
+JavaScript client:
+
+```typescript
+const nodes = client.database('myrepo').workspace('blog').nodes();
+await nodes.reorder('/menu', 'about', 0);              // move to the front
+await nodes.moveChildBefore('/menu', 'about', 'home');
+await nodes.moveChildAfter('/menu', 'about', 'contact');
 ```
 
-:::warning `__order` is not `path`
-Both order parents before children, so they look interchangeable — but they order
-*siblings* differently. `path` sorts siblings **alphabetically**; `__order` sorts
-them **editorially**.
+The server assigns the key, so inserting between two siblings never renumbers
+anything and concurrent reorders don't collide. There is no need to maintain a
+`sort_order` property by hand.
 
-With children arranged `c`, `a`, `b`:
+## Aggregation by property
 
 ```sql
-ORDER BY path         -- a, b, c   (alphabetical — the manual order is lost)
-ORDER BY __tree_order -- c, a, b   (the order the editor set)
+SELECT properties->>'category' AS category, COUNT(*) AS n
+FROM 'blog'
+WHERE node_type = 'raisin:Page'
+GROUP BY properties->>'category'
+ORDER BY n DESC;
 ```
 
-They agree only when the manual order happens to be alphabetical, which is why
-reaching for `path` looks fine until someone reorders something. And never mix
-them — `WHERE __tree_order > $1 ORDER BY path` advances the cursor in one order
-while sorting in another, which drops and duplicates rows. Keyset pagination
-requires the cursor column and the `ORDER BY` column to match.
-:::
+## Small utilities
 
-:::tip Prefer this over a `sort_order` property
-Hand-maintaining a numeric `sort_order` means renumbering to insert between two
-items, and concurrent edits collide. The built-in order is a fractional index —
-inserting between two siblings never renumbers anything — and it is what the
-admin console's drag-and-drop already writes to.
-:::
-
-## Combining Multiple Query Types
-
-### Hierarchy + Graph
-
-Find related articles that share the same parent folder:
+### Does a node exist?
 
 ```sql
-SELECT * FROM GRAPH_TABLE (
-  default
-  MATCH (a:Article)-[:RELATED_TO]->(related:Article)
-  WHERE a.path = '/content/blog/post1'
-    AND PARENT(a.path) = PARENT(related.path)
-  COLUMNS (related.properties->>'title' AS title)
-);
+SELECT COUNT(*) AS n FROM 'blog' WHERE path = '/posts/hello-world';
 ```
 
-### Full-Text Search + Hierarchy
-
-Search only within a subtree:
+### Nodes missing a property
 
 ```sql
-SELECT path, score
-FROM FULLTEXT_SEARCH('database', 'en', workspaces => 'default')
-WHERE PATH_STARTS_WITH(path, '/content/docs/')
-ORDER BY score DESC
-LIMIT 10;
+SELECT path FROM 'blog'
+WHERE node_type = 'raisin:Page'
+  AND properties->>'featured_image' IS NULL;
 ```
 
-### Aggregation by Property
-
-```sql
-SELECT
-  properties->>'category'::String AS category,
-  COUNT(*) AS count
-FROM 'default'
-WHERE node_type = 'blog:Article'
-GROUP BY properties->>'category'::String
-ORDER BY count DESC;
-```
-
-## Useful Patterns
-
-### Check if a Node Exists
-
-```sql
-SELECT COUNT(*) AS exists
-FROM 'default'
-WHERE path = '/content/blog/hello-world';
-```
-
-### Find Nodes Without a Property
-
-```sql
-SELECT * FROM 'default'
-WHERE node_type = 'blog:Article'
-  AND properties->>'featured_image'::String IS NULL;
-```
-
-### Find Recently Updated Nodes
+### Recently updated nodes
 
 ```sql
 SELECT path, node_type, updated_at
-FROM 'default'
+FROM 'blog'
 WHERE updated_at > '2026-03-01T00:00:00Z'
 ORDER BY updated_at DESC
 LIMIT 50;
@@ -444,7 +363,7 @@ LIMIT 50;
 
 ## Next Steps
 
-- [Time-Travel Queries](./time-travel-queries.md) — Query historical state
-- [Filtering Data](./filtering-data.md) — Advanced filtering techniques
-- [Graph Queries](./graph-queries.md) — Deep graph traversal
-- [Full-Text Search](./full-text-search.md) — Search configuration
+- [Time-Travel Queries](./time-travel-queries.md)
+- [Filtering Data](./filtering-data.md)
+- [Graph Queries](./graph-queries.md)
+- [Full-Text Search](./full-text-search.md)

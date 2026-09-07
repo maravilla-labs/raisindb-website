@@ -4,453 +4,275 @@ sidebar_position: 1
 
 # Nodes
 
-**Nodes** are the fundamental building blocks of content in RaisinDB. They're hierarchical documents with unique paths, typed properties, and complete revision history. Think of them as files in a Git repository—each has a path, content, and a version history.
+A **node** is the unit of content in RaisinDB. Every node lives in a workspace, has a path in that workspace's tree, is typed by a [NodeType](/docs/concepts/data-model/nodetypes), and carries a `properties` document. Think of a node as a file in a Git repository: it has a path, content, and a history of revisions.
 
-## What is a Node?
+## What a node looks like
 
-A node represents a single content item in your repository. It combines:
+This is a node as the HTTP API returns it (`GET /api/repository/docs-model/main/head/blog/hello`):
 
-- **Path**: A unique hierarchical identifier (e.g., `/content/blog/my-post`)
-- **NodeType**: A schema that defines allowed properties
-- **Properties**: A JSON document with typed fields
-- **Metadata**: System fields like created_at, updated_at
-- **Revisions**: Complete version history with HLC timestamps
-
-```sql
--- A node in the database
+```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "path": "/content/blog/welcome",
+  "id": "WAc_1d79nfVmim7aD2s9j",
+  "name": "hello",
+  "path": "/hello",
   "node_type": "blog:Article",
+  "archetype": null,
   "properties": {
-    "title": "Welcome to RaisinDB",
-    "author": "Jane Developer",
-    "body": "<p>Content goes here...</p>",
-    "published": true
+    "title": "Hello",
+    "rating": 4,
+    "tags": ["a", "b"],
+    "$mixins": [],
+    "$supertypes": ["blog:Article"]
   },
-  "created_at": "2024-01-15T10:30:00Z",
-  "updated_at": "2024-01-15T14:22:00Z"
+  "children": [],
+  "order_key": "",
+  "has_children": false,
+  "parent": "/",
+  "version": 1,
+  "created_at": "2026-09-06T18:33:16.553029Z",
+  "updated_at": "2026-09-06T18:33:16.553029Z",
+  "published_at": null,
+  "published_by": null,
+  "updated_by": "system",
+  "created_by": "system",
+  "translations": null,
+  "tenant_id": null,
+  "workspace": "blog",
+  "owner_id": null,
+  "relations": []
 }
 ```
 
-## Node Paths
+| Field | Meaning |
+|-------|---------|
+| `id` | Server-generated identifier (a 21-character nanoid). You may supply your own on create. |
+| `name` | The display name you gave the node. |
+| `path` | Where the node sits in the workspace tree. Derived from the parent path and a slug of `name`. Unique within a workspace. |
+| `node_type` | The NodeType that validates `properties`. |
+| `archetype` | Optional [archetype](/docs/concepts/data-model/archetypes) name for editor-driven content. |
+| `properties` | Your content. Keys starting with `$` are server-computed and cannot be set by clients. |
+| `order_key` | The node's position among its siblings (an opaque, sortable string). Empty until a reorder or an ordered write assigns one. |
+| `has_children` | Computed on read. |
+| `parent` | The **name** of the parent node, or `"/"` for a root-level node. It is not the parent path. |
+| `version` | Currently always `1` (see the note below). |
+| `created_at`, `updated_at`, `created_by`, `updated_by` | Stamped by the server on every write. Writes without an authenticated actor record `"system"`. |
+| `published_at`, `published_by` | Set by the publish commands. |
+| `translations` | Per-locale overrides, see [Translations](/docs/guides/data-modeling/translations). |
+| `relations` | Typed links to other nodes, see [Graph Model](/docs/concepts/graph-model). |
 
-Paths are hierarchical identifiers using forward slashes, similar to file system paths:
+The two reserved properties are worth knowing about. `$supertypes` lists the node's type plus every type it extends and every mixin it carries, and `$mixins` lists just the mixins. The SQL functions `IS_A(properties, 'ns:Type')` and `HAS_MIXIN(properties, 'ns:Mixin')` read them, which makes polymorphic queries cheap.
 
-```
-/content/blog/2024/january/my-first-post
-/media/images/header.jpg
-/config/site-settings
-/users/jane-developer/profile
-```
+## Paths and names
 
-### Path Rules
+A node's `name` is free text. Its `path` is built by the server: the parent path plus a slug of the name (lower-cased, whitespace replaced with `-`, anything other than `a-z`, `0-9`, `-`, `_` and `.` dropped). Creating a node named `My Third Post` under `/blog` gives the path `/blog/my-third-post`, while `name` stays `My Third Post`.
 
-- Must start with `/`
-- Segments separated by `/`
-- Segments can contain letters, numbers, hyphens, underscores
-- Paths are unique within a workspace
-- Case-sensitive
+Paths start with `/`, are case-sensitive, and are unique within a workspace. Hierarchy functions and ordering are covered in [Paths and Hierarchy](/docs/concepts/data-model/paths-and-hierarchy).
 
-### Path Functions
+## Creating nodes
 
-RaisinDB provides SQL functions for working with hierarchical paths:
-
-```sql
--- Get depth of a path (number of segments)
-SELECT DEPTH('/content/blog/post1');  -- Returns 3
-
--- Get parent path
-SELECT PARENT('/content/blog/post1');  -- Returns '/content/blog'
-
--- Get ancestor at specific depth
-SELECT ANCESTOR('/content/blog/2024/post1', 2);  -- Returns '/content/blog'
-
--- Check if path starts with prefix
-SELECT PATH_STARTS_WITH('/content/blog/post1', '/content');  -- true
-
--- Get all children
-SELECT * FROM default WHERE CHILD_OF('/content/blog');
-
--- Get all descendants (recursive)
-SELECT * FROM default WHERE DESCENDANT_OF('/content');
-```
-
-## Creating Nodes
-
-Use standard SQL `INSERT` statements:
-
-```sql
--- Basic node creation
-INSERT INTO default (path, node_type, properties) VALUES (
-  '/content/blog/my-post',
-  'blog:Article',
-  '{
-    "title": "My First Post",
-    "author": "Jane Developer",
-    "published": false
-  }'
-);
-
--- With ID specified (UUID)
-INSERT INTO default (id, path, node_type, properties) VALUES (
-  '550e8400-e29b-41d4-a716-446655440000',
-  '/content/blog/another-post',
-  'blog:Article',
-  '{"title": "Another Post"}'
-);
-```
-
-The system automatically:
-- Generates a UUID for `id` if not provided
-- Sets `created_at` and `updated_at` timestamps
-- Creates the first revision with HLC timestamp
-- Validates properties against the NodeType schema
-
-## Querying Nodes
-
-Query nodes using standard SQL:
-
-```sql
--- Get all blog articles
-SELECT * FROM default WHERE node_type = 'blog:Article';
-
--- Access JSON properties
-SELECT
-  path,
-  properties->>'title' AS title,
-  properties->>'author' AS author,
-  (properties->>'published')::boolean AS published
-FROM default
-WHERE node_type = 'blog:Article';
-
--- Filter by property values
-SELECT * FROM default
-WHERE node_type = 'blog:Article'
-  AND properties->>'author' = 'Jane Developer'
-  AND (properties->>'published')::boolean = true;
-
--- Hierarchical queries
-SELECT * FROM default
-WHERE PATH_STARTS_WITH('/content/blog/2024')
-ORDER BY properties->>'publishedAt' DESC;
-```
-
-## Updating Nodes
-
-Use SQL `UPDATE` statements:
-
-```sql
--- Update entire properties object
-UPDATE default
-SET properties = '{
-  "title": "Updated Title",
-  "author": "Jane Developer",
-  "published": true
-}'
-WHERE path = '/content/blog/my-post';
-
--- Update specific properties (merge)
-UPDATE default
-SET properties = properties || '{"published": true}'
-WHERE path = '/content/blog/my-post';
-
--- Update nested properties
-UPDATE default
-SET properties = jsonb_set(
-  properties,
-  '{author}',
-  '"John Smith"'
-)
-WHERE path = '/content/blog/my-post';
-```
-
-Each update creates a new revision with a new HLC timestamp.
-
-## Deleting Nodes
-
-```sql
--- Soft delete (marks as deleted, keeps in revision history)
-DELETE FROM default WHERE path = '/content/blog/my-post';
-
--- Hard delete (permanently removes, including revisions)
-DELETE FROM default WHERE path = '/content/blog/my-post' PURGE;
-
--- Delete all descendants
-DELETE FROM default WHERE DESCENDANT_OF('/content/blog/archive');
-```
-
-Soft deletes are the default. The node remains in revision history and can be restored via time-travel queries.
-
-## Node Metadata
-
-Every node has system-managed metadata:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | UUID | Unique identifier across the repository |
-| `path` | string | Hierarchical path, unique within workspace |
-| `node_type` | string | NodeType name (e.g., `blog:Article`) |
-| `properties` | JSONB | Content properties validated by NodeType |
-| `created_at` | timestamp | When the node was created |
-| `updated_at` | timestamp | Last modification time |
-| `created_by` | string | User id that created the node |
-| `updated_by` | string | User id of the last modification |
-| `__revision` | HLC | Current revision timestamp |
-| `__branch` | string | Current branch name |
-| `__workspace` | string | Workspace name |
-
-`created_by` / `updated_by` are stamped automatically from the authenticated actor
-on every write (create stamps both; updates refresh `updated_by` while preserving the
-original `created_by`/`created_at`). Unauthenticated/embedded writes record `anonymous`.
-
-### Querying Metadata
-
-```sql
--- Get system fields
-SELECT id, path, node_type, created_at, updated_at, __revision
-FROM default
-WHERE path = '/content/blog/my-post';
-
--- Find recently updated nodes
-SELECT path, updated_at
-FROM default
-ORDER BY updated_at DESC
-LIMIT 10;
-
--- Find nodes by ID
-SELECT * FROM default WHERE id = '550e8400-e29b-41d4-a716-446655440000';
-```
-
-## Node Flags
-
-NodeTypes define metadata flags that control behavior:
-
-### Versionable
-
-When `versionable: true`, every change creates a new revision:
-
-```sql
--- Enable versioning in NodeType
-"metadata": {
-  "versionable": true
-}
-
--- Query revision history
-SELECT __revision, __timestamp, properties->>'title'
-FROM default
-WHERE path = '/content/blog/my-post'
-ORDER BY __revision DESC;
-```
-
-### Auditable
-
-When `auditable: true`, every change to nodes of this type is logged to the audit
-log (who / what action / when). This is **opt-in** and separate from the always-on
-[revision history](#working-with-revisions) — non-auditable types still have full
-MVCC history, they just don't produce audit-log entries.
-
-```yaml
-auditable: true
-```
-
-Audit logs are not a SQL surface; query them via the client or REST API:
-
-```typescript
-// JavaScript client — audit log for a node
-const entries = await ws.nodes().auditLog(nodeId);
-// → [{ action: "Update", user_id: "alice", timestamp: "…", … }, …]
-```
+Over HTTP, `POST` to the parent. `POST` to the workspace root (`.../head/{ws}/`) creates a root-level node and returns the node itself:
 
 ```bash
-# REST — by id or by path
-GET /api/audit/{repo}/{branch}/{workspace}/by-id/{id}
-GET /api/audit/{repo}/{branch}/{workspace}/{node_path}
+curl -X POST localhost:8090/api/repository/docs-model/main/head/blog/ \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"hello","node_type":"blog:Article","properties":{"title":"Hello","tags":["a","b"],"rating":4}}'
 ```
 
-Over WebSocket, use the `audit_query` request (`{ node_id | path }`). All audit
-reads are authorized through row-level security.
+`POST` to an existing node path creates a child of that node. This form runs as a commit and returns an envelope with the node and the revision it produced:
 
-### Indexable
+```bash
+curl -X POST localhost:8090/api/repository/docs-model/main/head/blog/hello \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"first-comment","node_type":"blog:Comment","properties":{"body":"Nice."}}'
+```
 
-When `indexable: true`, nodes are included in full-text search indexes:
-
-```sql
-"metadata": {
-  "indexable": true
+```json
+{
+  "node": { "id": "m5D9Yr5c54xIeEUoeKQf9", "name": "first-comment", "path": "/hello/first-comment", "...": "..." },
+  "revision": "1788719820700-0",
+  "committed": true
 }
-
--- Full-text search works automatically
-SELECT * FROM default
-WHERE FTS_MATCH('search query')
-  AND node_type = 'blog:Article';
 ```
 
-## Node Relationships (Edges)
+Add a `commit` object (`{"message": "...", "actor": "jane"}`) to any write to set the revision message and author. Without it the server uses a generated message and the authenticated actor.
 
-Nodes can have typed relationships to other nodes using the RELATE statement:
+The same node in SQL (the workspace is the table, and JSON literals need `::jsonb`):
 
 ```sql
--- Create a relationship using RELATE
-RELATE FROM path='/content/blog/post1'
-       TO path='/content/blog/post2'
-       TYPE 'RELATED_TO'
-       WEIGHT 0.8;
+INSERT INTO 'blog' (path, node_type, name, properties)
+VALUES ('/hello', 'blog:Article', 'hello', '{"title":"Hello"}'::jsonb);
 
--- Query relationships with GRAPH_TABLE (SQL/PGQ)
-SELECT * FROM GRAPH_TABLE (
-  default
-  MATCH (a:Article)-[r:RELATED_TO]->(related:Article)
-  WHERE a.path = '/content/blog/post1'
-  COLUMNS (
-    related.path AS related_path,
-    related.properties->>'title' AS title
-  )
-);
-
--- Or use the NEIGHBORS function
-SELECT * FROM NEIGHBORS('/content/blog/post1', 'OUT', 'RELATED_TO');
+-- with your own id
+INSERT INTO 'blog' (id, path, node_type, name, properties)
+VALUES ('my-fixed-id', '/hello-2', 'blog:Article', 'hello-2', '{"title":"Two"}'::jsonb);
 ```
 
-Learn more: [Graph Model](/docs/concepts/graph-model)
+On every create the server generates an `id` if you did not pass one, stamps the timestamps and actor, validates the node against its NodeType and the workspace's allowed types, and writes a revision.
 
-## Working with Revisions
+### What validation checks
 
-Every node has a complete revision history:
+Validation rejects a node when a `required` property is missing, when the NodeType is `strict` and the node carries an undeclared property, when a `unique` property collides with another node, or when the workspace does not allow the type (`allowed_node_types`, and `allowed_root_node_types` for root-level nodes). A failed write returns HTTP 400:
+
+```json
+{
+  "code": "VALIDATION_FAILED",
+  "message": "Missing required property 'title' for NodeType 'blog:Article'",
+  "details": "Missing required property 'title' for NodeType 'blog:Article'",
+  "timestamp": "2026-09-06T18:33:16.568668+00:00"
+}
+```
+
+Property values are not type-checked against the schema, and `constraints` such as `min` or `max` are stored on the NodeType but not enforced on write. Treat them as documentation for editors and validate in your application if you need hard guarantees.
+
+## Reading nodes
+
+By path, by id, or as a listing:
+
+```bash
+# one node
+GET /api/repository/docs-model/main/head/blog/hello
+
+# by id
+GET /api/repository/docs-model/main/head/blog/$ref/WAc_1d79nfVmim7aD2s9j
+
+# root-level nodes of the workspace (an array)
+GET /api/repository/docs-model/main/head/blog/
+
+# children of a node, one level deep (an array, in sibling order)
+GET /api/repository/docs-model/main/head/blog/hello?level=1
+
+# a subtree, up to 10 levels; each node carries its children under "children"
+GET /api/repository/docs-model/main/head/blog/hello?level=3
+```
+
+`?level=N` returns an array of nodes with nested `children` arrays. Add `&format=map` to get a map keyed by name instead, or `&flatten=true` for a flat array of every node in the subtree.
+
+In SQL, the workspace is the table and `->>` reads a property as text:
 
 ```sql
--- Get current revision
-SELECT __revision, properties->>'title'
-FROM default
-WHERE path = '/content/blog/my-post';
+SELECT id, path, properties->>'title' AS title
+FROM 'blog'
+WHERE node_type = 'blog:Article';
 
--- Get all revisions
-SELECT __revision, __timestamp, properties->>'title'
-FROM default
-WHERE path = '/content/blog/my-post'
-ORDER BY __revision DESC;
+SELECT * FROM 'blog' WHERE id = 'WAc_1d79nfVmim7aD2s9j';
 
--- Time-travel to specific revision
-SET __revision = '2024-01-14T10:00:00Z';
-SELECT properties->>'title'
-FROM default
-WHERE path = '/content/blog/my-post';
-
--- Reset to latest
-SET __revision = DEFAULT;
+SELECT path, updated_at FROM 'blog' ORDER BY updated_at DESC LIMIT 10;
 ```
 
-To **list** a single node's revisions (git-style file history) with per-revision
-authorship — instead of time-travelling one revision at a time — use the client's
-`history()` method, which returns each `{ revision, updated_at, updated_by, deleted }`
-newest-first:
+`SELECT *` returns the node fields plus a few computed columns: `parent_name`, `depth`, `locale`, `__workspace`, and the ordering columns `__order` and `__tree_order`.
 
-```typescript
-const revisions = await ws.nodes().history(nodeId, { limit: 50 });
-const old = await ws.atRevision(revisions[1].revision).nodes().get(nodeId);
+## Updating nodes
+
+`PUT` to the node path replaces `properties` with what you send (a full replace, not a merge). The response is the updated node. With a `commit` object the response is the `{node, revision, committed}` envelope instead:
+
+```bash
+curl -X PUT localhost:8090/api/repository/docs-model/main/head/blog/hello \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"properties":{"title":"Hello, edited","rating":3},"commit":{"message":"Retitle","actor":"jane"}}'
 ```
 
-This is always available (it's the structural MVCC history) and does not require
-`auditable`. See [Node Operations → History & Audit](/docs/reference/javascript-client/node-operations#history--audit).
+To change a single property, address it with `@` and send only the value:
 
-Learn more: [Revisions](/docs/concepts/versioning/revisions)
+```bash
+curl -X PUT 'localhost:8090/api/repository/docs-model/main/head/blog/hello@rating' \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' -d '5'
+# {"status":"property updated"}
+```
 
-## Node Naming Conventions
-
-Follow these conventions for clear, maintainable content:
-
-### Paths
+In SQL, `SET properties = ...` replaces the document and `properties || ...` merges into it:
 
 ```sql
--- Content
-/content/blog/2024/my-post
-/content/pages/about-us
-/content/products/laptop-stand
-
--- Media
-/media/images/header.jpg
-/media/videos/tutorial.mp4
-/media/documents/whitepaper.pdf
-
--- Configuration
-/config/site-settings
-/config/navigation/main-menu
-/config/themes/default
-
--- Users
-/users/jane-developer/profile
-/users/jane-developer/preferences
+UPDATE 'blog' SET properties = '{"title":"Replaced"}'::jsonb WHERE path = '/hello';
+UPDATE 'blog' SET properties = properties || '{"rating":2}'::jsonb WHERE path = '/hello';
 ```
 
-### NodeTypes
+Every update writes a new revision. The node's `version` field stays at `1`; revisions, not `version`, are the history.
 
-Use namespace prefixes:
+## Moving, renaming, copying, reordering
+
+Structural changes are **commands**, sent as `POST` to `{node path}/raisin:cmd/{command}`. Bodies use camelCase keys:
+
+```bash
+# rename (the path slug changes with the name)
+POST .../head/blog/hello/raisin:cmd/rename      {"newName": "hello-world"}
+
+# move: targetPath is the node's NEW full path
+POST .../head/blog/hello-world/raisin:cmd/move  {"targetPath": "/archive/hello-world"}
+
+# copy a single node
+POST .../head/blog/hello/raisin:cmd/copy        {"targetPath": "/archive/hello-copy"}
+
+# copy with descendants
+POST .../head/blog/hello/raisin:cmd/copy_tree   {"targetPath": "/archive/hello-tree"}
+
+# reorder among siblings
+POST .../head/blog/second/raisin:cmd/reorder    {"targetPath": "/blog/first", "movePosition": "before"}
+```
+
+Other commands on the same endpoint: `publish`, `unpublish`, `publish_tree`, `unpublish_tree`, `add-relation`, `remove-relation`, `translate`, `delete-translation`, and the version commands (`create_version`, `restore_version`, `delete_version`). In SQL, `UPDATE 'blog' SET path = '/archive/hello' WHERE path = '/hello'` also moves a node.
+
+## Deleting nodes
+
+```bash
+DELETE /api/repository/docs-model/main/head/blog/hello
+# {"deleted":true}
+```
+
+With a `commit` body the delete also removes every descendant and returns the revision:
+
+```json
+{"deleted": true, "node_id": "hGTJYOSspkYIRbZrMLjn_", "revision": "1788719843437-0", "committed": true}
+```
 
 ```sql
-blog:Article
-blog:Category
-blog:Tag
-
-ecommerce:Product
-ecommerce:Category
-ecommerce:Order
-
-cms:Page
-cms:Layout
-cms:Component
+DELETE FROM 'blog' WHERE path = '/hello';
 ```
 
-## Advanced Patterns
+After a delete the path returns 404 at `head`, but earlier revisions still contain the node.
 
-### Polymorphic Queries
+## Revisions and time travel
 
-Query multiple NodeTypes with shared archetypes:
+Every write to a branch produces a revision. A revision id looks like `1788719842951-0` (a hybrid logical clock timestamp and counter). List a repository's revisions and what each changed:
 
-```sql
--- Both Article and Product have 'Publishable' mixin
-SELECT path, node_type, properties->>'title'
-FROM default
-WHERE (properties->>'published')::boolean = true
-ORDER BY properties->>'publishedAt' DESC;
+```bash
+GET /api/management/repositories/default/docs-model/revisions
 ```
 
-### Hierarchical Aggregations
-
-```sql
--- Count articles by category (using path hierarchy)
-SELECT
-  PARENT(path) AS category,
-  COUNT(*) AS article_count
-FROM default
-WHERE node_type = 'blog:Article'
-  AND DEPTH(path) = 4
-GROUP BY PARENT(path);
+```json
+{
+  "revisions": [
+    {
+      "revision": "1788719842951-0",
+      "parent": "1788719842920-0",
+      "branch": "main",
+      "timestamp": "2026-09-06T18:37:22.952166Z",
+      "actor": "jane",
+      "message": "Retitle",
+      "is_system": false,
+      "changed_nodes": [{"node_id": "m5D9Yr5c54xIeEUoeKQf9", "workspace": "blog", "operation": "modified"}]
+    }
+  ]
+}
 ```
 
-### Composite Paths
+Read any node as it was at a revision by swapping `head` for `rev/{revision}`:
 
-```sql
--- Store structured identifiers in paths
-/content/blog/2024/01/15/my-post
-/users/org123/team456/user789
-
--- Query using path patterns
-SELECT * FROM default
-WHERE path ~ '^/content/blog/2024/';
+```bash
+GET /api/repository/docs-model/main/rev/1788719842920-0/blog/hello
 ```
 
-## Best Practices
+A per-node history endpoint exists at `GET /api/history/{repo}/{branch}/{ws}/{path}` (and `/by-id/{id}`), returning `{revision, updated_at, updated_by, deleted}` entries newest first. See [Revisions](/docs/concepts/versioning/revisions).
 
-1. **Use meaningful paths**: Paths should be human-readable and reflect content hierarchy
-2. **Keep properties focused**: Don't store large blobs in properties; use separate media nodes
-3. **Leverage NodeTypes**: Define schemas for validation and consistency
-4. **Version important content**: Enable `versionable` for content that needs audit trails
-5. **Index for search**: Set `indexable: true` for user-facing content
-6. **Use relationships**: Link related nodes with typed edges instead of embedding references
+## Audit log
 
-## Next Steps
+NodeTypes with `auditable: true` also write an audit-log entry on every change. Audit entries are separate from revision history and are read through `GET /api/audit/{repo}/{branch}/{ws}/by-id/{id}` or `.../{path}`, the `audit_query` WebSocket request, or `ws.nodes().auditLog(id)` in the JavaScript client.
 
-- **[NodeTypes](/docs/concepts/data-model/nodetypes)** - Define schemas for your nodes
-- **[Archetypes](/docs/concepts/data-model/archetypes)** - Reusable property templates
-- **[Paths and Hierarchy](/docs/concepts/data-model/paths-and-hierarchy)** - Master hierarchical queries
-- **[Graph Model](/docs/concepts/graph-model)** - Build relationships between nodes
+## Relationships
+
+Besides the tree, nodes can hold typed relations to other nodes (the `relations` field). They are created with the `add-relation` command or the SQL `RELATE` statement and queried with `GRAPH_TABLE` or `NEIGHBORS()`. See [Graph Model](/docs/concepts/graph-model).
+
+## Next steps
+
+- **[NodeTypes](/docs/concepts/data-model/nodetypes)** define what a node may contain.
+- **[Paths and Hierarchy](/docs/concepts/data-model/paths-and-hierarchy)** covers tree queries and sibling order.
+- **[Archetypes](/docs/concepts/data-model/archetypes)** add editor-facing structure on top of a NodeType.

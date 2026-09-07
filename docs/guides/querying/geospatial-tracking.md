@@ -1,139 +1,138 @@
 ---
 sidebar_position: 11
 title: Tracking moving objects
-description: How to configure a high-frequency position property — what it costs per update, and how the spatial compaction filter keeps a hot cell constant instead of growing with update count.
+description: How to configure a position property that changes every few seconds, what each update costs, and how the spatial compaction filter keeps a busy cell small.
 ---
 
 # Tracking moving objects
 
-Tracking a vehicle that reports its position every few seconds is a genuinely
-different workload from indexing static places, and the defaults are tuned for
-the latter. This page states the costs plainly.
+A vehicle that reports its position every few seconds is a different workload
+from a list of static places, and the spatial index defaults are tuned for the
+latter. This page explains what a position update costs and how to configure
+a property for frequent updates.
 
-## Per-update write cost
+## What an update writes
 
-Every position update writes **one index key per configured precision**, and
-tombstones the superseded ones.
+Every geometry update writes one index key per configured precision and
+tombstones the entries it supersedes.
 
 | profile | precisions | keys written | tombstones | total per update |
 |---|---|---|---|---|
-| default (`INDEX_PRECISIONS_DEFAULT`) | `2,4,6,7,8,9,10,11` | 8 | 8 | **16** |
-| tracking | `6,8` | 2 | 2 | **4** |
+| default | `2,4,6,7,8,9,10,11` | 8 | 8 | 16 |
+| tracking | `6,8` | 2 | 2 | 4 |
 
-Tombstones are bounded by `configured ∪ indexed` — the precisions that can
-actually hold entries, read from the local index-state record. Where that record
-is unavailable (no state record yet), tombstoning widens to all twelve
-precisions: over-tombstoning costs writes, under-tombstoning leaves a stale
-entry matching forever, and only one of those is acceptable.
+Tombstones are limited to the precisions that can hold entries (the configured
+set plus whatever the local index state says is already indexed). When no
+index state record exists yet, all twelve precisions are tombstoned; that
+costs a few extra writes but never leaves a stale entry behind.
 
-## Configuring a tracking field
+## Configuring a tracking property
 
-Use the per-property policy that already exists. No new subsystem, no flag.
+Use the per-property policy:
 
 ```sql
 ALTER SPATIAL INDEX FOR 'fleet' PROPERTY 'position' SET PRECISIONS = (8, 6);
 ```
 
-Precision **count** is a write-cost knob; radius coverage is what it buys:
+```json
+{"columns":["workspace","property","precisions","cover","note"],
+ "rows":[{"workspace":"fleet","property":"position","precisions":"(8, 6)","cover":"Centroid",
+          "note":"configuration written and replicated; run REBUILD SPATIAL INDEX on each node to migrate existing entries"}]}
+```
+
+The number of precisions sets the write cost; which precisions you pick sets
+the query radii the index can serve well:
 
 | precision | approximate cell | serves radii |
 |---|---|---|
-| 8 | ~38 m × 19 m | up to ~100 m — tight candidate set |
-| 6 | ~1.2 km × 0.6 km | ~100 m to ~3 km |
-| 4 | ~39 km | wide-area fleet queries |
+| 8 | about 38 m x 19 m | up to about 100 m |
+| 6 | about 1.2 km x 0.6 km | about 100 m to 3 km |
+| 4 | about 39 km | wide-area queries |
 
-Beyond ~10 km a precision-6 ring approaches the 1024-cell scan budget and the
-planner declines the index, degrading to a correct-but-full scan with a warning.
-If wide-radius fleet queries matter, add a coarse precision (`(8, 6, 4)`,
-3 keys per update) rather than reverting to the eight-precision default.
+A radius query scans at most 1024 cells (`MAX_SCAN_CELLS`). Beyond roughly
+10 km a precision-6 ring exceeds that budget, so the planner answers from a
+row scan instead and says so in `EXPLAIN`. If wide-radius fleet queries
+matter, add a coarse precision such as `(8, 6, 4)` rather than going back to
+the eight-precision default.
 
-`cover = centroid` (the default) is right for a tracked point; `extent` would
-multiply cells per precision for no benefit on a point.
+`cover = centroid` (the default) is right for a tracked point; `extent` is for
+polygons and lines.
 
-## Why a tracking workload used to degrade, and what bounds it now
+`SHOW SPATIAL INDEX CONFIG FOR 'fleet'` shows the effective policy, and
+`SHOW SPATIAL INDEX HEALTH FOR 'fleet' PROPERTY 'position'` reports whether
+the local index still needs a rebuild after a policy change
+(`needs_rebuild: true` until `REBUILD SPATIAL INDEX FOR 'fleet'` has run).
 
-The revision is part of the index key, so an update writes a *new* key rather
-than overwriting the old one. A radius query prefix-iterates each scanned cell
-and visits **every** key in it, so superseded revisions are read cost.
+## Why a hot cell used to grow, and what bounds it
 
-The distribution is counter-intuitive:
+The revision is part of every index key, so an update writes a new key instead
+of overwriting the old one. A radius query prefix-scans each cell and visits
+every key in it, so superseded revisions are read cost.
 
-* At a **coarse** precision a vehicle circulating one airport stays inside the
-  **same cell** across every update, so that one prefix accumulates roughly two
-  entries per position update.
-* At a **fine** precision the vehicle moves between cells and the entries spread
-  thin.
+At a coarse precision a vehicle circulating one site stays inside the same
+cell across updates, so that one prefix accumulates about two entries per
+update. At a fine precision the vehicle moves between cells and the entries
+spread out. Coarse cells are therefore where read cost concentrates: one
+vehicle at one update per second leaves tens of thousands of superseded
+entries in its precision-6 cell per day.
 
-**Coarse cells are where read cost concentrates.** Left unbounded, one vehicle at
-1 update/second for 24 h is ~86,400 updates and on the order of 1.7 × 10⁵ entries
-in its precision-6 prefix — a query that was single-digit milliseconds on day one
-became seconds by day two.
+### The compaction filter
 
-### The compaction filter bounds it
+A compaction filter on the spatial column family drops superseded entries as
+RocksDB compacts. It is on by default. The newest entry per node per cell is
+never dropped, so a read at HEAD returns the same rows with the filter on or
+off. Older entries are removed once they exceed the revision budget or the
+retention window, and tombstones are dropped during a full compaction once
+they have aged out. Pruning happens incrementally as levels compact and
+converges over time.
 
-A stateful RocksDB compaction filter on the spatial column family drops
-superseded entries: the descending revision sits immediately after the geohash
-in the key, so the filter can identify them. It is **on by default**.
+Defaults and environment overrides:
 
-Measured over 500 position updates of one vehicle:
-
-| | before | after |
+| Setting | Default | Environment variable |
 |---|---|---|
-| precision-6 cell prefix | 501 entries | **1** |
-| whole spatial CF | 4,122 entries | **8** |
-| 1 km radius query | 1.50 ms | **0.21 ms** |
+| enabled | `true` | `RAISIN_SPATIAL_COMPACTION_FILTER=off` disables it |
+| revisions kept per node per cell | `8` | `RAISIN_SPATIAL_KEEP_REVISIONS` |
+| retention window | `3600` seconds | `RAISIN_SPATIAL_RETENTION_SECS` |
 
-Those figures are with maximum reclamation (`keep_revisions = 1`). The shipped
-default is `keep_revisions = 8`, `retention_secs = 3600`, which lands at 8 entries
-in the same test — a hot cell becomes a **constant** rather than a function of
-update count.
-
-The **newest entry per node per cell is never droppable**, so a read at HEAD is
-bit-identical with the filter on or off. Tombstones are dropped only during a
-full compaction, once aged out of the retention window: partial visibility means
-the filter can only ever keep too much, never drop a live entry, so pruning is
-incremental and converges as levels merge.
-
-Configure it via `RocksDBConfig::spatial_compaction`; environment overrides let
-an operator widen retention or disable it on a running deployment.
+The variables are read when the database opens, so a change needs a restart.
+With the defaults a hot cell settles at a handful of entries per vehicle
+instead of growing with the update count.
 
 :::note Historical reads
-Because pruning discards old revisions, a spatial read behind the retention
-window would be approximate. The planner handles this rather than letting it be
-silently wrong: a `__revision`-scoped spatial predicate is routed to a full scan
-instead of the index, and `EXPLAIN` names the pruning as the reason. HEAD queries
-still take the index.
+Because pruning discards old revisions, the index cannot answer a spatial
+query at an older revision exactly. A query with an explicit `__revision`
+predicate is therefore routed to a row scan with the predicate applied per
+row, and `EXPLAIN` names the reason. Reads at HEAD keep using the index.
 :::
 
-A rebuild does **not** prune — it writes *more* tombstones. Do not schedule
-periodic rebuilds as a mitigation; the filter is the mechanism.
+`REBUILD SPATIAL INDEX` does not prune; it rewrites entries and adds
+tombstones. The compaction filter is the mechanism that keeps cells small, so
+there is no need to schedule periodic rebuilds.
 
 ### The per-cell scan budget
 
-Past 250,000 entries in a single cell (`DEFAULT_SPATIAL_MAX_ENTRIES_PER_CELL`)
-the index scan will not answer from a partial read. It raises a typed signal and
-the executor **degrades to the fallback row scan** — slow and exact — rather than
-failing the query. Fewer precisions still reduce the rate of accumulation.
+If a single cell holds more than 250,000 entries the index scan stops rather
+than answer from a partial read, and the executor falls back to a row scan
+(slow but exact). Fewer precisions reduce how fast entries accumulate.
 
 ## Modelling pattern
 
-Keep the **current** position on the tracked entity, in a property whose policy
-is the tracking profile:
+Keep the current position on the tracked entity in a property with the
+tracking policy:
 
 ```sql
-UPDATE 'fleet' SET properties = $1::JSONB WHERE id = 'van-17';
+UPDATE 'fleet' SET properties = $1::jsonb WHERE path = '/van-17';
 ```
 
-Write positional **history**, if you need it, as separate append-only nodes under
-a **different property name**:
+If you also need a position history, write it as separate append-only nodes
+under a different property name:
 
 ```sql
-INSERT INTO 'fleet' (id, path, node_type, properties)
-VALUES ($1, $2, 'fleet:Ping', $3::JSONB);   -- geometry property: track_point
+INSERT INTO 'fleet' (path, node_type, name, properties)
+VALUES ($1, 'fleet:Ping', $2, $3::jsonb);   -- geometry property: track_point
 ```
 
-Splitting them this way is still worth it with the compaction filter on. The
-filter bounds `position`, whose old revisions are genuinely superseded; an
-append-only history is *not* superseded data and should not be pruned. Keeping it
-under a different property name means proximity queries over `position` never
-scan it, so the two workloads stop competing.
+Keeping the two under different property names means proximity queries on
+`position` never scan the history, and the compaction filter bounds
+`position` (whose old revisions are superseded) without touching
+`track_point` (which is not superseded data).

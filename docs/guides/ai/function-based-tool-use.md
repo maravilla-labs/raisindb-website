@@ -6,308 +6,286 @@ description: Write serverless functions that AI agents can call as tools, using 
 
 # Function-Based Tool Use
 
-RaisinDB includes a serverless function runtime that lets you write JavaScript functions your AI agents can call as tools. Functions run in a sandboxed environment with access to the full RaisinDB API — reading nodes, executing SQL, making HTTP requests, and emitting events.
+An AI agent in RaisinDB calls tools, and a tool is a function: a
+`raisin:Function` node whose `input_schema` tells the model what arguments to
+send and whose handler does the work. The same function can also be invoked
+over HTTP, from SQL, or by a trigger. This guide covers what a tool function
+looks like and what the `raisin.*` API lets it do; see
+[Creating functions](/docs/guides/functions/creating-functions) for deploying
+one.
 
-## Writing a Function
+## Writing a tool function
 
-Functions are JavaScript async handlers stored as nodes in RaisinDB:
-
-```javascript
-async function handler(input) {
-  // Your logic here
-  return { result: "done" };
-}
+```yaml
+# content/functions/lib/research/save-finding/.node.yaml
+node_type: raisin:Function
+properties:
+  title: Save finding
+  name: save_finding
+  description: Store a research finding with a confidence score.
+  language: javascript
+  entry_file: index.js:handler
+  execution_mode: both
+  enabled: true
+  input_schema:
+    type: object
+    required: [title, summary]
+    properties:
+      title: { type: string }
+      summary: { type: string }
+      confidence: { type: number, description: "0 to 1" }
 ```
 
-The `input` parameter contains whatever the caller passes. The return value is sent back to the caller.
-
-## The raisin.* API
-
-Inside a function, you have access to four API modules:
-
-### raisin.nodes — Content Operations
-
 ```javascript
-async function handler(input) {
-  // Read a node by workspace and path
-  const node = await raisin.nodes.get("default", "/articles/my-post");
-
-  // Get a node by ID
-  const byId = await raisin.nodes.getById("default", "node-uuid-123");
-
-  // Get children of a path
-  const children = await raisin.nodes.getChildren("default", "/articles");
-
-  // Create a new node under a parent path: create(workspace, parentPath, data)
-  await raisin.nodes.create("default", "/research/findings", {
-    name: "new-finding",
-    node_type: "research:Finding",
+// content/functions/lib/research/save-finding/index.js
+export function handler(input) {
+  const node = raisin.nodes.createDeep('knowledge', '/research/findings', {
+    name: input.title.toLowerCase().replace(/\s+/g, '-'),
+    node_type: 'research:Finding',
     properties: {
       title: input.title,
       summary: input.summary,
-      confidence: 0.85
-    }
+      confidence: input.confidence ?? 0.5,
+    },
   });
-
-  // Create a node and auto-create any missing ancestor folders.
-  // Ancestors default to `raisin:Folder` (pass a 4th arg to override).
-  await raisin.nodes.createDeep("default", "/research/2026/q2", {
-    name: "new-finding",
-    node_type: "research:Finding",
-    properties: { title: input.title }
-  });
-
-  // Update a node's properties
-  await raisin.nodes.update("default", "/articles/my-post", {
-    properties: { status: "reviewed", reviewed_at: new Date().toISOString() }
-  });
-
-  // Delete a node
-  await raisin.nodes.delete("default", "/articles/old-post");
-
-  // Query nodes
-  const results = await raisin.nodes.query("default", {
-    node_type: "research:Finding",
-    path_prefix: "/research/"
-  });
-
-  return { found: results.length };
+  return { saved: node.path };
 }
 ```
 
-### raisin.sql — SQL Queries
+The handler receives the model's arguments as `input` and its return value
+goes back to the model as the tool result.
+
+## Giving the tool to an agent
+
+A `raisin:Agent` node lists the functions it may call in its `tools` array as
+paths in the `functions` workspace. The function's `name` becomes the tool
+name, its `description` the tool description, and its `input_schema` the tool's
+parameter schema (a function without one is offered with no parameters).
+
+```yaml
+node_type: raisin:Agent
+properties:
+  title: Research assistant
+  tools:
+    - /lib/research/save_finding
+    - /lib/research/search_knowledge
+```
+
+Write the `description` for the model: it is what the model reads to decide
+when to call the tool.
+
+## The raisin.* API
+
+Inside a function the `raisin` global gives access to the database. In
+JavaScript the calls are synchronous.
+
+### raisin.nodes
 
 ```javascript
-async function handler(input) {
-  // Execute a SELECT query
-  const results = await raisin.sql.query(
-    "SELECT id, name, properties->>'title'::String AS title FROM 'default' WHERE node_type = $1",
-    ["article"]
+export function handler(input) {
+  // Read by path, or by id
+  const node = raisin.nodes.get('knowledge', '/articles/my-post');
+  const byId = raisin.nodes.getById('knowledge', node.id);
+
+  // Children of a path (full node objects)
+  const children = raisin.nodes.getChildren('knowledge', '/articles');
+
+  // Create under a parent path: create(workspace, parentPath, data)
+  raisin.nodes.create('knowledge', '/research/findings', {
+    name: 'new-finding',
+    node_type: 'research:Finding',
+    properties: { title: input.title, summary: input.summary },
+  });
+
+  // Same, but create any missing ancestor folders first
+  // (they default to raisin:Folder; pass a 4th argument to change that)
+  raisin.nodes.createDeep('knowledge', '/research/2026/q3', {
+    name: 'new-finding',
+    node_type: 'research:Finding',
+    properties: { title: input.title },
+  });
+
+  // Merge properties into a node; properties you do not name are kept
+  raisin.nodes.update('knowledge', '/articles/my-post', {
+    properties: { status: 'reviewed', reviewed_at: new Date().toISOString() },
+  });
+
+  // Delete
+  raisin.nodes.delete('knowledge', '/articles/old-post');
+
+  return { children: children.length };
+}
+```
+
+For anything that filters or searches, use SQL.
+
+### raisin.sql
+
+`query` returns an array of row objects; `execute` returns the number of
+affected rows. Bind values with `$1`, `$2`, … rather than interpolating them.
+
+```javascript
+export function handler(input) {
+  const rows = raisin.sql.query(
+    "SELECT id, name, properties->>'title'::String AS title FROM 'knowledge' WHERE node_type = $1",
+    ['research:Finding']
   );
 
-  // Execute a write operation
-  await raisin.sql.execute(
-    "INSERT INTO 'default' (name, path, node_type, properties) VALUES ($1, $2, $3, $4)",
-    ["new-item", "/items", "item:Task", '{"status": "pending"}']
+  const affected = raisin.sql.execute(
+    "UPDATE 'knowledge' SET properties = properties || '{\"reviewed\":true}'::jsonb WHERE path = $1",
+    [input.path]
   );
 
-  return { count: results.length };
+  return { count: rows.length, affected };
 }
 ```
 
-### raisin.http — External HTTP Requests
+A failing query does not throw: `query` returns `{ error, rows: [] }` and
+`execute` returns `-1`.
+
+### raisin.http
+
+Outbound requests go through `raisin.http.fetch(url, options)` with `method`,
+`headers` and `body` (an object is sent as JSON). The response has `status`,
+`headers` and `body`. The standard `fetch()` is also available and returns a
+`Response` you can `await`.
 
 ```javascript
-async function handler(input) {
-  // GET request
-  const data = await raisin.http.get("https://api.example.com/data");
-
-  // POST request with body
-  const response = await raisin.http.post("https://api.example.com/webhook", {
-    body: JSON.stringify({ event: "processed", id: input.nodeId }),
-    headers: { "Content-Type": "application/json" }
+export async function handler(input) {
+  const res = raisin.http.fetch('https://api.example.com/extract', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: { text: input.message },
   });
+  if (res.status !== 200) return { error: res.error ?? `status ${res.status}` };
 
-  // PUT and DELETE also available
-  await raisin.http.put("https://api.example.com/items/123", { body: '{"status": "done"}' });
-  await raisin.http.delete("https://api.example.com/items/456");
-
-  return { status: response.status };
+  const alt = await fetch('https://api.example.com/health');
+  return { entities: res.body, healthy: alt.ok };
 }
 ```
 
-HTTP endpoints must be allowlisted in your function configuration to prevent unauthorized outbound calls.
+The function's node must allow the destination:
 
-### raisin.events — Event System
+```yaml
+  network_policy:
+    http_enabled: true
+    allowed_urls: ["https://api.example.com/**"]
+```
+
+A request outside `allowed_urls` returns `{ error, status: 0, ok: false }`
+without leaving the server. Loopback and private addresses are always refused.
+
+### raisin.events
 
 ```javascript
-async function handler(input) {
-  // Emit a custom event
-  await raisin.events.emit("research.complete", {
+export function handler(input) {
+  const ok = raisin.events.emit('research.complete', {
     taskId: input.taskId,
     findingCount: 5,
-    confidence: 0.91
   });
-
-  return { emitted: true };
+  return { emitted: ok };
 }
 ```
 
-Events can trigger other functions or workflows, enabling event-driven agent architectures.
+`emit` returns `true` when the event was published. Events can drive other
+functions and workflows.
 
-## Sandboxed Execution
+### raisin.context
 
-Functions run in a QuickJS sandbox with configurable resource limits:
+`raisin.context` is an object with `tenant_id`, `repo_id`, `branch`,
+`workspace_id`, `actor` and `execution_id`, so a function knows who and where
+it is running for.
 
-| Resource | Default | Description |
-|----------|---------|-------------|
-| Memory | 128 MB | Maximum heap size |
-| Execution time | 30 seconds | Maximum wall-clock time |
-| Concurrent executions | 15 | Global concurrency limit |
+## Sandboxed execution
 
-These limits prevent runaway functions from affecting the server. If a function exceeds its limits, it is terminated and returns an error.
+Functions run in a QuickJS sandbox with these defaults:
 
-The concurrency limit is controlled by the `RAISIN_MAX_CONCURRENT_FUNCTIONS` environment variable.
+| Resource | Default | Where to change |
+|----------|---------|-----------------|
+| Memory | 128 MiB | `resource_limits.max_memory_bytes` on the node |
+| Execution time | 30 seconds | `resource_limits.timeout_ms` on the node |
+| Concurrent executions | 15 per server | `RAISIN_MAX_CONCURRENT_FUNCTIONS` environment variable |
 
-## Trigger Patterns
+A function that exceeds its limits is stopped and the call returns an error.
 
-Functions can be triggered in four ways:
+## Other ways a function runs
 
-### Event Triggers
+Besides being a tool, the same function node can be started by a
+[trigger](/docs/guides/functions/triggers): on node events (`created`,
+`updated`, `deleted`, with workspace, path, node type and property filters),
+on a cron schedule, or through an HTTP endpoint at
+`/api/triggers/{repo}/{name}`. From SQL, `INVOKE_SYNC('save_finding',
+'{"title": "..."}'::jsonb)` runs it inline and
+[`INVOKE`](/docs/reference/sql/functions/invoke-functions) queues it.
 
-React to node changes automatically:
+## Example: processing a message
 
-```yaml
-# Function definition
-name: process-new-article
-trigger:
-  type: event
-  event: node.created
-  filter:
-    node_type: "article"
-    workspace: "content"
-```
-
-```javascript
-async function handler(input) {
-  // input.node contains the created node
-  const article = input.node;
-
-  // Extract entities, generate summary, etc.
-  const summary = article.properties.content.substring(0, 200) + "...";
-
-  await raisin.nodes.update("default", article.path, {
-    properties: { auto_summary: summary, processed: true }
-  });
-
-  return { processed: article.id };
-}
-```
-
-### HTTP Triggers
-
-Expose functions as API endpoints:
-
-```yaml
-name: search-knowledge
-trigger:
-  type: http
-  method: POST
-  path: /api/functions/search
-```
+A function an agent calls to store a message, look up related knowledge and
+record what it found:
 
 ```javascript
-async function handler(input) {
-  const results = await raisin.sql.query(
-    `SELECT path, properties->>'content'::String AS content, vector_distance
-     FROM KNN($1, 5, workspaces => 'knowledge')`,
-    [input.queryVector]
-  );
-
-  return { results };
-}
-```
-
-### Schedule Triggers
-
-Run functions on a cron schedule:
-
-```yaml
-name: nightly-enrichment
-trigger:
-  type: schedule
-  cron: "0 2 * * *"  # Every day at 2 AM
-```
-
-### SQL Triggers
-
-Call functions from SQL queries:
-
-```sql
-SELECT * FROM search_knowledge('what is vector search?')
-```
-
-## Example: Agent That Processes Messages
-
-A complete example of a function that an AI agent calls to process incoming messages, extract entities, and store findings:
-
-```javascript
-async function handler(input) {
+export function handler(input) {
   const { message, conversationId } = input;
 
   // 1. Store the message
-  await raisin.nodes.create("default", {
+  raisin.nodes.createDeep('chat', `/conversations/${conversationId}/messages`, {
     name: `msg-${Date.now()}`,
-    path: `/conversations/${conversationId}/messages`,
-    node_type: "chat:Message",
-    properties: {
-      content: message,
-      role: "user",
-      timestamp: new Date().toISOString()
-    }
+    node_type: 'chat:Message',
+    properties: { content: message, role: 'user', timestamp: new Date().toISOString() },
   });
 
-  // 2. Search for relevant context
-  const context = await raisin.sql.query(
-    `SELECT properties->>'content'::String AS content, vector_distance
-     FROM KNN($1, 5, workspaces => 'knowledge')`,
-    [input.messageEmbedding]
+  // 2. Find related knowledge (see the search guides for full-text and vector queries)
+  const context = raisin.sql.query(
+    "SELECT path, properties->>'title'::String AS title FROM 'knowledge' WHERE node_type = $1 LIMIT 5",
+    ['research:Finding']
   );
 
-  // 3. Call external AI for entity extraction
-  const extraction = await raisin.http.post("https://api.example.com/extract", {
-    body: JSON.stringify({ text: message }),
-    headers: { "Content-Type": "application/json" }
+  // 3. Ask an external service for entities
+  const extraction = raisin.http.fetch('https://api.example.com/extract', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: { text: message },
   });
+  const entities = extraction.status === 200 ? extraction.body.items : [];
 
-  // 4. Store extracted entities as nodes
-  const entities = JSON.parse(extraction.body);
-  for (const entity of entities.items) {
-    await raisin.nodes.create("default", {
+  // 4. Store them
+  for (const entity of entities) {
+    raisin.nodes.createDeep('chat', `/conversations/${conversationId}/entities`, {
       name: entity.name.toLowerCase().replace(/\s+/g, '-'),
-      path: `/conversations/${conversationId}/entities`,
-      node_type: "research:Entity",
-      properties: {
-        name: entity.name,
-        type: entity.type,
-        confidence: entity.confidence,
-        source_message: message
-      }
+      node_type: 'research:Entity',
+      properties: { name: entity.name, type: entity.type, confidence: entity.confidence },
     });
   }
 
-  // 5. Emit event for downstream processing
-  await raisin.events.emit("message.processed", {
-    conversationId,
-    entityCount: entities.items.length,
-    contextRelevance: context.length > 0 ? context[0].vector_distance : null
-  });
+  // 5. Tell downstream processing
+  raisin.events.emit('message.processed', { conversationId, entityCount: entities.length });
 
-  return {
-    entitiesFound: entities.items.length,
-    contextChunks: context.length
-  };
+  return { entitiesFound: entities.length, contextChunks: context.length };
 }
 ```
 
-## Starlark Functions
+## Starlark functions
 
-In addition to JavaScript, RaisinDB supports Starlark (a Python-like language) for functions that need a more constrained execution model. Starlark is deterministic and has no I/O by default, making it suitable for pure data transformation tasks.
+Functions can also be written in Starlark, a Python-like language, with the
+same API under snake_case names (`raisin.nodes.get_children`,
+`raisin.sql.query`). Errors stop the handler instead of being returned. It
+suits small, deterministic transformations.
 
-## Workflow Integration
+```python
+def handler(input):
+    rows = raisin.sql.query("SELECT path FROM 'knowledge' WHERE node_type = $1", ["research:Finding"])
+    return {"count": len(rows)}
+```
 
-Functions can be composed into multi-step workflows using the flow runtime. Workflows support:
+## Workflow integration
 
-- **AI agent loops** with tool calls
-- **Human-in-the-loop** steps that pause for approval
-- **Decision trees** with branching logic
-- **Parallel execution** of multiple steps
-- **Error handling** with retry and compensation
+Functions are also the steps of workflows in the flow runtime, which adds AI
+agent loops with tool calls, human-in-the-loop approval steps, decisions,
+parallel branches and retries. See the workflow guides for composing
+functions into multi-step agents.
 
-See the flow runtime documentation for details on composing functions into complex agent workflows.
+## Next steps
 
-## Next Steps
-
-- [Agent Memory with Branches](./agent-memory-with-branches.md) — combine functions with branch isolation
-- [RAG Patterns](./rag-patterns.md) — build RAG pipelines using functions
-- [AI Provider Configuration](./ai-provider-configuration.md) — configure the AI models your functions use
+- [Agent memory with branches](./agent-memory-with-branches.md)
+- [RAG patterns](./rag-patterns.md)
+- [AI provider configuration](./ai-provider-configuration.md)

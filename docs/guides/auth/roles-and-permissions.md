@@ -1,299 +1,242 @@
 ---
 sidebar_position: 2
 title: Roles and Permissions
-description: Configure workspace-scoped RBAC with role inheritance, groups, and content-centric permissions
+description: Create roles, groups and users with SQL, grant and revoke roles, and understand how permissions are resolved
 ---
 
 # Roles and Permissions
 
-RaisinDB uses a content-centric, workspace-scoped authorization model. Permissions are defined in terms of content paths and node types — not API endpoints. A permission like `content.articles.**` with operations `[read, update]` directly maps to your content hierarchy.
+Permissions in RaisinDB are expressed in terms of content: a workspace, a
+path pattern, node types and operations. A grant such as `read` and `update`
+on `articles/**` in workspace `content` maps directly onto your content tree
+rather than onto API endpoints.
 
-## Two-Tier Identity Model
+Roles, groups and users are nodes in the repository's `raisin:access_control`
+workspace, so they are versioned, replicated and queryable like any other
+content. The SQL statements below are the usual way to manage them; they
+require an admin account or a user with the `system_admin` role.
 
-RaisinDB separates **global identity** from **workspace-specific users**:
+## Identity and user
 
-```
-┌─────────────────────────────┐
-│      Global Identity        │
-│  (authentication layer)     │
-│                             │
-│  identity_id: "id-abc123"   │
-│  email: "alice@example.com" │
-└──────────────┬──────────────┘
-               │
-     WorkspaceAccess records
-               │
-    ┌──────────┼──────────┐
-    ▼                     ▼
-┌──────────────┐   ┌──────────────┐
-│ raisin:User  │   │ raisin:User  │
-│ (content ws) │   │ (media ws)   │
-│              │   │              │
-│ roles:       │   │ roles:       │
-│  - editor    │   │  - viewer    │
-│ groups:      │   │ groups:      │
-│  - team-a    │   │  - team-a    │
-└──────────────┘   └──────────────┘
-```
+Authentication is tenant-wide, authorization is per repository:
 
-- **Global Identity** handles "who are you?" — authentication, email, linked providers
-- **Workspace User** handles "what can you do here?" — roles, groups, permissions
+- A **global identity** answers "who are you": email, password, linked
+  sign-in methods.
+- A **`raisin:User` node** in each repository answers "what may you do here":
+  its `roles` and `groups` properties.
 
-A user can be an `editor` in the `content` workspace, a `viewer` in `media`, and have no access to `analytics`. This mirrors how organizations actually divide responsibility over content.
+The same person can be an editor in one repository and a viewer in another.
+The user node is created the first time an identity logs in through
+`POST /auth/{repo}/login` (see [Authentication Setup](./authentication-setup.md))
+with the roles `viewer` and `authenticated_user`.
 
-## The raisin:access_control Workspace
+## Creating a role
 
-Every repository has a built-in `raisin:access_control` workspace that stores all authorization entities as nodes:
-
-```
-raisin:access_control/
-├── users/
-│   ├── system/
-│   │   └── anonymous          (raisin:User)
-│   ├── alice                  (raisin:User)
-│   └── bob                    (raisin:User)
-├── roles/
-│   ├── system_admin           (raisin:Role)
-│   ├── editor                 (raisin:Role)
-│   ├── viewer                 (raisin:Role)
-│   └── anonymous              (raisin:Role)
-└── groups/
-    ├── engineering             (raisin:Group)
-    └── content-team            (raisin:Group)
+```sql
+CREATE ROLE 'article-reader'
+  DESCRIPTION 'Reads published articles'
+  PERMISSIONS (
+    ALLOW READ ON 'articles' PATH '**' WHERE node.status == 'published'
+  );
 ```
 
-Because authorization data is stored as regular nodes, it benefits from the same versioning, replication, and query infrastructure as your application data.
+A grant inside `PERMISSIONS (...)` has the form
 
-## Defining Roles
-
-A role is a named collection of permission grants:
-
-```json
-{
-  "name": "content-editor",
-  "description": "Can manage articles in the content workspace",
-  "inherits": ["viewer"],
-  "permissions": [
-    {
-      "workspace": "content",
-      "path": "articles/**",
-      "operations": ["create", "read", "update", "delete"],
-      "node_types": ["blog:Article", "blog:Draft"],
-      "except_fields": ["internal_notes"],
-      "condition": "node.created_by == auth.user_id"
-    },
-    {
-      "path": "media/**",
-      "operations": ["read"],
-      "fields": ["title", "url", "thumbnail"]
-    }
-  ]
-}
+```
+ALLOW <operations> [ON '<workspace pattern>'] PATH '<path pattern>'
+      [BRANCH '<branch pattern>'] [NODE TYPES ('a', 'b')]
+      [FIELDS (f1, f2)] [EXCEPT FIELDS (f3)] [WHERE <REL expression>]
 ```
 
-### Permission Structure
+where `<operations>` is a comma-separated list of `CREATE`, `READ`, `UPDATE`,
+`DELETE`, `TRANSLATE`, `RELATE`, `UNRELATE`. Other role statements:
 
-Each permission grant contains:
+```sql
+CREATE ROLE 'senior-reader' INHERITS ('article-reader')
+  PERMISSIONS (ALLOW READ ON 'articles' PATH 'archive/**');
+
+ALTER ROLE 'article-reader'
+  ADD PERMISSION ALLOW READ, UPDATE ON 'articles' PATH 'public/**'
+      NODE TYPES ('raisin:Page') EXCEPT FIELDS (internal_notes);
+ALTER ROLE 'article-reader' DROP PERMISSION 1;      -- by position, 0-based
+ALTER ROLE 'article-reader' ADD INHERITS ('viewer');
+ALTER ROLE 'article-reader' SET DESCRIPTION 'Reads articles';
+
+SHOW ROLES;
+DESCRIBE ROLE 'article-reader';
+DROP ROLE IF EXISTS 'article-reader';
+```
+
+The statement writes a `raisin:Role` node at `/roles/{role_id}`. Its
+`permissions` property holds the grants as JSON objects, which is also the
+shape to use when a package ships a role as a `.node.yaml` file:
+
+```yaml
+node_type: raisin:Role
+properties:
+  role_id: content-editor
+  name: Content editor
+  description: Manages articles in the content workspace
+  inherits: [viewer]
+  permissions:
+    - workspace: content
+      path: "articles/**"
+      operations: [create, read, update, delete]
+      node_types: ["blog:Article", "blog:Draft"]
+      except_fields: [internal_notes]
+      condition: "node.created_by == auth.user_id"
+    - path: "media/**"
+      operations: [read]
+      fields: [title, url, thumbnail]
+```
+
+### Grant fields
 
 | Field | Description |
 |-------|-------------|
-| `workspace` | Workspace pattern (glob). Omit for all workspaces. |
-| `branch_pattern` | Branch pattern (glob). Omit for all branches. |
-| `path` | Content path pattern (`articles/**`, `/users/*/profile`) |
-| `node_types` | Restrict to specific node types. Omit for all types. |
-| `operations` | Allowed operations: `create`, `read`, `update`, `delete`, `translate`, `relate`, `unrelate` |
-| `fields` | Field whitelist — only these fields are accessible |
-| `except_fields` | Field blacklist — all fields except these |
-| `condition` | REL expression that must evaluate to true (see [Row-Level Security](./row-level-security.md)) |
+| `workspace` | Workspace pattern (glob). Omit for all workspaces |
+| `branch_pattern` | Branch pattern (glob). Omit for all branches |
+| `path` | Path pattern, required |
+| `node_types` | Only these node types. Omit for all types |
+| `operations` | `create`, `read`, `update`, `delete`, `translate`, `relate`, `unrelate` |
+| `fields` | Only these properties are returned on reads |
+| `except_fields` | All properties except these are returned on reads |
+| `condition` | REL expression; see [Row-Level Security](./row-level-security.md) |
 
-### Path Patterns
+### Path patterns
 
-Path patterns use glob-style matching:
+A leading `/` is optional. `*` matches any characters except `/`, so it stays
+within one segment; `**` matches across segments.
 
-| Pattern | Matches | Does Not Match |
+| Pattern | Matches | Does not match |
 |---------|---------|----------------|
-| `/articles/*` | `/articles/news` | `/articles/news/2024` |
-| `/articles/**` | `/articles`, `/articles/news`, `/articles/a/b/c` | |
-| `/users/*/profile` | `/users/alice/profile` | `/users/a/b/profile` |
-| `/**/blog/**` | `/blog`, `/foo/blog/post` | |
+| `articles/*` | `/articles/news` | `/articles/news/2024` |
+| `articles/**` | `/articles`, `/articles/news`, `/articles/a/b/c` | |
+| `users/*/profile` | `/users/alice/profile` | `/users/a/b/profile` |
+| `**` | every path | |
 
-When multiple permissions match the same node, the most specific pattern wins. Specificity is scored by exact segments (100 pts), single wildcards (10 pts), and recursive wildcards (1 pt).
+When several grants match one node, the operation is allowed if any of them
+applies (after its condition, if any). The most specific pattern decides which
+`fields` or `except_fields` filter is used. Specificity counts exact segments
+highest, then `*`, then `**`.
 
 ### Operations
 
-Seven operations can be granted:
-
-| Operation | Description |
-|-----------|-------------|
-| `create` | Create new nodes |
-| `read` | View and query nodes |
+| Operation | Meaning |
+|-----------|---------|
+| `create` | Create nodes at a matching path |
+| `read` | Read and query nodes |
 | `update` | Modify existing nodes |
 | `delete` | Remove nodes |
-| `translate` | Modify translations on nodes |
+| `translate` | Modify translations |
 | `relate` | Create relationships between nodes |
-| `unrelate` | Remove relationships between nodes |
+| `unrelate` | Remove relationships |
 
-## Role Inheritance
+## Role inheritance
 
-Roles can inherit from other roles via the `inherits` property:
+A role gets every grant of the roles listed in `inherits`, recursively.
+Cycles are tolerated (each role is visited once).
 
-```
-system_admin
-    ↑ inherits
-  admin
-    ↑ inherits
-  editor
-    ↑ inherits
-  viewer
+```sql
+CREATE ROLE 'viewer-plus' INHERITS ('viewer')
+  PERMISSIONS (ALLOW CREATE ON 'content' PATH 'drafts/**');
 ```
 
-A role inherits all permissions from its parent roles, recursively. The system detects and prevents circular inheritance.
-
-### Example
-
-```json
-{
-  "name": "viewer",
-  "permissions": [
-    { "path": "**", "operations": ["read"] }
-  ]
-}
-
-{
-  "name": "editor",
-  "inherits": ["viewer"],
-  "permissions": [
-    { "path": "articles/**", "operations": ["create", "update", "delete"] }
-  ]
-}
-```
-
-The `editor` role can read everything (inherited from `viewer`) and create/update/delete articles (its own permissions).
+Here `viewer-plus` can read everything (from `viewer`) and create drafts.
 
 ## Groups
 
-Groups provide a layer of indirection between users and roles. Instead of assigning roles to individual users, assign roles to groups and users to groups:
+A group assigns a set of roles to many users at once:
 
-```
-User: alice
-  groups: ["engineering", "content-team"]
-
-Group: engineering
-  roles: ["developer", "viewer"]
-
-Group: content-team
-  roles: ["editor"]
-
-Effective roles for alice:
-  direct: []
-  from groups: ["developer", "viewer", "editor"]
+```sql
+CREATE GROUP 'readers' DESCRIPTION 'Article readers' ROLES ('article-reader');
+ALTER GROUP 'readers' ADD ROLES ('viewer');
+ALTER GROUP 'readers' DROP ROLES ('viewer');
+SHOW GROUPS;
+DESCRIBE GROUP 'readers';
+DROP GROUP IF EXISTS 'readers';
 ```
 
-**When to use groups vs. direct roles:**
+Prefer groups when several users share a role set; use direct roles for
+individual exceptions.
 
-- Use **groups** when multiple users share the same role set and you want to change permissions for all of them at once
-- Use **direct roles** for individual exceptions or temporary elevated access
+## Users
 
-## Permission Resolution Pipeline
+Users that log in through the identity layer are created automatically. You
+can also create users with SQL, for example service accounts or fixtures:
 
-When a request arrives, RaisinDB resolves permissions through this pipeline:
-
-```
-raisin:User node lookup (by email or identity_id)
-    │
-    ├── Direct roles (from user.roles)
-    │
-    ├── Group roles (user.groups → each group.roles)
-    │
-    ▼
-Deduplicate all roles
-    │
-    ▼
-Resolve inheritance (recursive, with cycle detection)
-    │
-    ▼
-Collect permissions from all effective roles
-    │
-    ▼
-ResolvedPermissions (cached for 5 minutes)
+```sql
+CREATE USER 'svc-import' EMAIL 'import@example.com' DISPLAY NAME 'Importer'
+  ROLES ('editor') GROUPS ('readers');
 ```
 
-The result is cached per `(session_id, workspace_id)` with a 5-minute TTL for performance.
+Optional clauses: `CAN LOGIN true|false`, `BIRTH DATE '2000-01-01'`,
+`IN FOLDER '/users/service'`. The node is written at `/users/{user_id}`.
 
-### Special Cases
+Grant and revoke on any user by its path below `/users/`. For a provisioned
+identity user that is `internal/{email-slug}`:
 
-**System admin:** If any effective role is `system_admin`, the user gets full access to everything. All permission checks short-circuit.
+```sql
+GRANT ROLE 'article-reader' TO USER 'internal/jane-at-example-com';
+GRANT GROUP 'readers' TO USER 'internal/jane-at-example-com';
+REVOKE ROLE 'viewer' FROM USER 'internal/jane-at-example-com';
+GRANT ROLES ('viewer', 'author') TO GROUP 'readers';
 
-**Anonymous access:** Resolved by looking up the `anonymous` user at `/users/system/anonymous`. This goes through the normal resolution pipeline with the `anonymous` role.
+ALTER USER 'internal/jane-at-example-com' DROP ROLES ('viewer');
+ALTER USER 'internal/jane-at-example-com' SET DISPLAY NAME 'Jane D.';
+ALTER USER 'svc-import' SET CAN LOGIN false;
 
-## Workspace Access Workflows
-
-Before a user gets roles in a workspace, they need workspace access. Three workflows are supported:
-
-### Request Flow
-
-1. User requests access to a workspace
-2. Access request is created with `Pending` status
-3. Admin approves or denies
-4. On approval: a `raisin:User` node is created, status becomes `Active`
-
-```bash
-# Request access
-POST /repos/{repo}/access/request
-
-# Admin approves
-POST /repos/{repo}/access/approve/{request_id}
+SHOW USERS;
+SHOW USERS WITH ROLE 'article-reader';
+SHOW USERS IN GROUP 'readers';
+DESCRIBE USER 'internal/jane-at-example-com';
+DROP USER IF EXISTS 'svc-import';
 ```
 
-### Invitation Flow
+To see what a user ends up with:
 
-1. Admin sends an invitation with initial roles
-2. Access record created with `Invited` status
-3. User accepts or declines
-4. On acceptance: `raisin:User` node created, status becomes `Active`
+```sql
+SHOW EFFECTIVE ROLES FOR USER 'internal/jane-at-example-com';
+-- role               | source | via
+-- authenticated_user | direct | null
+-- article-reader     | group  | readers
 
-```bash
-# Invite a user
-POST /repos/{repo}/access/invite
-{
-  "identity_id": "id-abc123",
-  "roles": ["editor"]
-}
+SHOW PERMISSIONS FOR USER 'internal/jane-at-example-com' ON 'articles';
+-- role           | path | operations | workspace
+-- article-reader | **   | ["read"]   | articles
 ```
 
-### Direct Grant
+## How permissions are resolved
 
-For programmatic access (setup scripts, CI/CD), create access that is immediately active:
+For each request the server:
 
-```bash
-POST /repos/{repo}/access/grant
-{
-  "identity_id": "id-abc123",
-  "roles": ["viewer"]
-}
-```
+1. Finds the caller's `raisin:User` node (by identity id, email or node id).
+2. Collects the node's direct `roles` and the `roles` of each group in
+   `groups`.
+3. Expands `inherits` recursively.
+4. Concatenates the grants of every effective role.
 
-## Access Settings
+The result is cached for five minutes per user. A user who is already making
+requests sees a role change within that window; a user who logs in afterwards
+sees it immediately.
 
-Configure workspace access policies:
+Two special cases:
 
-```yaml
-access_settings:
-  allow_access_requests: true
-  require_approval: true        # false = auto-approve with default_roles
-  allow_invitations: true
-  default_roles: ["viewer"]
-  max_pending_requests: 100
-  invitation_expiry_days: 7
-```
+- **`system_admin`**: if it is among the effective roles, every check passes.
+- **Anonymous callers**: when anonymous access is enabled, unauthenticated
+  requests run as the user at `/users/system/anonymous`, which carries the
+  `anonymous` role. Otherwise they get an empty permission set.
 
-## Graph-Enhanced Role Resolution
+## Access requests and invitations
 
-Because roles, groups, and users are stored as nodes in a content graph, RaisinDB can leverage graph traversal for role resolution. Role inheritance is a graph traversal. Group membership is a node property. Permission changes replicate across the cluster through the same CRDT mechanisms as any other data.
+The tenant configuration carries `access_settings` (`allow_access_requests`,
+`allow_invitations`, `require_approval`, `default_roles`) and routes exist
+under `/repos/{repo}/access/...`, but the request, invitation and approval
+flow is not implemented in this release; those routes answer `501`. Grant
+access by creating the user node (first login or `CREATE USER`) and assigning
+roles as shown above.
 
-For large deployments, the `relates_cache` graph algorithm precomputes relation paths (user → group → role chains), turning runtime graph traversals into cache lookups.
+## Next steps
 
-## Next Steps
-
-- [Row-Level Security](./row-level-security.md) — fine-grained access control with REL conditions
-- [Authentication Setup](./authentication-setup.md) — configure authentication strategies
+- [Row-Level Security](./row-level-security.md) for conditions and field filtering
+- [Authentication Setup](./authentication-setup.md)

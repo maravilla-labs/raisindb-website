@@ -1,350 +1,257 @@
 ---
 sidebar_position: 1
 title: Authentication Setup
-description: Configure pluggable authentication strategies including local passwords, magic links, OIDC, API keys, and one-time tokens
+description: Register and log in identity users with email and password or magic links, work with the token pair, and configure tenant-level authentication settings
 ---
 
 # Authentication Setup
 
-RaisinDB provides a pluggable authentication system where each tenant can mix and match authentication strategies — local passwords, magic links, OIDC providers, API keys — while sharing a unified session and token infrastructure.
+RaisinDB has two kinds of accounts:
 
-## Architecture Overview
+- **Admin accounts** are operator logins managed under
+  `/api/raisindb/sys/{tenant}/...`. They are used by the CLI, the admin console
+  and setup scripts. The dev-mode server ships with `admin`.
+- **Identity users** are the end users of your application. An identity is
+  tenant-wide (one email, one password), and it maps to a `raisin:User` node in
+  each repository the person logs in to. Everything below is about identity
+  users.
 
-```
-┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│   Local     │  │   OIDC      │  │  Magic Link │  ...
-│  Strategy   │  │  Strategy   │  │  Strategy   │
-└──────┬──────┘  └──────┬──────┘  └──────┬──────┘
-       └────────────────┼────────────────┘
-                        ▼
-            ┌───────────────────────┐
-            │  AuthStrategyRegistry │
-            └───────────┬───────────┘
-                        ▼
-            ┌───────────────────────┐
-            │      AuthService      │
-            │  (JWT + Sessions)     │
-            └───────────────────────┘
-```
+An identity user authenticates with an email and password or with a magic
+link. Both produce the same token pair.
 
-Every authentication attempt follows the same flow:
-
-1. The transport layer receives credentials and wraps them in an `AuthCredentials` variant
-2. The `AuthStrategyRegistry` routes the credentials to the matching strategy
-3. The strategy validates the credentials and returns a verified `Identity`
-4. `AuthService` creates or updates a `Session`, then issues JWT access and refresh tokens
-
-Adding a new authentication method requires only a new strategy implementation — the session, token, and middleware infrastructure stays untouched.
-
-## Available Strategies
-
-| Strategy | Use Case | Credential Type |
-|----------|----------|-----------------|
-| **Local** | Traditional email + password login | `UsernamePassword` |
-| **Magic Link** | Passwordless email authentication | `MagicLinkToken` |
-| **OIDC** | Google, Okta, Keycloak, Azure AD | `OAuth2Code` |
-| **API Key** | Machine-to-machine access | `ApiKey` |
-| **One-Time Token** | Email verification, password reset, invitations | `OneTimeToken` |
-
-## Local Strategy (Username + Password)
-
-The local strategy authenticates users with email and password, using bcrypt for password hashing.
-
-### Setup
-
-Local authentication is available by default. Users register via the REST API:
+## Admin login
 
 ```bash
-POST /auth/register
-Content-Type: application/json
-
-{
-  "email": "alice@example.com",
-  "password": "SecureP@ssw0rd!",
-  "display_name": "Alice"
-}
+curl -X POST localhost:8090/api/raisindb/sys/default/auth \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"AdminPassword123!"}'
 ```
 
-### Login
+```json
+{"token":"eyJ...","user_id":"...","username":"admin","must_change_password":false,"expires_at":...,"access_flags":{...}}
+```
+
+Use `token` as a bearer token. Admin tokens can act on any repository and can
+impersonate a user for debugging by sending the `X-Raisin-Impersonate` header.
+
+## Register and log in
+
+Use the repository-scoped routes. The `{repo}` segment makes the server
+create (or find) the caller's `raisin:User` node in that repository's
+`raisin:access_control` workspace and puts its path into the token.
 
 ```bash
-POST /auth/login
-Content-Type: application/json
+# Register
+curl -X POST localhost:8090/auth/myrepo/register \
+  -H 'content-type: application/json' \
+  -d '{"email":"jane@example.com","password":"CorrectHorse42Battery","display_name":"Jane"}'
 
-{
-  "email": "alice@example.com",
-  "password": "SecureP@ssw0rd!"
-}
+# Log in
+curl -X POST localhost:8090/auth/myrepo/login \
+  -H 'content-type: application/json' \
+  -d '{"email":"jane@example.com","password":"CorrectHorse42Battery"}'
 ```
 
-**Response:**
+Both return the token pair:
 
 ```json
 {
-  "access_token": "eyJhbG...",
-  "refresh_token": "eyJhbG...",
+  "access_token": "eyJ...",
+  "refresh_token": "eyJ...",
   "token_type": "Bearer",
-  "expires_in": 3600
+  "expires_at": 1788806964200,
+  "identity": {
+    "id": "a0d30626-a234-4e61-9204-087e144d19fb",
+    "email": "jane@example.com",
+    "display_name": "Jane",
+    "avatar_url": null,
+    "email_verified": false,
+    "linked_providers": [],
+    "home": "/users/internal/jane-at-example-com"
+  }
 }
 ```
 
-### Password Policy
+The login body also accepts `"remember_me": true`, which extends the
+server-side session from 24 hours to 30 days. A wrong password returns `401`
+with code `INVALID_CREDENTIALS`; after five failures the account is locked
+for fifteen minutes and login returns `429` with code `ACCOUNT_LOCKED`.
+Passwords must be at least 8 characters.
 
-Configure password requirements per tenant:
+The unscoped routes `/auth/register` and `/auth/login` also exist. They issue
+a token without a `home` claim, and a `raisin:User` node is not provisioned.
+Such a token still works against a repository where the user already has a
+node.
 
-```yaml
-password_policy:
-  min_length: 8
-  max_length: 128
-  require_uppercase: true
-  require_lowercase: true
-  require_digit: true
-  require_special: true
-```
+### The provisioned user node
 
-## Magic Link Strategy
+On first login the node is created at `/users/internal/{email-slug}` with the
+identity id in `user_id`, the email, a display name and the roles `viewer` and
+`authenticated_user`. Later logins reuse the node and never remove roles, so
+role changes you make with SQL survive. See
+[Roles and Permissions](./roles-and-permissions.md) for how to change them.
 
-Passwordless authentication via email. The user requests a magic link, receives it by email, and clicking the link completes authentication without setting a password.
-
-### Setup
-
-Enable magic links in your tenant configuration:
-
-```yaml
-magic_link:
-  enabled: true
-  expiration_minutes: 15
-```
-
-### Flow
+### Who am I
 
 ```bash
-# 1. Request a magic link
-POST /auth/magic-link
-{ "email": "alice@example.com" }
-
-# 2. User receives email with link containing a one-time token
-# 3. User clicks link, which hits the verify endpoint
-GET /auth/magic-link/verify?token=<one-time-token>
-
-# 4. Response includes access + refresh tokens
+curl localhost:8090/auth/myrepo/me -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-## OIDC Strategy (Google, Okta, Azure AD, Keycloak)
-
-OpenID Connect integration supports enterprise identity providers.
-
-### Supported Providers
-
-- **Google** — Google Workspace and consumer accounts
-- **Okta** — Enterprise identity provider
-- **Keycloak** — Open-source identity management
-- **Azure AD** — Microsoft identity platform
-
-### Configuration
-
-Configure OIDC providers in your tenant settings:
-
-```yaml
-oidc:
-  providers:
-    google:
-      client_id: "your-google-client-id"
-      client_secret: "your-google-client-secret"
-      redirect_uri: "https://yourapp.com/auth/oidc/google/callback"
-
-    okta:
-      client_id: "your-okta-client-id"
-      client_secret: "your-okta-client-secret"
-      issuer: "https://your-org.okta.com"
-      redirect_uri: "https://yourapp.com/auth/oidc/okta/callback"
-
-    azure:
-      client_id: "your-azure-client-id"
-      client_secret: "your-azure-client-secret"
-      tenant_id: "your-azure-tenant-id"
-      redirect_uri: "https://yourapp.com/auth/oidc/azure/callback"
-
-    keycloak:
-      client_id: "your-keycloak-client-id"
-      client_secret: "your-keycloak-client-secret"
-      issuer: "https://keycloak.yourorg.com/realms/yourrealm"
-      redirect_uri: "https://yourapp.com/auth/oidc/keycloak/callback"
+```json
+{"id":"a0d3...","email":"jane@example.com","roles":["viewer","authenticated_user"],
+ "anonymous":false,"home":"/users/internal/jane-at-example-com","user_node":{...}}
 ```
 
-### Flow
+`GET /auth/me` returns the same without the node.
 
-```bash
-# 1. Start the OIDC flow (redirects user to provider)
-GET /auth/oidc/google
-
-# 2. User authenticates with Google
-# 3. Google redirects back to your callback URL
-GET /auth/oidc/google/callback?code=<auth-code>&state=<state>
-
-# 4. RaisinDB exchanges the code for tokens, resolves identity
-# 5. Response includes access + refresh tokens
-```
-
-On successful callback, RaisinDB resolves the provider's user ID to a local `Identity`. If no matching identity exists, a new one is created and linked to the provider.
-
-### Identity Linking
-
-A single identity can be linked to multiple providers. For example, a user might authenticate with both Google OIDC and a local password — both resolve to the same identity.
-
-Each link is tracked by provider and external ID using a namespaced format (`oidc:google`, `oidc:okta`) so multiple OIDC providers coexist without collision.
-
-## API Key Strategy
-
-Long-lived credentials for machine-to-machine access. API keys bypass the interactive login flow, making them suitable for CI/CD pipelines, scripts, and service integrations.
-
-```bash
-# Authenticate with an API key
-POST /auth/login
-{
-  "api_key": "raisin_key_abc123..."
-}
-```
-
-## One-Time Token Strategy
-
-Short-lived, single-use tokens for specific purposes:
-
-- **Email verification** — confirm a user's email address
-- **Password reset** — allow a user to set a new password
-- **Workspace invitations** — invite a user to join a workspace
-
-These tokens expire quickly and can only be used once.
-
-## Session Management
-
-Every successful authentication creates a server-side session. Sessions are the ground truth for whether a user is logged in — even if a JWT hasn't expired, the middleware checks that the session hasn't been revoked.
-
-### JWT Token Pair
-
-Authentication produces two tokens:
+## Tokens
 
 | Token | Lifetime | Purpose |
 |-------|----------|---------|
-| **Access token** | 1 hour | Short-lived JWT for API requests. Validated on every request. |
-| **Refresh token** | 30 days | Long-lived token for obtaining new access tokens without re-authentication. |
+| Access token | 1 hour | Sent as `Authorization: Bearer ...` on every request |
+| Refresh token | 30 days | Exchanged for a new pair with `POST /auth/refresh` |
 
-### Token Claims
+Access-token claims:
 
-The access token carries:
-
-| Claim | Purpose |
+| Claim | Meaning |
 |-------|---------|
-| `sub` | Identity ID |
-| `email` | User's email |
-| `tenant_id` | Tenant scope |
-| `sid` | Session ID |
-| `auth_strategy` | Which strategy produced this token (`local`, `oidc:google`, etc.) |
-| `auth_time` | When the user last actively authenticated (for sudo mode) |
-| `global_flags` | Tenant-wide flags (is_tenant_admin, email_verified, must_change_password) |
-| `home` | User's home path in the repository |
+| `sub` | Identity id |
+| `email` | Email address |
+| `tenant_id` | Tenant |
+| `repository` | The repository the token was issued for (repo-scoped routes only) |
+| `home` | Path of the user node in that repository |
+| `sid` | Session id |
+| `auth_strategy` | `local` or `magic_link` |
+| `auth_time` | When the user last entered credentials |
+| `global_flags` | `is_tenant_admin`, `email_verified`, `must_change_password` |
+| `token_type` | `{"type":"access"}` |
+| `exp`, `iat`, `nbf`, `jti`, `iss` | Standard JWT claims; `iss` is `raisindb` |
 
-**Workspace permissions are not stored in the JWT.** They are resolved per-request via an LRU cache, keeping tokens small and permissions always fresh. See [Roles and Permissions](./roles-and-permissions.md).
+Roles and permissions are not in the token. They are resolved from the user
+node on each request and cached for five minutes, so a token stays small and
+a role change does not require a new login.
 
-### Refresh Token Rotation
-
-By default, each use of a refresh token issues a new refresh token and invalidates the old one. If a previously-used refresh token is presented again (indicating theft), the entire token family is revoked, forcing re-authentication on all devices.
-
-```bash
-# Refresh an access token
-POST /auth/refresh
-{ "refresh_token": "eyJhbG..." }
-```
-
-### Session Limits
-
-The `max_sessions_per_user` setting (default: 10) caps concurrent sessions. When the limit is reached, the oldest session is revoked.
-
-### Listing and Revoking Sessions
+### Refreshing
 
 ```bash
-# List all sessions for the current user
-GET /auth/sessions
-
-# Revoke a specific session
-DELETE /auth/sessions/{session_id}
-
-# Logout (revoke current session)
-POST /auth/logout
+curl -X POST localhost:8090/auth/refresh \
+  -H 'content-type: application/json' \
+  -d '{"refresh_token":"eyJ..."}'
 ```
 
-## Tenant-Level Configuration
+The response has the same shape as login. Each refresh rotates the refresh
+token: the old one is invalidated and the new one carries the next
+`generation`. Presenting an already-used refresh token revokes the whole
+session (`401`, code `TOKEN_REUSE_DETECTED`), so a stolen token cannot be
+replayed.
 
-Each tenant configures authentication independently. The full configuration:
+Note that `expires_at` is in milliseconds on login and register but in
+seconds on refresh. Read `exp` from the access token itself if you need a
+reliable expiry.
 
-```yaml
-auth:
-  session_duration_hours: 24
-  refresh_token_duration_days: 30
-  max_sessions_per_user: 10
-  sudo_threshold_seconds: 300
-  rotate_refresh_tokens: true
-  revoke_on_reuse_detection: true
-  audit_enabled: true
-  anonymous_enabled: false
+### Expired tokens on read endpoints
 
-  password_policy:
-    min_length: 8
-    max_length: 128
-    require_uppercase: true
-    require_lowercase: true
-    require_digit: true
-    require_special: true
+Endpoints that allow anonymous access, including `POST /api/sql/{repo}`,
+treat an expired or otherwise unusable token as an anonymous caller. A query
+then returns whatever the anonymous role may see, usually zero rows with a
+`200`, rather than a `401`. Refresh before the access token expires.
 
-  magic_link:
-    enabled: true
-    expiration_minutes: 15
+## Changing a password
 
-  rate_limiting:
-    max_attempts_per_minute: 10
-    lockout_duration_minutes: 30
-    lockout_threshold: 5
+```bash
+curl -X POST localhost:8090/auth/change-password \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'content-type: application/json' \
+  -d '{"old_password":"...","new_password":"..."}'
 ```
 
-### Rate Limiting
+Returns `204`.
 
-Authentication attempts are rate-limited per tenant to prevent brute-force attacks:
+## Magic links
 
-- `max_attempts_per_minute` — throttle for authentication attempts
-- `lockout_threshold` — number of failures before account lockout
-- `lockout_duration_minutes` — how long the lockout lasts
+Passwordless sign-in sends a one-time link by email. It needs outbound email
+configured with a `base_url` and a default provider; see
+[Outbound Email](./outbound-email.md). Until then the request returns `503`
+with code `EMAIL_NOT_CONFIGURED`.
 
-## Auth Middleware
+```bash
+# 1. Request a link (always answers the same way, so it does not reveal whether the address exists)
+curl -X POST localhost:8090/auth/myrepo/magic-link \
+  -H 'content-type: application/json' \
+  -d '{"email":"jane@example.com","redirect_url":"https://app.example.com/after-login"}'
+# {"message":"If that address has an account, a sign-in link is on its way.","masked_email":"...","expires_in_minutes":15}
 
-The HTTP transport uses two middleware variants:
+# 2. The link in the email points at
+GET /auth/myrepo/magic-link/verify?token=<one-time-token>
+# which redirects to redirect_url (default: base_url) with the token pair in the URL fragment.
+```
 
-- **`require_auth`** — validates the JWT, checks the session is active, injects auth claims. Returns `401` if unauthenticated.
-- **`optional_auth`** — same validation when a token is present, but allows anonymous access if no token is provided. Used for public content endpoints.
+`redirect_url` must sit under the configured `base_url` or match an entry of
+the email config's `redirect_allowlist`. Requests are limited to 5 per
+address per 15 minutes and 20 per IP per hour. The link is rendered and sent
+by the built-in `send-magic-link` function.
 
-Both support **dual JWT validation** — accepting tokens signed by either the tenant's user key or the admin key.
+## Tenant configuration
 
-### Admin Impersonation
+Tenant-level settings are read and written by a tenant admin at
+`GET` and `PUT /api/tenants/{tenant}/auth/config`:
 
-Admins can impersonate users via the `X-Raisin-Impersonate` header for debugging. Impersonation tokens record the original admin's identity for audit purposes.
+```json
+{
+  "tenant_id": "default",
+  "local_auth": {"enabled": true},
+  "magic_link": {"enabled": true, "token_ttl_minutes": 15},
+  "password_policy": {"min_length": 12, "require_uppercase": true, "require_lowercase": true,
+                      "require_numbers": true, "require_special": false, "max_age_days": null},
+  "session_settings": {"duration_hours": 1, "refresh_token_duration_days": 30,
+                       "max_sessions_per_user": 10, "single_session_mode": false},
+  "access_settings": {"allow_access_requests": true, "allow_invitations": true,
+                      "require_approval": true, "default_roles": ["viewer"]},
+  "anonymous_enabled": false,
+  "cors_allowed_origins": []
+}
+```
 
-## API Reference
+`PUT` takes the same document; every top-level key is optional, but a nested
+object must be complete. In this release the login path applies fixed
+values for password strength, lockout and token lifetimes, so
+`password_policy` and `session_settings` are stored but not yet enforced.
+`anonymous_enabled` and `cors_allowed_origins` are used.
+
+Anonymous access can also be switched per repository through a
+`raisin:RepoAuthConfig` node at `/config/repos/{repo}` in the `raisin:system`
+workspace, which takes precedence over the tenant setting.
+
+The JWT signing key comes from the `JWT_SECRET` environment variable of the
+server.
+
+## Not available in this release
+
+The following routes exist but answer `501 Not Implemented`: `POST
+/auth/logout`, `GET /auth/sessions`, `DELETE /auth/sessions/{id}`, and the
+OIDC routes `GET /auth/oidc/{provider}` and its callback. `GET
+/auth/providers` always reports local and magic-link sign-in and no external
+providers. Sessions end when the refresh token expires or is revoked by reuse
+detection.
+
+## API reference
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/auth/providers` | List available auth providers |
-| `POST` | `/auth/register` | Register with local credentials |
-| `POST` | `/auth/login` | Authenticate with credentials |
-| `POST` | `/auth/magic-link` | Request a magic link |
-| `GET` | `/auth/magic-link/verify` | Verify a magic link token |
-| `GET` | `/auth/oidc/{provider}` | Start OIDC flow |
-| `GET` | `/auth/oidc/{provider}/callback` | Handle OIDC callback |
-| `POST` | `/auth/refresh` | Refresh an access token |
-| `POST` | `/auth/logout` | Logout and revoke session |
-| `GET` | `/auth/sessions` | List user sessions |
-| `DELETE` | `/auth/sessions/{id}` | Revoke a session |
-| `GET` | `/auth/me` | Get current identity |
+| `POST` | `/auth/{repo}/register` | Register and provision the user node |
+| `POST` | `/auth/{repo}/login` | Log in, provision the user node if missing |
+| `POST` | `/auth/{repo}/magic-link` | Request a magic link |
+| `GET` | `/auth/{repo}/magic-link/verify` | Complete magic-link sign-in |
+| `GET` | `/auth/{repo}/me` | Identity, roles, home and user node |
+| `POST` | `/auth/register`, `/auth/login`, `/auth/magic-link` | Same without repository scope |
+| `GET` | `/auth/me` | Identity and roles |
+| `POST` | `/auth/refresh` | Rotate the token pair |
+| `POST` | `/auth/change-password` | Change the password (`204`) |
+| `GET` | `/auth/providers` | Sign-in methods |
+| `GET`, `PUT` | `/api/tenants/{tenant}/auth/config` | Tenant settings (tenant admin) |
+| `POST` | `/api/raisindb/sys/{tenant}/auth` | Admin account login |
 
-## Next Steps
+## Next steps
 
-- [Roles and Permissions](./roles-and-permissions.md) — configure workspace-scoped RBAC
-- [Row-Level Security](./row-level-security.md) — enforce fine-grained access at query time
+- [Roles and Permissions](./roles-and-permissions.md)
+- [Row-Level Security](./row-level-security.md)
+- [Outbound Email](./outbound-email.md) for magic links

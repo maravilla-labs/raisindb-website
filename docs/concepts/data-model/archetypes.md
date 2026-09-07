@@ -4,269 +4,133 @@ sidebar_position: 3
 
 # Archetypes
 
-An **Archetype** defines HOW data is presented. It bridges raw data and interaction patterns by specifying fields, layout structure, and which ElementTypes are allowed. While a NodeType defines *what* the data is, an archetype defines *how* that data is experienced.
+An **Archetype** describes how a node of a given [NodeType](/docs/concepts/data-model/nodetypes) is edited and rendered. The NodeType says what a node *is* and which properties it stores. The archetype adds a set of editor **fields**, an optional **layout** for those fields, and rules about which [Element types](/docs/concepts/data-model/elements) may be placed inside the node's content. A node names its archetype in the `archetype` column, next to `node_type`.
 
-## What is an Archetype?
+A single NodeType can have several archetypes. A `blog:Article` may be edited as a plain post in one place and as a landing page with hero and text blocks in another. The stored data is the same; the archetype changes the editing experience and gives the validator a richer schema to check content against.
 
-An archetype is a UX structural template that extends a [NodeType](/docs/concepts/data-model/nodetypes). It specifies:
-
-- **Fields** — Which properties are exposed and how they're configured
-- **Layout** — The structural arrangement of content areas
-- **Allowed ElementTypes** — Which UI building blocks can be used
-- **Inheritance** — Archetypes can extend other archetypes
-- **Strictness** — Whether only declared fields are permitted
+## What an archetype contains
 
 ```yaml
-name: landing-page
-extends: base-page
-base_node_type: page
+name: arch:LandingPage
+title: Landing Page
+base_node_type: blog:Article
 fields:
-  - name: title
-    type: string
+  - $type: TextField
+    name: title
     required: true
-  - name: hero_image
-    type: media
-  - name: sections
-    type: children
+  - $type: TextField
+    name: subtitle
+  - $type: SectionField
+    name: sections
     allowed_element_types:
-      - hero-section
-      - feature-grid
-      - text-block
-      - cta-banner
+      - arch:Hero
+      - arch:TextBlock
 layout:
-  - type: stack
-    direction: vertical
+  - type: container
+    direction: Vertical
     children:
-      - field: hero_image
-      - field: sections
-strict: true
+      - type: field
+        name: title
+      - type: field
+        name: subtitle
+        width: 50%
+      - type: field
+        name: sections
+publishable: true
 ```
 
-## Archetype vs NodeType vs Mixin
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | string | Identifier, conventionally `namespace:Name` |
+| `extends` | string | Parent archetype whose fields, layout and `strict` are inherited |
+| `base_node_type` | string | The NodeType this archetype applies to. A node using the archetype must have exactly this `node_type` |
+| `title`, `description`, `icon` | string | Editor labels |
+| `fields` | array of field schemas | Editor fields. Same field schema as element types, tagged with `$type` |
+| `layout` | array of layout nodes | How the fields are arranged in the editor |
+| `strict` | bool | When true, a node may only carry properties named in the resolved fields |
+| `publishable` | bool | Set by publishing. Archetypes can be used by nodes whether or not they are published |
+| `initial_content` | object | Stored and returned as-is; the server does not apply it when a node is created |
+| `meta` | map | Free-form data, stored untouched |
 
-These three concepts serve different purposes in the data model:
+The full list of field types (`TextField`, `RichTextField`, `NumberField`, `DateField`, `BooleanField`, `MediaField`, `ReferenceField`, `TagField`, `OptionsField`, `LocationField`, `JsonObjectField`, `CompositeField`, `ElementField`, `SectionField`, `ListingField`) and the layout node types are described on the [Elements](/docs/concepts/data-model/elements) page. The important one for archetypes is `SectionField`: a list of element instances restricted to `allowed_element_types`.
+
+## Archetype, NodeType and mixin
 
 | Concept | Defines | Example |
-|---------|---------|---------|
-| **NodeType** | What this data IS — schema, validation, system behaviors (versionable, indexable) | `page`, `article`, `product` |
-| **Archetype** | How this data is PRESENTED — fields, layout, allowed elements, UX pattern | `landing-page`, `kanban-board`, `article-view` |
-| **Mixin** | Reusable property sets that can be mixed into NodeTypes (the `is_mixin` flag) | `Publishable`, `Taggable`, `SEO` |
+|---|---|---|
+| NodeType | Storage schema and behaviour: property types, `required`, `unique`, indexes, `versionable`, `publishable` | `blog:Article` |
+| Archetype | Editor fields, layout and allowed elements for nodes of one NodeType | `arch:LandingPage` |
+| Mixin | A NodeType with `is_mixin: true` whose properties are merged into other NodeTypes | `raisin:VirtualNode` |
 
-A single NodeType like `page` can have multiple archetypes: one for landing pages, one for kanban boards, one for dashboards. The underlying data is the same — the archetype changes the presentation.
-
-:::tip Archetypes vs Mixins
-Archetypes define presentation patterns (how data is rendered). Mixins define shared property sets (reusable schema fragments). Don't confuse the two — they serve different purposes in the data model.
-:::
-
-## Archetype Structure
-
-An archetype has the following fields:
-
-```yaml
-name: kanban-board
-extends: null                  # Parent archetype (optional)
-base_node_type: page           # The NodeType this archetype applies to
-fields:                        # Field definitions (Vec<FieldSchema>)
-  - name: title
-    type: string
-    required: true
-  - name: columns
-    type: children
-    allowed_element_types:
-      - kanban-column
-  - name: card_template
-    type: reference
-layout:                        # Layout tree (Vec<LayoutNode>)
-  - type: header
-    children:
-      - field: title
-  - type: stack
-    direction: horizontal
-    children:
-      - field: columns
-strict: true                   # Only declared fields allowed
-```
-
-### Key Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | string | Unique identifier for the archetype |
-| `extends` | string? | Parent archetype to inherit from |
-| `base_node_type` | string | The NodeType this archetype is built on |
-| `fields` | Vec\<FieldSchema\> | Field definitions with types and constraints |
-| `layout` | Vec\<LayoutNode\> | Hierarchical layout structure for rendering |
-| `strict` | bool | If true, only fields declared in the archetype are allowed |
+Mixins change what a node stores. Archetypes change how it is edited and validated as content. See [Using Mixins](/docs/guides/data-modeling/using-mixins).
 
 ## Inheritance
 
-Archetypes support inheritance via the `extends` field. A child archetype inherits all fields and layout from its parent and can override or add to them.
+An archetype can `extends` another. Resolution walks the chain (parent first), merges fields by name with the child's definition winning, takes the nearest `layout` and the nearest explicit `strict`. The chain is limited to 20 levels and cycles are rejected.
 
-```yaml
-# Parent archetype
-name: base-page
-base_node_type: page
-fields:
-  - name: title
-    type: string
-    required: true
-  - name: meta_description
-    type: string
-    max_length: 160
-layout:
-  - type: stack
-    direction: vertical
+Ask the server for the merged result rather than merging yourself:
 
----
-
-# Child archetype — inherits title and meta_description
-name: marketing-page
-extends: base-page
-fields:
-  - name: hero
-    type: children
-    allowed_element_types:
-      - hero-section
-  - name: cta_text
-    type: string
+```bash
+curl -s localhost:8090/api/management/docs-model/main/archetypes/arch:CampaignPage/resolved \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-**Field merging rules:**
-- Child fields are merged with parent fields
-- If a child declares a field with the same name as the parent, the child's definition wins
-- Inheritance chains can go up to **20 levels deep**
-
-### Resolving the merged result
-
-You don't have to merge `extends` chains yourself. Both the [HTTP API](/docs/reference/http-api/nodetypes-api) and the [JavaScript client](/docs/reference/javascript-client/schema-management) expose a **resolved** view that returns the archetype with the full inheritance chain already merged:
-
-```typescript
-const resolved = await db.archetypes().getResolved('marketing-page');
-// { archetype, resolved_fields, resolved_layout, inheritance_chain, resolved_strict }
+```json
+{
+  "archetype": { "name": "arch:CampaignPage", "extends": "arch:LandingPage", "fields": [ ... ], "version": 1 },
+  "resolved_fields": [
+    { "$type": "DateField", "name": "ends_on", "config": { "date_mode": "Date" } },
+    { "$type": "SectionField", "name": "sections", "allowed_element_types": ["arch:Hero", "arch:TextBlock"] },
+    { "$type": "TextField", "name": "subtitle", "required": true },
+    { "$type": "TextField", "name": "title", "required": true }
+  ],
+  "resolved_layout": [ { "type": "container", "direction": "Vertical", "children": [ ... ] } ],
+  "inheritance_chain": ["arch:CampaignPage", "arch:LandingPage"],
+  "resolved_strict": true
+}
 ```
 
-The same `getResolved()` is available for NodeTypes and ElementTypes. Because schemas are **per-branch**, resolution runs against the database's branch — use `db.onBranch('staging')` to resolve on another branch. See [Schema Management](/docs/reference/javascript-client/schema-management) for details.
+Here `arch:CampaignPage` added `ends_on`, made `subtitle` required, and inherited `sections`, `title`, the layout and `strict` from `arch:LandingPage`. `resolved_fields` is sorted by name.
 
-## Examples
+The JavaScript client exposes the same view as `db.archetypes().getResolved(name)`. Schemas are stored per branch, so `db.onBranch('staging')` resolves against another branch.
 
-### Landing Page Archetype
+## What the server validates
 
-```yaml
-name: landing-page
-extends: base-page
-base_node_type: page
-fields:
-  - name: title
-    type: string
-    required: true
-  - name: subtitle
-    type: string
-  - name: hero_image
-    type: media
-  - name: sections
-    type: children
-    allowed_element_types:
-      - hero-section
-      - feature-grid
-      - text-block
-      - testimonial-carousel
-      - cta-banner
-layout:
-  - type: stack
-    direction: vertical
-    children:
-      - field: hero_image
-      - field: title
-      - field: subtitle
-      - field: sections
-strict: true
+When a node carries an `archetype`, the write is checked against the resolved archetype in addition to the NodeType rules:
+
+- `base_node_type` must equal the node's `node_type`.
+- Every field with `required: true` must be present in `properties`.
+- A `SectionField` value must be a list of elements whose `element_type` is in `allowed_element_types`, and each element is validated against its element type (required fields, strict mode).
+- An `ElementField` value must be an element of the declared `element_type`.
+- With `strict: true`, any property not named in the resolved fields is rejected.
+
+Examples of the errors, as returned by `POST /api/repository/{repo}/{branch}/head/{ws}/`:
+
+```json
+{"code":"VALIDATION_FAILED","message":"Archetype 'arch:LandingPage' is only valid for node type 'blog:Article', but node '' uses 'blog:Author'"}
+{"code":"VALIDATION_FAILED","message":"Element type 'blog:Nope' is not allowed in field 'archetype 'arch:LandingPage'.sections'"}
+{"code":"VALIDATION_FAILED","message":"Missing required field 'heading' at archetype 'arch:LandingPage'.sections[0]"}
 ```
 
-### Kanban Board Archetype
+Field-level settings such as `max_length` or `min_value` live in each field's `config` and are editor hints. The server does not enforce them.
 
-```yaml
-name: kanban-board
-extends: base-page
-base_node_type: page
-fields:
-  - name: title
-    type: string
-    required: true
-  - name: columns
-    type: children
-    allowed_element_types:
-      - kanban-column
-  - name: default_card_type
-    type: string
-layout:
-  - type: header
-    children:
-      - field: title
-  - type: stack
-    direction: horizontal
-    scroll: true
-    children:
-      - field: columns
-strict: true
-```
+:::note Strict archetypes over HTTP
+The server stamps the reserved `$mixins` and `$supertypes` properties on every node before the archetype check runs, and the strict check does not exempt them. A `strict: true` archetype therefore currently rejects every node written through the REST API with `Undefined property '$mixins' in strict archetype ...`. Use `strict` on element types, or leave the archetype non-strict, until this is resolved.
+:::
 
-### Article View Archetype
+## Switching archetypes
 
-```yaml
-name: article-view
-extends: base-page
-base_node_type: article
-fields:
-  - name: title
-    type: string
-    required: true
-  - name: author
-    type: reference
-  - name: published_at
-    type: datetime
-  - name: body
-    type: richtext
-  - name: sidebar_elements
-    type: children
-    allowed_element_types:
-      - author-card
-      - related-articles
-      - table-of-contents
-layout:
-  - type: grid
-    columns: [3, 1]
-    children:
-      - type: stack
-        children:
-          - field: title
-          - field: author
-          - field: body
-      - type: stack
-        children:
-          - field: sidebar_elements
-strict: false
-```
+Because the archetype is just a column on the node, changing it is an ordinary update. A `blog:Article` written with `arch:LandingPage` can be re-saved with `arch:CampaignPage`; the properties stay where they are and the next write is validated against the new archetype. This is what lets one data model serve different editors and front ends. See [DCAD](/docs/concepts/dcad).
 
-## Switching Archetypes
+## Where archetypes live
 
-This is the power move of [DCAD](/docs/concepts/dcad): the same node can use different archetypes to produce entirely different user experiences — without changing the underlying data.
+- **HTTP**: `/api/management/{repo}/{branch}/archetypes` with the same verbs as NodeTypes. Bodies are wrapped as `{"archetype": {...}}`. See [Using Archetypes](/docs/guides/data-modeling/using-archetypes).
+- **Packages**: one YAML file per archetype under `package/archetypes/`, installed with the package.
+- **SQL**: `CREATE ARCHETYPE 'arch:Post' BASE_NODE_TYPE 'blog:Article' TITLE 'Post' PUBLISHABLE` creates the record and `DROP ARCHETYPE 'arch:Post'` removes it. The `FIELDS (...)` clause is parsed but not stored, so define fields over HTTP or YAML.
 
-A `page` node at `/content/home` with a `landing-page` archetype renders as a marketing page with hero sections and CTAs. Switch it to `kanban-board`, and the same node renders as a project board with columns and cards.
+## Next steps
 
-The data doesn't change. The archetype changes. The UI follows.
-
-This enables:
-- **A/B testing** — swap archetypes to test different layouts
-- **Role-based views** — editors see a form view, visitors see a published view
-- **Progressive redesigns** — change the presentation without migrating data
-
-## Relationship to DCAD
-
-Archetypes are the core mechanism that makes [Data-Centric Application Design](/docs/concepts/dcad) possible. They are the bridge between the data layer (Nodes, NodeTypes) and the presentation layer (ElementTypes, UI components). By separating *what data is* from *how it's presented*, archetypes enable the schema-driven, AI-native application architecture that DCAD describes.
-
-## Next Steps
-
-- **[DCAD](/docs/concepts/dcad)** — Understand the paradigm archetypes enable
-- **[NodeTypes](/docs/concepts/data-model/nodetypes)** — The base classifications archetypes extend
-- **[Elements](/docs/concepts/data-model/elements)** — The UI building blocks archetypes contain
-- **[Nodes](/docs/concepts/data-model/nodes)** — The data instances that use archetypes
+- [Elements](/docs/concepts/data-model/elements) for the field and element type reference
+- [Using Archetypes](/docs/guides/data-modeling/using-archetypes) for the step-by-step guide
+- [NodeTypes](/docs/concepts/data-model/nodetypes) for the storage schema an archetype sits on
+- [DCAD](/docs/concepts/dcad) for the design approach behind archetypes

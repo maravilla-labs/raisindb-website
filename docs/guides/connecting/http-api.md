@@ -4,516 +4,310 @@ sidebar_position: 2
 
 # REST API Access
 
-Use RaisinDB's REST API for full control over nodes, types, and graph operations.
+Use the HTTP API to read and write nodes, run queries and SQL, search, and manage repositories and workspaces. Everything below was run against a local server; the responses are trimmed but otherwise verbatim.
 
 ## Base URL
 
 ```
-http://localhost:8080/api
+http://localhost:8080
 ```
+
+Most routes live under `/api`. Identity (end-user) auth lives under `/auth`, and static-site serving under `/resources`.
 
 ## Authentication
 
-All API requests require authentication via one of these methods:
-
-### Bearer Token
+Send a bearer token on every request:
 
 ```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-  http://localhost:8080/api/repositories
+curl http://localhost:8080/api/repositories \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### API Key Header
+Two kinds of token are accepted in that header:
+
+- **A login token (JWT)** from the admin login endpoint below, or from an identity login (`/auth/{repo}/login`).
+- **An API key** (`raisin_...`), created once and used long-term. API keys work on content, query, SQL and repository routes. The profile routes under `/api/raisindb/me` require a login token.
+
+There is no separate API-key header.
+
+### Log in as an admin user
 
 ```bash
-curl -H "X-API-Key: YOUR_API_KEY" \
-  http://localhost:8080/api/repositories
-```
-
-### Login to Get Token
-
-```bash
-curl -X POST http://localhost:8080/api/raisindb/sys/default/auth \
+curl -s -X POST http://localhost:8080/api/raisindb/sys/default/auth \
   -H "Content-Type: application/json" \
-  -d '{
-    "username": "admin",
-    "password": "your-password"
-  }'
+  -d '{"username":"admin","password":"your-password"}'
 ```
-
-Response:
 
 ```json
 {
-  "access_token": "eyJhbGc...",
-  "refresh_token": "eyJhbGc...",
-  "token_type": "Bearer",
-  "expires_in": 3600
+  "token": "eyJ0eXAiOiJKV1QiLCJhbGc...",
+  "user_id": "b86457ac-7c3c-4c5b-80f3-2ab2ab724bd3",
+  "username": "admin",
+  "must_change_password": true,
+  "expires_at": 1788805990,
+  "access_flags": {"console_login": true, "cli_access": true, "api_access": true, "pgwire_access": false, "can_impersonate": false}
 }
 ```
 
-## Node Operations
+`default` is the tenant id. The token expires at `expires_at` (Unix seconds); log in again to get a new one.
 
-### Create a Node
-
-```bash
-curl -X POST \
-  http://localhost:8080/api/repository/myapp/main/head/content/articles/hello-world \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "node_type": "Article",
-    "properties": {
-      "title": "Hello World",
-      "status": "draft",
-      "author": "John Doe"
-    }
-  }'
-```
-
-### Get a Node
+### Create an API key
 
 ```bash
-curl http://localhost:8080/api/repository/myapp/main/head/content/articles/hello-world \
-  -H "Authorization: Bearer YOUR_TOKEN"
+curl -s -X POST http://localhost:8080/api/raisindb/me/api-keys \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"ci"}'
 ```
 
-Response:
+```json
+{"key": {"key_id": "047b191d-...", "name": "ci", "key_prefix": "raisin_DV2vMEwAg", "created_at": "...", "last_used_at": null, "is_active": true},
+ "token": "raisin_DV2vMEwAg6tuRqDoLbx0z8f2wrupeB4e"}
+```
+
+The `token` is shown once. See the [Authentication API](../../reference/http-api/authentication.md) for identity (end-user) login, registration, magic links and OIDC.
+
+## Node operations
+
+Content routes have the shape `/api/repository/{repo}/{branch}/head/{workspace}/{path}`. `head` means the current state of the branch; replace it with `rev/{revision}` to read an older state.
+
+The examples use repository `myapp`, branch `main` and a workspace `content` that allows `raisin:Folder` and `raisin:Page`.
+
+### Create a node
+
+`POST` to the **parent** path with the new node's `name`, `node_type` and `properties`. To create at the workspace root, post to `.../content/`.
+
+```bash
+curl -s -X POST http://localhost:8080/api/repository/myapp/main/head/content/ \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"articles","node_type":"raisin:Folder","properties":{"title":"Articles"}}'
+
+curl -s -X POST http://localhost:8080/api/repository/myapp/main/head/content/articles \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"hello-world","node_type":"raisin:Page","properties":{"title":"Hello World","status":"draft"}}'
+```
+
+The second call returns `201` with the node wrapped in a commit envelope:
 
 ```json
 {
-  "id": "01HQRS4T8K...",
-  "node_type": "Article",
-  "path": "/articles/hello-world",
-  "properties": {
-    "title": "Hello World",
-    "status": "draft",
-    "author": "John Doe"
+  "node": {
+    "id": "fzpbHQs6kHJjK246z4n6a",
+    "name": "hello-world",
+    "path": "/articles/hello-world",
+    "node_type": "raisin:Page",
+    "archetype": null,
+    "properties": {"title": "Hello World", "status": "draft"},
+    "parent": "articles",
+    "version": 1,
+    "created_at": "2026-09-06T18:33:43.132065Z",
+    "updated_at": "2026-09-06T18:33:43.132065Z",
+    "created_by": "system",
+    "updated_by": "system",
+    "relations": []
   },
-  "created_at": "2024-01-15T10:30:00Z",
-  "updated_at": "2024-01-15T10:30:00Z",
-  "version": 1
+  "revision": "1788719623132-0",
+  "committed": true
 }
 ```
 
-### Update a Node
+A root-level `POST` returns the bare node object. Optionally add `"commit": {"message": "...", "actor": "..."}` to the body to record a commit message and actor on the revision.
+
+### Get a node
 
 ```bash
-curl -X PUT \
-  http://localhost:8080/api/repository/myapp/main/head/content/articles/hello-world \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "properties": {
-      "status": "published"
-    }
-  }'
+curl -s http://localhost:8080/api/repository/myapp/main/head/content/articles/hello-world \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-### Delete a Node
+Returns the node object. Reads add two bookkeeping properties, `$supertypes` and `$mixins`, alongside your own.
+
+Useful query parameters on `GET`:
+
+| Parameter | Effect |
+|-----------|--------|
+| `level=1` | Return the node's children instead of the node itself (`level=2` for two levels, and so on) |
+| `deep=true` | Return the whole subtree |
+| `format=array` | Children as an array instead of a map |
+| `cursor`, `limit` | Keyset pagination of a listing (`limit` default 100, max 1000) |
+| `lang=de` | Resolve translated properties for a locale |
+| `command=download` / `command=display` | Stream the bytes of an asset node |
+
+`GET .../content/` (trailing slash) lists the workspace root.
+
+### Update a node
+
+`PUT` replaces the node's `properties` with the body's `properties`. Send the full set you want to keep.
 
 ```bash
-curl -X DELETE \
-  http://localhost:8080/api/repository/myapp/main/head/content/articles/hello-world \
-  -H "Authorization: Bearer YOUR_TOKEN"
+curl -s -X PUT http://localhost:8080/api/repository/myapp/main/head/content/articles/hello-world \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"properties":{"title":"Hello World","status":"published"}}'
 ```
 
-### Get Node by ID
+Returns the updated node. To change one property, address it with `@`:
 
 ```bash
-curl http://localhost:8080/api/repository/myapp/main/head/content/$ref/01HQRS4T8K... \
-  -H "Authorization: Bearer YOUR_TOKEN"
+curl -s -X PUT http://localhost:8080/api/repository/myapp/main/head/content/articles/hello-world@title \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '"Hello Again"'
+# {"status":"property updated"}
+
+curl -s http://localhost:8080/api/repository/myapp/main/head/content/articles/hello-world@title \
+  -H "Authorization: Bearer $TOKEN"
+# "Hello Again"
 ```
 
-## Query Nodes
-
-### JSON Query
+### Delete a node
 
 ```bash
-curl -X POST \
-  http://localhost:8080/api/repository/myapp/main/head/content/query \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "filter": {
-      "node_type": "Article",
-      "properties.status": "published"
-    },
-    "limit": 10,
-    "offset": 0
-  }'
+curl -s -X DELETE http://localhost:8080/api/repository/myapp/main/head/content/articles/hello-world \
+  -H "Authorization: Bearer $TOKEN"
+# {"deleted":true}
 ```
 
-Response:
+### Get a node by id
+
+```bash
+curl -s 'http://localhost:8080/api/repository/myapp/main/head/content/$ref/fzpbHQs6kHJjK246z4n6a' \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### Read an earlier revision
+
+Every write produces a revision id such as `1788719623132-0`. Read the node as it was then:
+
+```bash
+curl -s http://localhost:8080/api/repository/myapp/main/rev/1788719623132-0/content/articles/hello-world \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Repository-wide revision listings are under `/api/management/repositories/{tenant}/{repo}/revisions`; see the [Branches API](../../reference/http-api/branches-api.md).
+
+## Query nodes
+
+### Simple JSON query
+
+`POST .../{workspace}/query` with exactly one of `nodeType`, `parent` (a parent node **id**) or `path`, plus optional `limit` and `offset`:
+
+```bash
+curl -s -X POST http://localhost:8080/api/repository/myapp/main/head/content/query \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"nodeType":"raisin:Page","limit":10}'
+```
 
 ```json
 {
-  "nodes": [
-    {
-      "id": "01HQRS4T8K...",
-      "node_type": "Article",
-      "path": "/articles/hello-world",
-      "properties": {
-        "title": "Hello World",
-        "status": "published"
-      }
-    }
-  ],
-  "total": 1,
-  "limit": 10,
-  "offset": 0
+  "items": [ { "id": "fzpbHQs6kHJjK246z4n6a", "path": "/articles/hello-world", "node_type": "raisin:Page", "properties": {...} } ],
+  "page": {"total": 1, "limit": 10, "offset": 0, "nextOffset": null}
 }
 ```
 
-### Advanced Filtering
+Results are sorted by path. For anything more than a type or parent filter, use SQL.
+
+### SQL
+
+`POST /api/sql/{repo}` (branch `main`) or `POST /api/sql/{repo}/{branch}`. The workspace is the table, quoted as a string. Parameters are `$1`, `$2`, ... in `params`.
 
 ```bash
-curl -X POST \
-  http://localhost:8080/api/repository/myapp/main/head/content/query \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "filter": {
-      "node_type": "Article",
-      "properties.views": { "$gt": 1000 },
-      "properties.tags": { "$contains": "technology" }
-    },
-    "sort": [
-      { "field": "properties.views", "order": "desc" }
-    ],
-    "limit": 20
-  }'
+curl -s -X POST http://localhost:8080/api/sql/myapp \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"sql":"SELECT id, path, properties->>'"'"'title'"'"' AS title FROM '"'"'content'"'"' WHERE node_type = $1","params":["raisin:Page"]}'
 ```
-
-## SQL Execution
-
-### Execute SQL Query
-
-```bash
-curl -X POST http://localhost:8080/api/sql/myapp \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "SELECT * FROM nodes WHERE node_type = $1 LIMIT $2",
-    "params": ["Article", 10]
-  }'
-```
-
-Response:
 
 ```json
 {
-  "columns": ["id", "node_type", "path", "properties"],
-  "rows": [
-    ["01HQRS4T8K...", "Article", "/articles/hello-world", {...}]
-  ],
-  "row_count": 1
+  "columns": ["id", "path", "title"],
+  "rows": [{"id": "fzpbHQs6kHJjK246z4n6a", "path": "/articles/hello-world", "title": "Hello World"}],
+  "row_count": 1,
+  "execution_time_ms": 4
 }
 ```
 
-### Execute SQL with Branch
+Rows are objects keyed by column name. Writes work the same way and report `affected_rows`:
 
 ```bash
-curl -X POST http://localhost:8080/api/sql/myapp/feature-branch \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "SELECT * FROM nodes WHERE node_type = '\''Article'\''"
-  }'
+curl -s -X POST http://localhost:8080/api/sql/myapp \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"sql\":\"INSERT INTO 'content' (path, node_type, name, properties) VALUES ('/articles/second','raisin:Page','second','{\\\"title\\\":\\\"Second\\\"}'::jsonb)\"}"
+# {"columns":["affected_rows"],"rows":[{"affected_rows":1}],"row_count":1,"execution_time_ms":2}
 ```
 
-## Full-Text Search
-
-```bash
-curl -X POST \
-  http://localhost:8080/api/repository/myapp/main/fulltext/search \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "query": "raisindb graph database",
-    "workspace": "content",
-    "limit": 10
-  }'
-```
-
-Response:
+A syntax error returns `400`:
 
 ```json
-{
-  "results": [
-    {
-      "node": {
-        "id": "01HQRS4T8K...",
-        "path": "/articles/intro-to-raisindb",
-        "properties": {
-          "title": "Introduction to RaisinDB"
-        }
-      },
-      "score": 0.95,
-      "highlights": {
-        "content": ["...the <em>RaisinDB graph database</em>..."]
-      }
-    }
-  ],
-  "total": 1
-}
+{"code":"VALIDATION_FAILED","message":"Failed to execute SQL query: ... Expected: an SQL statement, found: SELEC at Line: 1, Column: 1","timestamp":"..."}
 ```
 
-## Time Travel (Revisions)
+See the [SQL Reference](../../reference/sql/overview.md) for the language.
 
-### Get Node at Specific Revision
+### Full-text search
 
 ```bash
-curl http://localhost:8080/api/repository/myapp/main/rev/01HQRS4T8K.../content/articles/hello-world \
-  -H "Authorization: Bearer YOUR_TOKEN"
+curl -s -X POST http://localhost:8080/api/repository/myapp/main/fulltext/search \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"query":"hello","workspace":"content","limit":10}'
 ```
-
-### List Revisions
-
-```bash
-curl http://localhost:8080/api/management/repositories/default/myapp/revisions \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
-
-Response:
 
 ```json
-{
-  "revisions": [
-    {
-      "id": "01HQRS4T8K...",
-      "timestamp": "2024-01-15T10:30:00Z",
-      "author": "admin",
-      "message": "Initial commit",
-      "parent": null
-    }
-  ]
-}
+[{"node_id":"fzpbHQs6kHJjK246z4n6a","workspace_id":"content","name":"hello-world","path":"/articles/hello-world","node_type":"raisin:Page","score":16.795317}]
 ```
 
-## NodeType Management
+Optional fields: `language`, `shape_type`. Omit `workspace` to search the whole branch. Hybrid (text + vector) search is `FULLTEXT_SEARCH` / `HYBRID_SEARCH` in SQL, see [Full-Text Search](../querying/full-text-search.md).
 
-### Create NodeType
+## Repositories and workspaces
 
 ```bash
-curl -X POST \
-  http://localhost:8080/api/management/myapp/main/nodetypes \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "BlogPost",
-    "label": "Blog Post",
-    "description": "A blog post article",
-    "element_types": {
-      "title": {
-        "label": "Title",
-        "type": "text",
-        "required": true
-      },
-      "content": {
-        "label": "Content",
-        "type": "richtext",
-        "required": true
-      },
-      "author": {
-        "label": "Author",
-        "type": "text"
-      }
-    }
-  }'
+# repositories
+curl -s http://localhost:8080/api/repositories -H "Authorization: Bearer $TOKEN"
+curl -s -X POST http://localhost:8080/api/repositories \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"repo_id":"myapp","description":"My app","default_branch":"main","default_language":"en"}'
+curl -s http://localhost:8080/api/repositories/myapp -H "Authorization: Bearer $TOKEN"
+
+# workspaces
+curl -s http://localhost:8080/api/workspaces/myapp -H "Authorization: Bearer $TOKEN"
+curl -s -X PUT http://localhost:8080/api/workspaces/myapp/content \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"content","description":"Site content","allowed_node_types":["raisin:Folder","raisin:Page","raisin:Asset"],"allowed_root_node_types":["raisin:Folder","raisin:Page"]}'
 ```
 
-### List NodeTypes
+A new repository comes with a `default` workspace and a `functions` workspace. `PUT /api/workspaces/{repo}/{name}` creates or updates a workspace; `GET /api/workspaces/{repo}/{name}` returns it, including `allowed_node_types`, `allowed_root_node_types` and `config`.
 
-```bash
-curl http://localhost:8080/api/management/myapp/main/nodetypes \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
+## Files and assets
 
-### Get NodeType
+- **Upload** binary content with the resumable upload endpoints (`POST /api/uploads`, then `PATCH` chunks, then `.../complete`). See [Uploads](../../reference/javascript-client/uploads.md#http-endpoints) for the HTTP sequence.
+- **Download** an asset node's bytes with `GET .../{path}?command=download` (or `command=display` for inline), or `GET .../{path}@file`.
+- **Signed URLs**: `POST .../{path}/raisin:sign` with `{"command":"download","expires_in":600}` returns a URL that works without a token until it expires.
+- **Static sites**: `GET /resources/{repo}/{branch}/{ws}/{path}` serves a subtree like a file server. See the [Resource Serving API](../../reference/http-api/resource-serving-api.md).
 
-```bash
-curl http://localhost:8080/api/management/myapp/main/nodetypes/BlogPost \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
+## Other surfaces
 
-### Update NodeType
+| Area | Routes | Reference |
+|------|--------|-----------|
+| NodeTypes, archetypes, element types, mixins | `/api/management/{repo}/{branch}/nodetypes` etc. | [NodeTypes API](../../reference/http-api/nodetypes-api.md) |
+| Branches, tags, revisions | `/api/management/repositories/{tenant}/{repo}/branches` etc. | [Branches API](../../reference/http-api/branches-api.md) |
+| Functions and flows | `/api/functions/{repo}/{name}/invoke`, `/api/flows/{repo}/run` | [Functions API](../../reference/http-api/functions-api.md) |
+| Packages | `POST /api/repos/{repo}/packages/upload`, `/api/packages/{repo}/{branch}/head/{path}` | [Packages](../packages/creating-packages.md) |
+| Locks and inventory | `/api/{repo}/{branch}/locks/*`, `/inventory/*` | [Locks API](../../reference/http-api/locks-api.md) |
+| Secrets | `/api/secrets/{repo}/{branch}` | [Secrets](../../concepts/secrets.md) |
+| MCP | `/mcp/{repo}/{branch}/{slug}` | [MCP API](../../reference/http-api/mcp-api.md) |
 
-```bash
-curl -X PUT \
-  http://localhost:8080/api/management/myapp/main/nodetypes/BlogPost \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "element_types": {
-      "published_date": {
-        "label": "Published Date",
-        "type": "date"
-      }
-    }
-  }'
-```
+## Errors
 
-## Branch Management
-
-### Create Branch
-
-```bash
-curl -X POST \
-  http://localhost:8080/api/management/repositories/default/myapp/branches \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "feature-xyz",
-    "from_branch": "main",
-    "description": "Feature XYZ development"
-  }'
-```
-
-### List Branches
-
-```bash
-curl http://localhost:8080/api/management/repositories/default/myapp/branches \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
-
-### Merge Branches
-
-```bash
-curl -X POST \
-  http://localhost:8080/api/management/repositories/default/myapp/branches/main/merge \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "source_branch": "feature-xyz",
-    "strategy": "fast-forward"
-  }'
-```
-
-## Function Invocation
-
-### Invoke Function
-
-```bash
-curl -X POST \
-  http://localhost:8080/api/functions/myapp/send-welcome-email/invoke \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": "user-123",
-    "email": "user@example.com"
-  }'
-```
-
-Response:
+Errors carry a machine-readable `code`:
 
 ```json
-{
-  "execution_id": "exec-abc123",
-  "status": "completed",
-  "result": {
-    "success": true,
-    "message_id": "msg-xyz789"
-  },
-  "duration_ms": 145
-}
+{"code":"NODE_NOT_FOUND","message":"Node not found at path: /articles/missing","timestamp":"2026-09-06T18:33:43.183260+00:00"}
 ```
 
-### List Function Executions
+The query endpoints use a shorter form, `{"error":"BadRequest","message":"Provide one of: path, parent, nodeType"}`.
 
-```bash
-curl http://localhost:8080/api/functions/myapp/send-welcome-email/executions \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
+Status codes: `200` OK, `201` created, `400` invalid request or SQL, `401` missing or invalid token, `403` forbidden, `404` not found (also returned for nodes the caller may not read), `409` conflict, `422` body failed to deserialize, `500` server error.
 
-## Package Management
+There is no per-key request rate limit on the API. Magic-link requests are rate limited per email and per IP.
 
-### Upload Package
+## Next steps
 
-```bash
-curl -X POST \
-  http://localhost:8080/api/repository/myapp/main/head/packages/my-package-1.0.0 \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/zip" \
-  --data-binary @my-package-1.0.0.rap
-```
-
-### List Packages
-
-```bash
-curl http://localhost:8080/api/repos/myapp/packages \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
-
-### Install Package
-
-```bash
-curl -X POST \
-  http://localhost:8080/api/repos/myapp/packages/my-package-1.0.0/install \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
-
-## Workspace Management
-
-### List Workspaces
-
-```bash
-curl http://localhost:8080/api/workspaces/myapp \
-  -H "Authorization: Bearer YOUR_TOKEN"
-```
-
-### Create Workspace
-
-```bash
-curl -X PUT \
-  http://localhost:8080/api/workspaces/myapp/products \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "description": "Product catalog workspace",
-    "allowed_node_types": ["Product", "Category"]
-  }'
-```
-
-## Error Handling
-
-API errors return standard HTTP status codes with JSON error details:
-
-```json
-{
-  "error": {
-    "code": "NODE_NOT_FOUND",
-    "message": "Node not found at path: /articles/missing",
-    "details": {
-      "path": "/articles/missing",
-      "workspace": "content"
-    }
-  }
-}
-```
-
-Common status codes:
-- `200` - Success
-- `201` - Created
-- `400` - Bad Request
-- `401` - Unauthorized
-- `403` - Forbidden
-- `404` - Not Found
-- `409` - Conflict
-- `500` - Internal Server Error
-
-## Rate Limiting
-
-API requests are rate-limited per API key:
-
-```
-X-RateLimit-Limit: 1000
-X-RateLimit-Remaining: 999
-X-RateLimit-Reset: 1642348800
-```
-
-## Next Steps
-
-- [Full HTTP API Reference](../../reference/http-api/overview.md)
-- [JavaScript Client](./javascript-client.md) for easier integration
-- [NodeType API Reference](../../reference/http-api/nodetypes-api.md)
+- [HTTP API Reference](../../reference/http-api/overview.md)
+- [JavaScript Client](./javascript-client.md) for a typed SDK over the same endpoints
+- [PostgreSQL Wire Protocol](./pgwire.md) for SQL from any Postgres driver

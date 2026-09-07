@@ -4,61 +4,80 @@ sidebar_position: 3
 
 # Using Mixins
 
-Mixins are reusable property sets that you compose into NodeTypes — trait-like
-composition for your schema. Define a cross-cutting concern (SEO fields,
-timestamps, taggability) once as a mixin and include it in any NodeType.
+A mixin is a reusable set of properties that any NodeType can include. Define a
+cross-cutting concern once (SEO fields, review metadata, tags) and list it on
+every type that needs it.
 
-## What is a Mixin?
+## What is a mixin?
 
-A mixin is a NodeType flagged with `is_mixin: true`. It carries properties but is
-not meant to be instantiated on its own. When a NodeType lists a mixin, the mixin's
-properties are merged into that NodeType's effective schema.
+A mixin is stored as a NodeType with `is_mixin: true`. It carries properties
+and can itself list other mixins, but nodes are not created from it directly.
+When a NodeType names a mixin, the mixin's properties become part of that
+type's resolved schema.
 
-Use a mixin when several unrelated NodeTypes need the *same* set of properties and
-single-parent `EXTENDS` inheritance doesn't fit:
+| Mechanism | Relationship | How many |
+|-----------|--------------|----------|
+| `extends` | "is a kind of" | one parent |
+| mixins | "also has" | any number |
 
-| Mechanism | Relationship | Cardinality |
-|-----------|--------------|-------------|
-| `EXTENDS` | "is a kind of" (single parent) | One parent |
-| Mixins    | "also has" (composition)       | Many per NodeType |
-| Archetypes | Reusable base templates       | One archetype |
-
-## Creating a Mixin
+## Creating a mixin
 
 ### Via SQL
 
 ```sql
-CREATE MIXIN 'myapp:SEO'
+CREATE MIXIN 'myapp:Seo'
   DESCRIPTION 'Search engine metadata'
   PROPERTIES (
     meta_title String,
-    meta_description String,
-    canonical_url String
+    meta_description String
   );
 
-CREATE MIXIN 'myapp:Timestamps'
-  PROPERTIES (
-    created_at Date REQUIRED,
-    updated_at Date REQUIRED
-  );
+CREATE MIXIN 'myapp:Reviewed' (reviewed_by String REQUIRED);
 ```
 
-### Via the Admin Console
+```json
+{"columns":["result","success"],"rows":[{"result":"Mixin 'myapp:Seo' created","success":true}],"row_count":1,"execution_time_ms":1}
+```
 
-Open **Models → Mixins → New Mixin**. The mixin editor is the same visual /
-YAML property builder used for NodeTypes, minus the inheritance settings
-(mixins have no `extends`, mixins, or allowed children of their own).
+The property syntax is the same as for
+[`CREATE NODETYPE`](./creating-nodetypes.md#via-sql). A mixin accepts
+`DESCRIPTION` and `ICON`; it has no `EXTENDS`, allowed children or behaviour
+flags of its own.
 
-### Via a YAML Package
+### Via HTTP
 
-Mixins live in a package's `mixins/` directory and are declared under
-`provides.mixins`. They install *before* NodeTypes, so any NodeType can reference
-them.
+`POST /api/management/{repo}/{branch}/mixins` uses the same `node_type`
+envelope as the NodeTypes API. The server sets `is_mixin: true` whatever the
+body says.
+
+```bash
+curl -s -X POST http://localhost:8090/api/management/myrepo/main/mixins \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"node_type":{"name":"myapp:Seo","description":"Search engine metadata","properties":[{"name":"meta_title","type":"String"},{"name":"meta_description","type":"String"}]}}'
+```
+
+```json
+{"id":"6_ngsuKSafegTair","strict":null,"name":"myapp:Seo","extends":null,"overrides":null,"description":"Search engine metadata","icon":null,"version":1,"properties":[{"name":"meta_title","type":"String"},{"name":"meta_description","type":"String"}],"initial_structure":null,"versionable":null,"publishable":null,"auditable":null,"indexable":null,"created_at":"2026-09-06T18:38:23.112517Z","updated_at":"2026-09-06T18:38:23.112607Z","published_at":null,"published_by":null,"previous_version":null,"is_mixin":true}
+```
+
+`GET .../mixins` lists them, `GET|PUT|DELETE .../mixins/{name}` reads, replaces
+or removes one, and `POST .../mixins/{name}/publish` and `/unpublish` work as
+for NodeTypes.
+
+### Via the admin console
+
+Open **Models → Mixins → New**. The editor is the NodeType property builder
+without the inheritance settings.
+
+### Via a package
+
+Mixin YAML files live in the package's `mixins/` directory and are listed under
+`provides.mixins`. They are installed before `nodetypes/`, so a NodeType in the
+same package can reference them.
 
 ```yaml
-# mixins/myapp:SEO.yaml
-name: 'myapp:SEO'
-is_mixin: true
+# mixins/seo.yaml
+name: myapp:Seo
 description: Search engine metadata
 properties:
   - name: meta_title
@@ -71,129 +90,142 @@ properties:
 # manifest.yaml
 provides:
   mixins:
-    - 'myapp:SEO'
-    - 'myapp:Timestamps'
+    - myapp:Seo
   nodetypes:
-    - 'myapp:Article'
+    - myapp:Article
 ```
 
-## Composing Mixins into a NodeType
+## Composing mixins into a NodeType
 
-List mixins with the `MIXINS (...)` clause:
+List them in the `MIXINS (...)` clause:
 
 ```sql
-CREATE NODETYPE 'myapp:Article'
-  MIXINS ('myapp:SEO', 'myapp:Timestamps')
+CREATE NODETYPE 'myapp:Post'
+  MIXINS ('myapp:Seo', 'myapp:Reviewed')
   PROPERTIES (
-    title String REQUIRED,
+    title String REQUIRED FULLTEXT,
     body String
   );
 ```
 
-`myapp:Article` now has `title`, `body`, and every property from `myapp:SEO` and
-`myapp:Timestamps`.
-
-In a YAML NodeType:
+Or in YAML / JSON:
 
 ```yaml
-name: 'myapp:Article'
+name: myapp:Post
 mixins:
-  - 'myapp:SEO'
-  - 'myapp:Timestamps'
+  - myapp:Seo
+  - myapp:Reviewed
 properties:
   - name: title
     type: String
     required: true
 ```
 
-## How Resolution Works
+Add or remove a mixin on an existing type with
+`ALTER NODETYPE 'myapp:Post' ADD MIXIN 'myapp:Tagged'` and
+`DROP MIXIN 'myapp:Tagged'`.
 
-When a NodeType is resolved, properties are merged in this order:
-
-1. The `EXTENDS` parent (and its ancestors)
-2. Each mixin, **in the order listed** — later mixins win on conflicts
-3. The NodeType's own properties
-4. Any property `overrides`
-
-So a property defined on the NodeType always wins over one from a mixin, and a
-later mixin wins over an earlier one.
-
-**Validation:** When you create or update a node, it is validated against this
-fully resolved schema. A required property from a mixin (e.g. `created_at`) is
-enforced just as if it were declared directly on the NodeType. Note that mixin
-properties are *recognized and validated* — values are not auto-populated, so
-required ones must still be supplied.
-
-You can inspect the resolved schema, including merged mixins, via the API:
+The resolved schema shows the merged result:
 
 ```bash
-curl http://localhost:8080/api/management/myapp/main/nodetypes/myapp:Article/resolved
+curl -s http://localhost:8090/api/management/myrepo/main/nodetypes/myapp:Post/resolved \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-The response includes `resolved_properties` (the full merged property list) and
-`resolved_mixins` (the effective mixin names, transitively).
+```json
+{"resolved_properties":["body","meta_description","meta_title","reviewed_by","title"],"resolved_mixins":["myapp:Seo","myapp:Reviewed"],"inheritance_chain":["myapp:Post"]}
+```
 
-## Checking Mixins at Runtime
+(Only the property names are shown here; each entry is a full property schema.)
 
-Every node is stamped on write with its effective mixin set, so membership checks
-are fast (no schema resolution at query time).
+## How resolution works
+
+Properties are merged in this order, later entries replacing earlier ones with
+the same name:
+
+1. the `extends` parent, fully resolved,
+2. each mixin in the order listed (including mixins those mixins declare),
+3. the NodeType's own properties,
+4. `overrides`, which set the `default` of an already-resolved property.
+
+A `required` property coming from a mixin is enforced exactly like one declared
+on the type. Values are not filled in automatically:
+
+```json
+{"code":"VALIDATION_FAILED","message":"Failed to execute SQL query: Validation failed: Missing required property 'reviewed_by' for NodeType 'myapp:Post'"}
+```
+
+## Checking mixins at runtime
+
+When a node is written through the node API (HTTP, WebSocket, the JS client or
+a function), the server stamps two reserved properties on it: `$mixins`, the
+effective mixin names, and `$supertypes`, the node's type plus every `extends`
+ancestor and mixin. Both are computed by the server and cannot be set by a
+client.
+
+```json
+{"title":"Two","reviewed_by":"bob","$mixins":["myapp:Seo","myapp:Reviewed"],"$supertypes":["myapp:Post","myapp:Seo","myapp:Reviewed"]}
+```
 
 ### In SQL
 
 ```sql
--- Nodes carrying the SEO mixin
-SELECT * FROM 'workspace' WHERE has_mixin(properties, 'myapp:SEO');
+-- Nodes carrying the Seo mixin
+SELECT name FROM 'content' WHERE HAS_MIXIN(properties, 'myapp:Seo');
 
--- Nodes that "are a" given type — by node_type, an EXTENDS ancestor, or a mixin
-SELECT * FROM 'workspace' WHERE is_a(properties, 'myapp:Article');
+-- Nodes that "are a" type: by node_type, an extends ancestor, or a mixin
+SELECT name FROM 'content' WHERE IS_A(properties, 'myapp:Reviewed');
 ```
 
-- `has_mixin(properties, name)` — true if the node carries `name` as a mixin.
-- `is_a(properties, name)` — true if the node's `node_type`, any `EXTENDS`
-  ancestor, or any mixin equals `name`.
+Both take the `properties` column and a name, and return a boolean. Function
+names are case-insensitive.
 
-### In Server-Side Functions
+:::note
+Nodes written with SQL `INSERT` or `UPDATE` are validated against the resolved
+schema but do not receive the `$mixins` and `$supertypes` stamps, so
+`HAS_MIXIN` and `IS_A` do not match them. Write through the node API when you
+rely on these checks.
+:::
+
+### In functions
+
+Nodes returned by `raisin.nodes.get` and the other node reads carry two
+helpers that read the same stamps:
 
 ```js
-export default function (node) {
-  if (node.hasMixin('myapp:SEO')) {
-    // ... populate meta tags
-  }
-  if (node.isNodeType('myapp:Article')) {
-    // ... article-specific logic
-  }
+const node = raisin.nodes.get('content', '/posts/two');
+if (node.hasMixin('myapp:Seo')) {
+  // populate meta tags
+}
+if (node.isNodeType('myapp:Reviewed')) {
+  // reviewed content
 }
 ```
 
-## Altering and Dropping Mixins
+## Altering and dropping mixins
 
 ```sql
--- Add or remove a property on a mixin
-ALTER MIXIN 'myapp:SEO' ADD PROPERTY og_image String;
-ALTER MIXIN 'myapp:SEO' DROP PROPERTY canonical_url;
+ALTER MIXIN 'myapp:Seo' ADD PROPERTY og_image URL;
+ALTER MIXIN 'myapp:Seo' DROP PROPERTY meta_description;
+ALTER MIXIN 'myapp:Seo' SET DESCRIPTION = 'SEO fields';
 
--- Remove a mixin entirely
-DROP MIXIN 'myapp:SEO';
+DROP MIXIN 'myapp:Seo';
 ```
 
-:::note
-Changing a mixin's properties updates the effective schema of every NodeType that
-uses it. Existing nodes carry a materialized copy of their effective mixin set;
-that copy is refreshed the next time each node is written.
-:::
+`ALTER MIXIN` also accepts `MODIFY PROPERTY` and `SET ICON = '...'`;
+`DROP MIXIN` accepts `CASCADE`. A change to a mixin is visible in the resolved
+schema of every type that includes it on the next resolution. Existing nodes
+keep the `$mixins` stamp they were written with until they are written again.
 
-## Best Practices
+## Guidelines
 
-- **Name mixins for the concern**, not the consumer: `myapp:SEO`,
-  `myapp:Timestamps`, `myapp:Taggable`.
-- **Keep mixins focused** — one cross-cutting concern per mixin composes best.
-- **Prefer mixins over deep `EXTENDS` chains** when the relationship is "also has"
-  rather than "is a kind of".
-- **Order matters**: when two mixins define the same property, the later one in the
-  `MIXINS (...)` list wins.
+- Name a mixin for the concern, not the consumer: `myapp:Seo`,
+  `myapp:Reviewed`, `myapp:Tagged`.
+- Keep each mixin to one concern; small mixins compose better.
+- When two mixins declare the same property, the one listed later wins. Keep
+  the order deliberate.
 
-## Next Steps
+## Next steps
 
-- [Creating NodeTypes](./creating-nodetypes.md) — the types that compose mixins
-- [Data Modeling Strategy](./data-modeling-strategy.md) — inheritance vs. mixins vs. archetypes
-- [SQL DDL Reference](../../reference/sql/statements/ddl.md) — full `CREATE/ALTER/DROP MIXIN` syntax
+- [Creating NodeTypes](./creating-nodetypes.md)
+- [Data Modeling Strategy](./data-modeling-strategy.md) for inheritance versus mixins

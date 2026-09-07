@@ -4,391 +4,312 @@ sidebar_position: 1
 
 # SQL Basics
 
-Query your RaisinDB content using familiar SQL syntax.
+RaisinDB speaks SQL. Each **workspace is a table**, every node is a row, and a
+node's properties are a JSON column you can filter, sort and aggregate on.
 
-## The Nodes Table
+## Running a query
 
-All content in RaisinDB is stored in the `nodes` virtual table:
+Send SQL to the HTTP endpoint of a repository. The optional `params` array binds
+`$1`, `$2`, and so on.
 
-```sql
-SELECT * FROM nodes LIMIT 10;
+```bash
+curl -X POST http://localhost:8090/api/sql/myrepo \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT path, name FROM '"'"'blog'"'"' WHERE node_type = $1 LIMIT 2",
+       "params": ["raisin:Page"]}'
 ```
 
-Column | Type | Description
--------|------|------------
-`id` | TEXT | Unique node identifier (ULID)
-`node_type` | TEXT | NodeType name
-`path` | TEXT | Hierarchical path
-`workspace` | TEXT | Workspace name
-`properties` | JSONB | All node properties
-`created_at` | TIMESTAMP | Creation time
-`updated_at` | TIMESTAMP | Last update time
-`version` | INTEGER | Version number
-
-## Basic Queries
-
-### Select All Nodes
-
-```sql
-SELECT * FROM nodes;
+```json
+{"columns":["path","name"],"rows":[{"path":"/about","name":"about"},{"path":"/posts/post-1","name":"post-1"}],"row_count":2,"execution_time_ms":3}
 ```
 
-### Filter by NodeType
+`POST /api/sql/{repo}` queries the repository's default branch; `POST
+/api/sql/{repo}/{branch}` targets another branch. The same statements run over
+the JavaScript client and over `psql` through the PostgreSQL wire protocol.
 
-```sql
-SELECT * FROM nodes
-WHERE node_type = 'Article';
+```typescript
+const db = client.database('myrepo');
+const result = await db.executeSql(
+  "SELECT path FROM 'blog' WHERE node_type = $1 LIMIT $2",
+  ['raisin:Page', 2],
+);
+// result: { columns: ['path'], rows: [{ path: '/about' }, ...], row_count: 2 }
+
+// Tagged template form: interpolated values become bound parameters
+const count = await db.sql`SELECT COUNT(*) AS n FROM 'blog' WHERE node_type = ${'raisin:Page'}`;
 ```
 
-### Filter by Workspace
+## The workspace table
+
+Quote the workspace name and use it as the table:
 
 ```sql
-SELECT * FROM nodes
-WHERE workspace = 'content';
+SELECT * FROM 'blog' LIMIT 10;
 ```
 
-### Limit Results
+Every row carries these columns:
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | TEXT | Node identifier |
+| `path` | PATH | Hierarchical location, for example `/posts/post-1` |
+| `name` | TEXT | Last path segment |
+| `node_type` | TEXT | NodeType name, for example `raisin:Page` |
+| `archetype` | TEXT | Archetype name, if any |
+| `properties` | JSONB | The node's properties |
+| `parent_name` | TEXT | Name of the parent node |
+| `depth` | INT | Number of path segments (`/posts/post-1` is 2) |
+| `created_at`, `updated_at` | TIMESTAMPTZ | Write timestamps |
+| `created_by`, `updated_by` | TEXT | Actor that wrote the node |
+| `published_at`, `published_by` | TIMESTAMPTZ, TEXT | Set when the node is published |
+| `translations` | JSONB | Per-locale property overrides |
+| `owner_id` | TEXT | Owner used by row-level security |
+| `__order`, `__tree_order` | TEXT | Editorial ordering keys, see [Pagination](./pagination.md) |
+| `__revision`, `__branch` | | Time-travel and branch selectors, see [Time-Travel Queries](./time-travel-queries.md) |
+
+`SELECT *` returns all of them. Selecting only the columns you need keeps
+responses small.
+
+## Filtering rows
 
 ```sql
-SELECT * FROM nodes
-WHERE node_type = 'Article'
-LIMIT 20
-OFFSET 0;
+-- by type
+SELECT path FROM 'blog' WHERE node_type = 'raisin:Page';
+
+-- by exact path
+SELECT * FROM 'blog' WHERE path = '/posts/post-1';
+
+-- children of a folder
+SELECT path FROM 'blog' WHERE CHILD_OF('/posts');
+
+-- everything under a folder, any depth
+SELECT path FROM 'blog' WHERE DESCENDANT_OF('/posts');
 ```
 
-## Working with Properties
+`CHILD_OF` and `DESCENDANT_OF` become prefix scans over the path index. See
+[Filtering Data](./filtering-data.md) for the full set of predicates.
 
-Properties are stored as JSONB, use `->` and `->>` operators:
+## Working with properties
 
-### Extract Property Value
+Read a property with `->>`. It always yields **text**, whatever the JSON type.
 
 ```sql
--- Extract as text
 SELECT
   path,
-  properties->>'title' as title,
-  properties->>'author' as author
-FROM nodes
-WHERE node_type = 'Article';
+  properties->>'title'  AS title,
+  properties->>'status' AS status
+FROM 'blog'
+WHERE node_type = 'raisin:Page';
 ```
 
-### Filter by Property
+To filter on a property, cast the key to the type you want to compare against:
 
 ```sql
-SELECT * FROM nodes
-WHERE node_type = 'Article'
-  AND properties->>'status' = 'published';
+-- string
+SELECT path FROM 'blog' WHERE properties->>'status'::String = 'published';
+
+-- number
+SELECT path FROM 'blog' WHERE properties->>'views'::Integer > 300;
+
+-- boolean
+SELECT path FROM 'blog' WHERE properties->>'featured'::Boolean = true;
+
+-- ISO 8601 date strings compare correctly as text
+SELECT path FROM 'blog' WHERE properties->>'published_at'::String > '2026-02-15';
 ```
 
-### Numeric Properties
+Cast names are `String`, `Integer` (or `int`), `Boolean`, `Double` and
+`timestamp`. The cast goes on the **key**, not on a parenthesised result:
+`properties->>'views'::Integer`, not `(properties->>'views')::numeric`.
+
+:::note Two forms of a property filter
+`properties->>'status' = 'published'` without a cast is answered from the
+property index, which is fast for equality. The cast form
+`properties->>'status'::String = 'published'` is evaluated row by row and is
+always correct, including for `LIKE` and range comparisons and when combined
+with other predicates. Prefer the cast form unless you have measured a
+difference.
+:::
+
+A missing property reads as `NULL`:
 
 ```sql
-SELECT * FROM nodes
-WHERE node_type = 'Product'
-  AND (properties->>'price')::numeric > 100;
+SELECT path FROM 'blog' WHERE properties->>'views' IS NULL;
 ```
 
-### Boolean Properties
+## Sorting and limiting
 
 ```sql
-SELECT * FROM nodes
-WHERE node_type = 'Article'
-  AND (properties->>'featured')::boolean = true;
+SELECT path FROM 'blog'
+WHERE node_type = 'raisin:Page'
+ORDER BY properties->>'views'::Integer DESC
+LIMIT 20 OFFSET 0;
+
+SELECT path FROM 'blog'
+ORDER BY properties->>'status' DESC, created_at DESC;
 ```
 
-### Date Properties
-
-```sql
-SELECT * FROM nodes
-WHERE node_type = 'Article'
-  AND (properties->>'published_date')::timestamp > '2024-01-01';
-```
-
-## Sorting
-
-### Sort by Property
-
-```sql
-SELECT * FROM nodes
-WHERE node_type = 'Article'
-ORDER BY properties->>'title' ASC;
-```
-
-### Sort by Multiple Fields
-
-```sql
-SELECT * FROM nodes
-WHERE node_type = 'Article'
-ORDER BY
-  properties->>'status' DESC,
-  created_at DESC;
-```
-
-### Sort by Numeric Property
-
-```sql
-SELECT * FROM nodes
-WHERE node_type = 'Product'
-ORDER BY (properties->>'price')::numeric DESC;
-```
+A column you sort by but did not select is added to the result so the client
+can see the sort key. Sorting by `properties->>'views'` adds the whole
+`properties` column.
 
 ## Aggregations
 
-### Count Nodes
+`COUNT`, `SUM`, `AVG`, `MIN`, `MAX` and `ARRAY_AGG` are available, with
+`GROUP BY` and `DISTINCT`:
 
 ```sql
-SELECT COUNT(*) as total
-FROM nodes
-WHERE node_type = 'Article';
+SELECT COUNT(*) AS total FROM 'blog' WHERE node_type = 'raisin:Page';
+
+SELECT properties->>'status' AS status, COUNT(*) AS n
+FROM 'blog'
+WHERE node_type = 'raisin:Page'
+GROUP BY properties->>'status'
+ORDER BY n DESC;
+
+SELECT AVG(properties->>'rating'::Double) AS avg_rating,
+       MAX(properties->>'views'::Integer) AS most_viewed
+FROM 'blog';
+
+SELECT DISTINCT properties->>'category' AS category FROM 'blog';
 ```
 
-### Group by Property
+<!-- TODO(sql-ext): HAVING is being implemented. Intended example:
+SELECT properties->>'category' AS c, COUNT(*) AS n FROM 'blog'
+GROUP BY properties->>'category' HAVING COUNT(*) > 1; -->
+
+## Arrays and JSON containment
 
 ```sql
-SELECT
-  properties->>'status' as status,
-  COUNT(*) as count
-FROM nodes
-WHERE node_type = 'Article'
-GROUP BY properties->>'status';
+-- array property contains a value
+SELECT path FROM 'blog' WHERE properties->'tags' @> '["tech"]'::jsonb;
+
+-- object containment: every listed key/value must match
+SELECT path FROM 'blog' WHERE properties @> '{"status": "draft"}'::jsonb;
+
+-- key present at all
+SELECT path FROM 'blog' WHERE JSON_EXISTS(properties, '$.featured');
 ```
 
-### Sum Numeric Property
+Other JSON helpers: `JSON_VALUE(properties, '$.title')`,
+`JSON_GET_INT(properties, 'views')`, `JSON_GET_TEXT`, `JSON_GET_BOOL`,
+`JSON_GET_DOUBLE`, and `JSONB_SET(properties, '{status}', 'archived')` for
+updating one key in place.
+
+## Joins and subqueries
+
+Join a workspace to itself, or to another workspace, on any expression:
 
 ```sql
-SELECT
-  SUM((properties->>'price')::numeric) as total_value
-FROM nodes
-WHERE node_type = 'Product';
+-- posts in the same category as post-1
+SELECT b.path
+FROM 'blog' a
+JOIN 'blog' b ON a.properties->>'category' = b.properties->>'category'
+WHERE a.path = '/posts/post-1' AND b.path != a.path;
+
+-- IN with a subquery
+SELECT path FROM 'blog'
+WHERE properties->>'category' IN (
+  SELECT properties->>'category' FROM 'blog'
+  WHERE properties->>'featured'::Boolean = true
+);
 ```
 
-### Average
+<!-- TODO(sql-ext): EXISTS and scalar subqueries are being implemented. Intended example:
+SELECT a.path FROM 'blog' a
+WHERE EXISTS (SELECT 1 FROM 'blog' c WHERE PARENT(c.path) = a.path); -->
+
+## Common table expressions
 
 ```sql
-SELECT
-  AVG((properties->>'rating')::numeric) as avg_rating
-FROM nodes
-WHERE node_type = 'Review';
-```
-
-## Array Properties
-
-### Check if Array Contains Value
-
-```sql
-SELECT * FROM nodes
-WHERE node_type = 'Article'
-  AND properties->'tags' @> '"technology"'::jsonb;
-```
-
-### Array Length
-
-```sql
-SELECT
-  path,
-  jsonb_array_length(properties->'tags') as tag_count
-FROM nodes
-WHERE node_type = 'Article';
-```
-
-### Expand Array
-
-```sql
-SELECT
-  path,
-  jsonb_array_elements_text(properties->'tags') as tag
-FROM nodes
-WHERE node_type = 'Article';
-```
-
-## Joins
-
-### Self-Join for Relationships
-
-```sql
-SELECT
-  a.path as article,
-  u.path as author
-FROM nodes a
-JOIN nodes u ON a.properties->>'author_id' = u.id
-WHERE a.node_type = 'Article'
-  AND u.node_type = 'User';
-```
-
-### Cross-Workspace Join
-
-```sql
-SELECT
-  c.properties->>'title' as article,
-  p.properties->>'name' as product
-FROM content.nodes c
-JOIN products.nodes p
-  ON c.properties->>'product_id' = p.id;
-```
-
-## Subqueries
-
-### IN Subquery
-
-```sql
-SELECT * FROM nodes
-WHERE node_type = 'Comment'
-  AND properties->>'article_id' IN (
-    SELECT id FROM nodes
-    WHERE node_type = 'Article'
-      AND properties->>'status' = 'published'
-  );
-```
-
-### EXISTS Subquery
-
-```sql
-SELECT * FROM nodes a
-WHERE a.node_type = 'Article'
-  AND EXISTS (
-    SELECT 1 FROM nodes c
-    WHERE c.node_type = 'Comment'
-      AND c.properties->>'article_id' = a.id
-  );
-```
-
-## Common Table Expressions (CTEs)
-
-```sql
-WITH published_articles AS (
-  SELECT * FROM nodes
-  WHERE node_type = 'Article'
-    AND properties->>'status' = 'published'
+WITH published AS (
+  SELECT * FROM 'blog' WHERE properties->>'status'::String = 'published'
 )
-SELECT
-  properties->>'author' as author,
-  COUNT(*) as article_count
-FROM published_articles
-GROUP BY properties->>'author'
-ORDER BY article_count DESC;
+SELECT properties->>'category' AS category, COUNT(*) AS n
+FROM published
+GROUP BY properties->>'category'
+ORDER BY n DESC;
 ```
 
-## CASE Statements
+## CASE
 
 ```sql
 SELECT
   path,
-  properties->>'title' as title,
   CASE
-    WHEN (properties->>'views')::int > 1000 THEN 'Popular'
-    WHEN (properties->>'views')::int > 100 THEN 'Moderate'
-    ELSE 'Low'
-  END as popularity
-FROM nodes
-WHERE node_type = 'Article';
+    WHEN properties->>'views'::Integer > 500 THEN 'popular'
+    WHEN properties->>'views'::Integer > 200 THEN 'moderate'
+    ELSE 'low'
+  END AS popularity
+FROM 'blog'
+WHERE CHILD_OF('/posts');
 ```
 
-## Window Functions
+## Window functions
 
-### Row Number
+`ROW_NUMBER`, `RANK` and `DENSE_RANK` support `OVER (PARTITION BY … ORDER BY …)`:
 
 ```sql
 SELECT
   path,
-  properties->>'title' as title,
-  ROW_NUMBER() OVER (ORDER BY created_at DESC) as rank
-FROM nodes
-WHERE node_type = 'Article';
-```
-
-### Partition by Property
-
-```sql
-SELECT
-  properties->>'category' as category,
-  properties->>'title' as title,
   ROW_NUMBER() OVER (
     PARTITION BY properties->>'category'
-    ORDER BY created_at DESC
-  ) as rank_in_category
-FROM nodes
-WHERE node_type = 'Article';
+    ORDER BY properties->>'views'::Integer DESC
+  ) AS rank_in_category
+FROM 'blog'
+WHERE CHILD_OF('/posts');
 ```
 
-## Full-Text Search
+## Scalar functions
 
-Use the built-in full-text search function:
+`COALESCE`, `NULLIF`, `UPPER`, `LOWER`, `ROUND` and `NOW()` are available:
 
 ```sql
-SELECT * FROM fulltext_search('content', 'raisindb database');
+SELECT path, COALESCE(properties->>'views'::String, 'n/a') AS views, LOWER(name) AS slug
+FROM 'blog';
 ```
 
-With filters:
+<!-- TODO(sql-ext): math/string/date functions (ABS, FLOOR, CONCAT, SUBSTRING, TRIM,
+REPLACE, LENGTH, DATE_TRUNC, EXTRACT, CURRENT_TIMESTAMP, TO_CHAR) are being implemented.
+Intended example: SELECT SUBSTRING(properties->>'title', 1, 20), LENGTH(name) FROM 'blog'; -->
+
+## Full-text search
+
+Full-text search is a table function, not a `LIKE` over the text:
 
 ```sql
-SELECT * FROM fulltext_search(
-  'content',
-  'raisindb',
-  node_type => 'Article',
-  limit => 10
-);
-```
-
-## Parameterized Queries
-
-Use `$1`, `$2`, etc. for parameters:
-
-```sql
-SELECT * FROM nodes
-WHERE node_type = $1
-  AND properties->>'status' = $2
-LIMIT $3;
-```
-
-From JavaScript:
-
-```typescript
-const result = await db.executeSql(
-  'SELECT * FROM nodes WHERE node_type = $1 AND properties->>\'status\' = $2 LIMIT $3',
-  ['Article', 'published', 10]
-);
-```
-
-## Performance Tips
-
-### Use Indexes
-
-```sql
-CREATE INDEX idx_article_status
-ON nodes ((properties->>'status'))
-WHERE node_type = 'Article';
-```
-
-### Filter Early
-
-```sql
--- Good: Filter first
-SELECT * FROM nodes
-WHERE node_type = 'Article'
-  AND properties->>'status' = 'published'
-LIMIT 10;
-
--- Bad: Limit without filter
-SELECT * FROM nodes
-WHERE node_type = 'Article'
+SELECT path, score
+FROM FULLTEXT_SEARCH('databases', 'en', workspaces => 'blog')
+WHERE node_type = 'raisin:Page'
+ORDER BY score DESC
 LIMIT 10;
 ```
 
-### Avoid SELECT *
+See [Full-Text Search](./full-text-search.md).
+
+## Seeing the plan
+
+`EXPLAIN` prints the physical plan so you can check which index a query uses:
 
 ```sql
--- Good: Select only needed columns
-SELECT path, properties->>'title', created_at
-FROM nodes
-WHERE node_type = 'Article';
-
--- Bad: Select all columns
-SELECT * FROM nodes
-WHERE node_type = 'Article';
+EXPLAIN SELECT path FROM 'blog'
+WHERE CHILD_OF('/posts') AND properties->>'status'::String = 'published';
 ```
+
+```
+=== Physical Execution Plan ===
+Project: 1 expressions
+  Filter: 1 predicates
+    PrefixScan: prefix=/posts/
+```
+
+Indexes are maintained automatically; there is no `CREATE INDEX` statement.
+Every property gets an equality index, and NodeTypes can declare compound
+indexes. See [Indexing](/docs/concepts/indexing).
 
 ## Next Steps
 
-- [Filtering Data](./filtering-data.md) - Advanced filtering techniques
-- [Graph Queries](./graph-queries.md) - Traverse relationships
-- [Full-Text Search](./full-text-search.md) - Search content
+- [Filtering Data](./filtering-data.md) for the full predicate reference
+- [Common Query Patterns](./common-query-patterns.md) for recipes
+- [Full-Text Search](./full-text-search.md)

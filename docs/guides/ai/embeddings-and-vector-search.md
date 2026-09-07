@@ -6,104 +6,91 @@ description: Generate embeddings, run vector similarity queries, and combine vec
 
 # Embeddings and Vector Search
 
-RaisinDB stores vector embeddings alongside your content and provides fast approximate nearest neighbor (ANN) search via an integrated HNSW index. This means you can query semantically similar content using standard SQL — no external vector database required.
+RaisinDB stores vector embeddings next to your content and answers
+nearest-neighbour queries from a built-in HNSW index. Semantic search is a SQL
+query; there is no separate vector database to run.
 
-## How Embeddings Work in RaisinDB
+The examples on this page were run against a tenant whose embedding
+configuration points at a local Ollama `bge-m3` model (1024 dimensions). Set
+yours up first: [AI Provider Configuration](./ai-provider-configuration.md).
 
-Every node in RaisinDB can have an associated embedding vector. When you create or update a node, RaisinDB can automatically generate an embedding from the node's content using your [configured AI provider](./ai-provider-configuration.md).
+## How embeddings are produced
 
+Once the tenant's embedding configuration is enabled, every node create or
+update queues an embedding job. The job collects the node's text, splits it into
+chunks, asks the provider for one vector per chunk, and writes the vectors to
+the index. The write that triggered it is never blocked.
+
+```text
+Node created or updated
+        |
+        v
+Embedding job queued (per node)
+        |
+        v
+Text collected: name, path (if enabled) + fields marked `index: [Vector]`
+        |
+        v
+Chunked (default 256 tokens, 64 overlap) and embedded, one vector per chunk
+        |
+        v
+Stored per (tenant, repo, branch, workspace, model, kind, node, chunk)
 ```
-Node created/updated
-        │
-        ▼
-  Embedding job queued
-        │
-        ▼
-  Provider generates vector
-  (e.g., OpenAI text-embedding-3-small → 1536 dimensions)
-        │
-        ▼
-  Vector stored in HNSW index
-  (scoped to tenant/repo/branch/workspace)
-```
 
-Embedding generation is **asynchronous** — it runs through the job system so write operations are never blocked.
+Which text is embedded is decided by the node type: fields marked
+`index: [Vector]` in the type's schema (top-level fields, archetype fields and
+element fields alike), plus the node's name and path when `include_name` and
+`include_path` are on. A node type with no vector fields gets a vector of its
+name and path only.
 
-## Configuring Auto-Embedding
+Uploaded files take one more step. A binary has to be read first: its text is
+extracted into `__extracted_text`, and only then chunked and embedded. Which
+files that happens to, and what to check when a document is not searchable, is
+covered in [Asset Processing](./asset-processing.md).
 
-To enable automatic embedding generation, ensure your tenant has an embedding provider configured (see [AI Provider Configuration](./ai-provider-configuration.md)). Embeddings are generated for node content based on your configuration.
+## Searching
 
-:::tip Uploaded files take one more step
-The above describes node **content** — properties written directly. An uploaded
-binary has to be read first: its text is extracted into `__extracted_text`, and
-only then chunked and embedded. Which files that happens to, and what to check
-when a document is not searchable, is [Asset Processing](./asset-processing.md).
-The core server reads PDFs and nothing else, so a `.docx` on a stock server is
-inert until a plugin is installed — visibly, via `__extract_status`, not
-silently.
-:::
-
-## Vector Search with SQL
-
-RaisinDB exposes search through **three table functions over one engine**, plus a
-distance operator you can use in an ordinary query:
+RaisinDB exposes search as three table functions over one engine, plus a
+distance operator for ordinary queries:
 
 | Surface | Legs | Use it for |
 |---|---|---|
-| `KNN(query, limit, …)` | vector only | meaning; cross-lingual; "more like this" |
-| `FULLTEXT_SEARCH(query, language, …)` | lexical only | exact words, names, codes, phrases |
-| `HYBRID_SEARCH(query, limit, …)` | both, rank-fused | the default for RAG and site search |
-| `embedding <=> EMBEDDING('…')` | vector only | a distance column in a normal `SELECT` |
+| `KNN(query, limit, workspaces => ...)` | vector only | meaning, cross-lingual, "more like this" |
+| `FULLTEXT_SEARCH(query, language, workspaces => ...)` | lexical only | exact words, names, codes |
+| `HYBRID_SEARCH(query, limit, workspaces => ...)` | both, rank-fused | the default for RAG and site search |
+| `ORDER BY embedding <=> EMBEDDING('...') LIMIT k` | vector only | a distance column in a normal `SELECT` |
 
-All three functions return the same columns, apply the same row-level security,
-and take the same **required** workspace scope.
+The three functions return the same columns, apply the caller's row-level
+security, and take the same `workspaces` scope. The full argument grammar is in
+the [Vector Functions reference](/docs/reference/sql/functions/vector-functions).
 
-### Basic Vector Search
-
-Find the 10 most similar nodes to a query vector:
+### Basic vector search
 
 ```sql
 SELECT path, name, vector_distance, chunk_index
-FROM KNN('how do vector indexes work', 10, workspaces => 'default');
+FROM KNN('how do vector indexes work', 10, workspaces => 'knowledge');
 ```
 
-- The first argument is the **query**. Plain text is embedded with your tenant's
-  provider; you can also pass `EMBEDDING('…')`, a literal vector (`ARRAY[…]` or
-  the pgvector text form `'[0.1,0.2]'`), or `VECTOR_OF('ws:/path')` to use a
+```json
+{"columns":["path","name","vector_distance","chunk_index"],
+ "rows":[{"path":"/handbook","name":"handbook","vector_distance":0.3247,"chunk_index":86},
+         {"path":"/vector-search-explained","name":"vector-search-explained","vector_distance":0.4384,"chunk_index":1}]}
+```
+
+- The first argument is the query. Plain text is embedded with the tenant's
+  provider. You can also pass `EMBEDDING('...')`, a literal vector (`ARRAY[...]`
+  or `'[0.1, 0.2, ...]'`), or `VECTOR_OF('workspace:/path')` to search with a
   node's own stored vector.
-- `10` is the number of results (top-k). Default is 10.
-- `workspaces` is **required** — see below.
-- `vector_distance` is the cosine distance (lower = more similar).
-- `chunk_index` names which chunk of a long document answered.
+- `10` is the number of rows (default 10, maximum 1000).
+- `workspaces` is required (below).
+- `vector_distance` is the cosine distance; lower is closer. Results beyond the
+  maximum distance (0.6 by default) are dropped, so a query that matches nothing
+  well returns fewer rows than asked for.
+- `chunk_index` names the chunk of the document that answered.
 
-### Understanding Distance Scores
+### The workspace scope
 
-RaisinDB uses **cosine distance** (1 - cosine similarity):
-
-| Distance | Cosine Similarity | Interpretation |
-|----------|-------------------|----------------|
-| 0.0 | 1.0 | Identical vectors |
-| 0.2 – 0.4 | 0.8 – 0.6 | Semantically similar |
-| 0.4 – 0.6 | 0.6 – 0.4 | Weakly related |
-| > 0.6 | < 0.4 | Not related |
-
-### KNN Queries
-
-K-nearest neighbor queries return the `k` closest vectors to your query:
-
-```sql
--- Find 5 articles most similar to a query
-SELECT path, properties->>'title'::String AS title, vector_distance
-FROM KNN('quarterly revenue', 5, workspaces => 'default')
-WHERE node_type = 'article';
-```
-
-The vector leg runs first to identify candidates; the residual `WHERE` is applied to the rows it emits, so `limit` still means rows delivered.
-
-### The workspace scope is required
-
-The universe a search covers is the most consequential thing about it, so it is
-written in the query and cannot be defaulted. There are exactly four spellings:
+The scope is written in every call. Four spellings:
 
 ```sql
 workspaces => 'library'              -- one workspace
@@ -112,215 +99,224 @@ workspaces => 'content-*'            -- a glob; matching nothing is fine
 workspaces => 'ALL READABLE'         -- every workspace this caller may read
 ```
 
-A **name** is an assertion, so one that does not resolve is an error. A **glob**
-is a question, so matching nothing is not. `'*'` and `'ALL'` are rejected on
-purpose: `'ALL READABLE'` is two uppercase words that appear in no other
-context, so "which of our queries go repo-wide?" is one grep.
+Omitting it is an error rather than a repository-wide search, and so is `'*'`.
+`'ALL READABLE'` is the one spelling for "everything I may read", which keeps
+repository-wide queries easy to find in a code base. `workspace_id` comes back
+as a column, so a multi-workspace result needs no `UNION`:
 
-Omitting the scope is an error, not a repo-wide search.
+```sql
+SELECT workspace_id, path, vector_distance
+FROM KNN('relational databases', 3, workspaces => 'ALL READABLE');
+-- {"workspace_id":"functions","path":"/lib/docs/probe/index.js","vector_distance":0.4082}
+-- {"workspace_id":"knowledge","path":"/handbook","vector_distance":0.4384}
+-- {"workspace_id":"knowledge","path":"/intro-to-sql","vector_distance":0.4424}
+```
 
-### One row per node, and `chunk_index` tells you which chunk
+### Interpreting distances
 
-Long documents are chunked and each chunk is embedded separately, but results
-are fused per **node** — a 40-page handbook does not occupy ten of your ten
-slots. `chunk_index` tells you which chunk matched, which is exactly what a RAG
-caller needs to cite the right passage. It is `0` for a document that was never
-chunked, and `NULL` when the hit had no vector leg.
+Cosine distance is `1 - cosine similarity`. With a text embedding model:
+
+| Distance | Interpretation |
+|----------|----------------|
+| 0.0 | identical |
+| up to about 0.4 | close in meaning |
+| 0.4 to 0.6 | loosely related |
+| above 0.6 | filtered out by default |
+
+Change the cutoff per tenant with
+`ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5'`, or per query with
+`max_distance => 0.3`.
+
+### Filtering
+
+A `WHERE` on a search function's rows is applied after the search, and `limit`
+still means rows delivered:
+
+```sql
+SELECT path, properties->>'title'::String AS title, vector_distance
+FROM KNN('graph relationships', 20, workspaces => 'knowledge')
+WHERE node_type = 'raisin:Page'
+LIMIT 10;
+```
+
+For a filter on the content hierarchy the operator form is often simpler,
+because it is an ordinary scan and structural predicates are pushed into it:
+
+```sql
+SELECT path, embedding <=> EMBEDDING('sql databases') AS distance
+FROM 'knowledge'
+WHERE PATH_STARTS_WITH(path, '/intro')
+ORDER BY distance
+LIMIT 5;
+-- {"knowledge.path":"/intro-to-sql","knowledge.distance":0.3836}
+```
 
 ### Result columns
 
-Every entry point emits the same row:
+Every search function emits the same row:
 
 | Column | Meaning |
 |---|---|
-| `node_id`, `workspace_id` | the hit's identity — a node id is unique only *within* its workspace |
+| `node_id`, `workspace_id` | the hit's identity; a node id is unique within its workspace |
 | `name`, `path`, `node_type` | from the node |
-| `score` | the fused rank score |
-| `fulltext_rank` | 1-based rank in the lexical leg, `NULL` if it did not match |
-| `vector_rank` | 1-based rank in the vector leg, `NULL` if it did not match |
-| `vector_distance` | cosine distance of the vector hit, `NULL` when `vector_rank` is |
-| `chunk_index` | which chunk answered; `0` for an unchunked document |
-| `embedding_kind` | `'text'` or `'image'` — which embedding space produced the hit |
+| `score` | fused rank score, higher is better |
+| `fulltext_rank`, `vector_rank` | 1-based rank in each leg, `NULL` where the leg did not match |
+| `vector_distance` | cosine distance of the vector hit, `NULL` for a lexical-only hit |
+| `chunk_index` | which chunk answered; `0` for an unchunked document; `NULL` for a lexical-only hit |
+| `embedding_kind` | `'text'` or `'image'` |
+| `chunk_text`, `chunk_text_source` | the passage that answered and how reliable it is (`exact`, `excerpt`, `unavailable`) |
 | `revision`, `created_at`, `updated_at` | from the node |
-| `properties` | the node's properties, already field-filtered by the permission that granted access |
+| `properties` | the node's properties, filtered by the permission that granted access |
 
-They behave like ordinary columns — project them, filter on them, order by them.
-A residual `WHERE` is applied *after* fusion, so `limit` still means rows
-delivered:
+### One row per node, or one per chunk
+
+Long documents are chunked and each chunk is embedded separately. By default
+results are fused per node: a 40-page handbook occupies one of your ten rows,
+and `chunk_index` and `chunk_text` say which passage matched. For a RAG prompt
+that wants several passages, ask for chunk granularity:
 
 ```sql
-SELECT path, node_type, score
-FROM HYBRID_SEARCH('winter storage', 10, workspaces => 'ALL READABLE')
-WHERE workspace_id = 'library';
+SELECT path, chunk_index, vector_distance, chunk_text
+FROM KNN('merging a branch back', 3, workspaces => 'knowledge', granularity => 'chunk');
 ```
 
-## Distance Filtering in WHERE Clauses
-
-You can filter results by distance directly in SQL using the `<=>` operator. The HNSW engine extracts the threshold and applies it during the search for optimal performance:
-
-```sql
--- Only return results within a cosine distance of 0.3
-SELECT id, name, properties->>'title'::String AS title
-FROM 'default'
-WHERE embedding <=> EMBEDDING('machine learning') < 0.3
-ORDER BY embedding <=> EMBEDDING('machine learning');
+```json
+{"rows":[{"path":"/handbook","chunk_index":97,"vector_distance":0.2857,
+          "chunk_text":"A branch is forked from a parent and can later be merged back, carrying node revisions with it."},
+         {"path":"/handbook","chunk_index":80,"vector_distance":0.2857, "chunk_text":"..."},
+         {"path":"/handbook","chunk_index":63,"vector_distance":0.2857, "chunk_text":"..."}]}
 ```
 
-### Configurable Default Max Distance
+With `granularity => 'chunk'`, `LIMIT k` counts passages, so several rows may
+share a `node_id`. `chunk_text_source` tells you what you are holding: `exact`
+is the chunk sliced from the document by its stored span, `excerpt` is the
+stored preview of up to 200 characters, `unavailable` means no text is stored
+for that row.
 
-By default, vector search filters out results beyond a maximum distance threshold. You can configure this per-tenant:
+## Hybrid search
+
+`HYBRID_SEARCH` runs the lexical and vector legs and fuses them by rank
+(reciprocal rank fusion), so exact terms and meaning both count:
 
 ```sql
-ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5';
+SELECT path, score, fulltext_rank, vector_rank, vector_distance, chunk_index
+FROM HYBRID_SEARCH('how does replication work', 5, workspaces => 'knowledge');
+-- {"path":"/handbook","score":0.0328,"fulltext_rank":1,"vector_rank":1,"vector_distance":0.3769,"chunk_index":58}
 ```
 
-This replaces the previous hard-coded threshold and gives you control over how aggressively distant results are filtered.
+The score is `sum(weight / (60 + rank))` over the legs a document appeared in.
+Distances from the vector leg are reported but never added to the score, which
+is what lets a text hit and an image hit rank against each other.
+`vector_weight => 0` turns the query into keyword search (no embedding provider
+needed), `fulltext_weight => 0` into vector search.
 
-## Hybrid Search: Vector + Full-Text
+Hybrid search is the right default for RAG: pure vector search can miss a
+product name or an error code, pure full-text search misses a paraphrase.
 
-### Filtering with Vector Search
+### Over HTTP
 
-Combine vector similarity with traditional SQL filters for more precise results:
+The same engine answers `GET /api/search/{repo}` with the same argument names:
 
-```sql
--- Vector search + keyword filter
-SELECT path, properties->>'title'::String AS title, vector_distance
-FROM KNN('neural network training', 20, workspaces => 'default')
-WHERE properties->>'category'::String = 'technology'
-LIMIT 10;
+```http
+GET /api/search/docs-ai?q=replication&workspace=knowledge&strategy=hybrid&limit=2
 ```
 
+```json
+{"results":[{"node_id":"98443e00-...","name":"handbook","node_type":"raisin:Page","path":"/handbook",
+             "workspace_id":"knowledge","score":0.0328,"fulltext_rank":1,"vector_distance":0.3107,
+             "revision":1,"chunk_index":24,"chunk_text":"...","chunk_text_source":"excerpt"}],
+ "count":2,"strategy":"hybrid","fulltext_count":1,"vector_count":2}
+```
+
+Query parameters: `q`, `workspace` (same grammar as `workspaces =>`),
+`strategy` (`hybrid`, `vector`, `fulltext`), `limit`, `branch`, `kind`,
+`granularity`, and `vector` for a raw query vector.
+
+## The distance operator
+
+In an ordinary `SELECT`, `embedding <=> EMBEDDING('...')` is planned as an
+index scan when it is the `ORDER BY` key and the query has a `LIMIT`:
+
 ```sql
--- Vector search + path hierarchy.
--- The operator form is an ordinary scan, so structural predicates compose
--- naturally and are pushed into it.
-SELECT path, name,
-       embedding <=> EMBEDDING('index maintenance') AS distance
-FROM 'default'
-WHERE PATH_STARTS_WITH(path, '/knowledge-base/docs/')
+SELECT path, name, embedding <=> EMBEDDING('index maintenance') AS distance
+FROM 'knowledge'
+ORDER BY distance
+LIMIT 3;
+-- {"knowledge.path":"/handbook","knowledge.distance":0.3599}
+-- {"knowledge.path":"/intro-to-sql","knowledge.distance":0.5928}
+```
+
+A distance comparison in `WHERE` is pushed into the scan as a threshold, and
+`EXPLAIN` shows the plan:
+
+```sql
+EXPLAIN SELECT path, embedding <=> EMBEDDING('sql databases') AS distance
+FROM 'knowledge'
+WHERE distance < 0.5
 ORDER BY distance
 LIMIT 10;
+-- VectorScan: table=knowledge, column=embedding, k=10, metric=Cosine, max_distance=0.50
 ```
 
-This lets you scope vector search to specific categories, content types, or locations in the content hierarchy.
+Two things to know about this form. Columns come back prefixed with the table
+name (`knowledge.path`). And without `ORDER BY ... LIMIT` the distance is not
+computed at all: the column is `NULL` and the rows come back in scan order. Use
+`KNN` when you want the distance as a plain value.
 
-### HYBRID_SEARCH Table Function
+`<->` (L2) and `<#>` (inner product) select the other metrics in the same
+position.
 
-The `HYBRID_SEARCH` table function combines full-text search and vector similarity using Reciprocal Rank Fusion (RRF) to produce a single ranked result set. This is the recommended approach when you want the best of both keyword matching and semantic search:
+## Branches
+
+Embeddings are stored per branch, and the index is per branch too. Creating a
+branch copies the stored embeddings and queues a job that copies the source
+branch's index files, so a search on the new branch answers as soon as that job
+has run (usually within a second). If `SHOW VECTOR INDEX HEALTH` on the branch
+still reports `empty`, `REBUILD VECTOR INDEX` on that branch builds the index
+from the copied embeddings:
+
+```bash
+# SQL endpoint for a branch: /api/sql/{repo}/{branch}
+curl -s -X POST localhost:8090/api/sql/docs-ai/exp -H "$H" -H "$J" \
+  -d '{"sql":"REBUILD VECTOR INDEX"}'
+# {"result":"Vector index rebuilt: 126 embeddings indexed (workspaces: functions, knowledge)","success":true}
+```
+
+Each [agent branch](./agent-memory-with-branches.md) therefore searches its own
+content, and searches on `main` are unaffected by what an agent writes.
+
+## Vector index management
 
 ```sql
-SELECT * FROM HYBRID_SEARCH('how does authentication work', 10,
-                            workspaces => 'default');
+SHOW VECTOR INDEX HEALTH;   -- one row per partition: count, dimensions, memory, quantization, metric
+VERIFY VECTOR INDEX;        -- {"status":"consistent","hnsw_count":133,"storage_count":133}
+REBUILD VECTOR INDEX;       -- rebuild the configured partition from stored embeddings
 ```
 
-This returns up to 10 results with the following columns:
+A partition is one embedding model and kind. Changing the model in the
+embedding configuration starts a new partition; the old one stays until the
+index is rebuilt. `SHOW VECTOR INDEX HEALTH` marks the partition the current
+configuration searches with `queried: true`.
 
-| Column | Type | Description |
-|--------|------|-------------|
-| `node_id` | TEXT | The matched node ID |
-| `name` | TEXT | Node name |
-| `path` | TEXT | Node path in the content hierarchy |
-| `node_type` | TEXT | Node type |
-| `score` | DOUBLE | Combined RRF score (higher = more relevant) |
-| `fulltext_rank` | DOUBLE | Full-text search rank |
-| `vector_rank` | DOUBLE | Vector similarity rank |
-| `vector_distance` | DOUBLE | Raw vector distance |
-| `properties` | JSON | Node properties |
+These statements work over the HTTP SQL endpoint and over pgwire (`psql`), and
+the same operations exist as management endpoints under
+`/api/admin/management/database/{tenant}/{repo}/vector/`.
 
-:::tip
-`HYBRID_SEARCH` is ideal for RAG applications where pure vector search may miss keyword-specific matches and pure full-text search may miss semantically similar content.
-:::
+## How the index behaves
 
-## Filtering by Node Type
-
-Restrict vector search to specific node types:
-
-```sql
--- Only search within FAQ entries
-SELECT path, properties->>'question'::String AS question, vector_distance
-FROM KNN('how do I reset my password', 10, workspaces => 'default')
-WHERE node_type = 'faq:Entry';
-```
-
-## Branch-Scoped Vector Search
-
-HNSW indexes are scoped to tenant, repository, and branch. When you create a new branch, the vector index is efficiently copied for the new branch context. This means:
-
-- Vector search on `main` returns different results than on `feature-branch` if content diverged
-- Each [agent branch](./agent-memory-with-branches.md) has its own independent vector index
-- Merging branches reconciles both content and vector indexes
-
-```sql
--- Search on a specific branch (set via connection context)
--- psql -U tenant1/repo1/feature-branch
-SELECT path, name, vector_distance
-FROM KNN('release checklist', 10, workspaces => 'default');
-```
-
-## Scoring Configuration
-
-For multi-chunk documents, RaisinDB provides scoring controls:
-
-- **Position decay** — earlier chunks in a document score higher than later chunks
-- **First chunk boost** — the first chunk of a document gets a configurable score boost
-
-These settings help ensure that the beginning of a document (which often contains the most relevant summary information) is weighted appropriately.
-
-## Document Chunking
-
-When chunking is enabled in your embedding configuration, long documents are automatically chunked before embedding. The embedding worker splits content using the configured strategy, generates embeddings for each chunk via the batch embedding API, and stores them in the HNSW index with chunk metadata.
-
-No manual chunking is needed — the pipeline handles splitting, embedding, and indexing automatically when nodes are created or updated.
-
-This is also why extraction hands text back to the server rather than doing its
-own indexing: chunk ids follow a fixed grammar, and an index built with ids the
-live search path never produces returns zero rows while reporting no fault. See
-[Asset Processing](./asset-processing.md#handing-text-back-raisinassetssetextractedtext).
-
-## Vector Index Management
-
-RaisinDB provides SQL commands to manage and monitor HNSW indexes:
-
-```sql
--- Rebuild the vector index from stored embeddings
-REBUILD VECTOR INDEX;
-
--- Verify index integrity
-VERIFY VECTOR INDEX;
-
--- Show index health statistics
-SHOW VECTOR INDEX HEALTH;
-```
-
-These commands are available via SQL and pgwire, making them accessible from `psql` or any PostgreSQL-compatible client.
-
-## EXPLAIN for Vector Queries
-
-Use `EXPLAIN` to inspect how vector queries are executed:
-
-```sql
-EXPLAIN SELECT path, name,
-       embedding <=> EMBEDDING('index maintenance') AS distance
-FROM 'default'
-ORDER BY distance
-LIMIT 10;
-```
-
-This shows the `VectorScan` plan details, including the number of candidates, distance metric, and any threshold filtering applied.
-
-## Performance Characteristics
-
-The HNSW index provides:
-
-- **O(log n) search time** — fast even with millions of vectors
-- **Memory-bounded** — uses an LRU cache to limit memory usage
-- **Persistent** — periodic snapshots to disk with dirty tracking
-- **Crash-safe** — graceful shutdown ensures all dirty indexes are saved
-- **Multi-tenant** — separate indexes per tenant/repo/branch
+- Partitions are keyed by model and kind so that vectors from different models
+  are never compared with each other.
+- Loaded indexes live in a memory cache with a 512 MB budget; cold partitions
+  are read from disk on first use.
+- Changed indexes are written to disk about every 60 seconds and on shutdown, so
+  a write followed immediately by a restart can report a mismatch that
+  `REBUILD VECTOR INDEX` repairs.
+- Storage precision is `F32` by default; `F16` and `Int8` can be selected in the
+  embedding configuration.
 
 ## Next Steps
 
-- [Asset Processing](./asset-processing.md) — how an uploaded file becomes searchable in the first place
-- [RAG Patterns](./rag-patterns.md) — build end-to-end retrieval-augmented generation pipelines
-- [Agent Memory with Branches](./agent-memory-with-branches.md) — use branches for isolated AI agent work
-- [AI Provider Configuration](./ai-provider-configuration.md) — set up embedding providers
+- [Asset Processing](./asset-processing.md): how an uploaded file becomes searchable
+- [RAG Patterns](./rag-patterns.md): retrieval-augmented generation end to end
+- [Agent Memory with Branches](./agent-memory-with-branches.md): isolated AI agent work
+- [Vector Functions reference](/docs/reference/sql/functions/vector-functions): the full grammar

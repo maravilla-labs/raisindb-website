@@ -4,483 +4,270 @@ sidebar_position: 1
 
 # PostgreSQL Wire Protocol
 
-Connect to RaisinDB using any PostgreSQL client through the pgwire protocol.
+Connect to RaisinDB with `psql` or any PostgreSQL driver and run RaisinDB SQL against a repository.
 
 ## Overview
 
-RaisinDB implements the PostgreSQL wire protocol, allowing you to use familiar PostgreSQL tools:
-- `psql` command-line client
-- GUI tools like pgAdmin, DBeaver, DataGrip
-- PostgreSQL drivers in any language
-- ORMs like Prisma, TypeORM, SQLAlchemy
+RaisinDB speaks the PostgreSQL wire protocol (pgwire), so the tools you already have work:
 
-## Connection Details
+- the `psql` command-line client
+- GUI clients such as DBeaver, DataGrip and pgAdmin
+- PostgreSQL drivers in any language (node-postgres, psycopg, pgx, JDBC)
 
-- **Host**: `localhost` (or your server address)
-- **Port**: `5432` (default pgwire port)
-- **Database**: `{tenant}/{repository}` format
-- **Username**: Your RaisinDB username
-- **Password**: Your RaisinDB password
+What runs over the connection is RaisinDB SQL, not PostgreSQL SQL: the workspace is the table, properties are JSON, and hierarchy and graph predicates are built in. See the [SQL Reference](../../reference/sql/overview.md).
+
+## Enable the listener
+
+`raisindb server start` enables the listener on port 5432 (`--pgwire-port` to change it). When you run the `raisin-server` binary yourself it is off by default; turn it on in the config file or on the command line:
+
+```toml
+[pgwire]
+enabled = true
+port = 5432
+bind_address = "127.0.0.1"
+max_connections = 100
+```
+
+```bash
+raisin-server --pgwire-enabled true --pgwire-port 5432
+# with the CLI, a config file's [pgwire] section is what decides:
+raisindb server start --config ./raisindb.toml
+```
+
+## Connection details
+
+| Setting | Value |
+|---------|-------|
+| **Host** | the server address |
+| **Port** | `5432` (configurable) |
+| **Database** | the **repository** name, for example `myapp` |
+| **Username** | the **tenant** id, `default` on a single-tenant server |
+| **Password** | an **API key** (`raisin_...`) |
+
+The server asks for a cleartext password, so use TLS or a private network when the connection leaves the host.
+
+### Get an API key
+
+Create one from the admin console (Profile, then API Keys) or with the HTTP API:
+
+```bash
+curl -s -X POST http://localhost:8080/api/raisindb/me/api-keys \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"psql"}'
+# {"key":{...},"token":"raisin_DV2vMEwAg6tuRqDoLbx0z8f2wrupeB4e"}
+```
+
+The admin user that owns the key needs the `pgwire_access` flag. It is off for a freshly created admin; a tenant admin turns it on with:
+
+```bash
+curl -s -X PUT http://localhost:8080/api/raisindb/sys/default/admin-users/admin \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"access_flags":{"console_login":true,"cli_access":true,"api_access":true,"pgwire_access":true,"can_impersonate":false}}'
+```
+
+Without it the connection fails with `FATAL: User does not have pgwire access permission`. A key from another tenant fails with `Tenant ID mismatch`.
 
 ## Using psql
 
-### Basic Connection
-
 ```bash
-psql -h localhost -p 5432 -U admin -d default/myapp
+psql -h localhost -p 5432 -U default -d myapp
+# Password: raisin_DV2vMEwAg6tuRqDoLbx0z8f2wrupeB4e
 ```
 
-You'll be prompted for the password.
-
-### Connection String
+Or as a URI:
 
 ```bash
-psql "postgresql://admin:password@localhost:5432/default/myapp"
+psql "postgresql://default:raisin_DV2vMEwAg6tuRqDoLbx0z8f2wrupeB4e@localhost:5432/myapp"
 ```
 
-### Setting Default Database
+To skip the prompt, add a line to `~/.pgpass` (`chmod 600`):
 
-Create a `.pgpass` file in your home directory:
-
-```bash
-# ~/.pgpass
-localhost:5432:default/myapp:admin:your-password
+```
+localhost:5432:myapp:default:raisin_DV2vMEwAg6tuRqDoLbx0z8f2wrupeB4e
 ```
 
-Make it secure:
-
-```bash
-chmod 600 ~/.pgpass
-```
-
-Now connect without password prompt:
-
-```bash
-psql -h localhost -d default/myapp -U admin
-```
-
-## Querying Data
-
-### Standard SQL
-
-RaisinDB supports standard SQL queries on nodes:
+### A first query
 
 ```sql
--- List all nodes
-SELECT * FROM nodes LIMIT 10;
+SELECT path, node_type, properties->>'title' AS title FROM 'content';
+```
 
--- Filter by node type
-SELECT * FROM nodes WHERE node_type = 'Article';
+```
+         path          |   node_type   |    title
+-----------------------+---------------+-------------
+ /articles             | raisin:Folder | Articles
+ /articles/hello-world | raisin:Page   | Hello World
+(2 rows)
+```
 
--- Query properties (JSONB column)
-SELECT id, path, properties->>'title' as title
-FROM nodes
-WHERE node_type = 'Article'
-  AND properties->>'status' = 'published';
+## Querying data
 
--- Full-text search
-SELECT * FROM nodes
-WHERE properties->>'content' LIKE '%raisindb%';
+```sql
+-- filter by type
+SELECT id, path FROM 'content' WHERE node_type = 'raisin:Page';
 
--- Order and limit
-SELECT path, properties->>'title' as title
-FROM nodes
-WHERE node_type = 'Article'
+-- JSON properties: ->> yields text; cast the key for a verbatim filter
+SELECT path, properties->>'title' AS title
+FROM 'content'
+WHERE node_type = 'raisin:Page'
+  AND properties->>'status'::String = 'published';
+
+-- hierarchy
+SELECT path FROM 'content' WHERE CHILD_OF('/articles');
+SELECT path FROM 'content' WHERE DESCENDANT_OF('/articles') ORDER BY path;
+
+-- order and limit
+SELECT path, properties->>'title' AS title
+FROM 'content'
+WHERE node_type = 'raisin:Page'
 ORDER BY created_at DESC
 LIMIT 20;
+
+-- full-text search (query, language, workspace scope)
+SELECT path FROM FULLTEXT_SEARCH('raisindb', 'en', workspaces => 'content');
 ```
 
-### Graph Queries
-
-RaisinDB extends SQL with graph traversal functions:
+Writes work too:
 
 ```sql
--- Get all related nodes
-SELECT * FROM get_related_nodes('node-id-123');
+INSERT INTO 'content' (path, node_type, name, properties)
+VALUES ('/articles/second', 'raisin:Page', 'second', '{"title":"Second"}'::jsonb);
 
--- Get relationships
-SELECT * FROM get_relationships('node-id-123');
+UPDATE 'content' SET properties = '{"title":"Second, revised"}'::jsonb
+WHERE path = '/articles/second';
 
--- Traverse hierarchy
-SELECT * FROM get_descendants('/content/articles', 3);
+DELETE FROM 'content' WHERE path = '/articles/second';
 ```
 
-### Working with Workspaces
-
-Specify workspace in your queries:
+Row-level security applies to the key's owner. To run as an application user instead, set their identity token for the session:
 
 ```sql
--- Use workspace context
-SET search_path TO content;
-
--- Query specific workspace
-SELECT * FROM content.nodes WHERE node_type = 'Page';
-
--- Cross-workspace query
-SELECT c.*, p.*
-FROM content.nodes c
-LEFT JOIN products.nodes p
-  ON c.properties->>'product_id' = p.id;
+SET app.user = '<identity access token>';
+SELECT path FROM 'content';     -- filtered by that user's roles
+RESET app.user;
 ```
 
-## GUI Client Configuration
+### Branches
 
-### DBeaver
+A connection starts on the repository's default branch. Switch for the session with either form:
 
-1. Create new connection
-2. Select PostgreSQL
-3. Enter connection details:
-   - **Host**: `localhost`
-   - **Port**: `5432`
-   - **Database**: `default/myapp`
-   - **Username**: `admin`
-   - **Password**: your password
-4. Test connection
+```sql
+USE BRANCH 'feature-xyz';
+SET app.branch = 'feature-xyz';
+SHOW CURRENT BRANCH;
+```
 
-### DataGrip
+### Parameters
 
-1. New Data Source → PostgreSQL
-2. Configure:
-   - **Host**: `localhost`
-   - **Port**: `5432`
-   - **Database**: `default/myapp`
-   - **User**: `admin`
-   - **Password**: your password
-3. Click "Test Connection"
+Bind parameters use the standard `$1, $2, ...` placeholders through the extended query protocol, which is what drivers use. In `psql`:
 
-### pgAdmin
+```
+SELECT path FROM 'content' WHERE node_type = $1 \bind 'raisin:Page' \g
+```
 
-1. Add New Server
-2. General tab:
-   - **Name**: RaisinDB Local
-3. Connection tab:
-   - **Host**: `localhost`
-   - **Port**: `5432`
-   - **Maintenance database**: `default/myapp`
-   - **Username**: `admin`
-   - **Password**: your password
+`PREPARE` / `EXECUTE` statements are not supported; drivers' prepared statements are (they use the protocol, not the statement).
 
-## Programming Languages
+## GUI clients
 
-### Node.js (pg library)
+Use the PostgreSQL connection type and fill in:
+
+- **Host** `localhost`, **Port** `5432`
+- **Database** `myapp` (the repository)
+- **Username** `default` (the tenant)
+- **Password** your API key
+
+Clients that introspect `pg_catalog` at connect time may show errors in their schema browser; `pg_catalog.pg_type` is emulated for driver type lookups, but most other catalog tables are not. Run queries in the SQL editor and disable schema introspection where the client allows it. `psql` meta-commands such as `\dt` and `\d` are affected the same way.
+
+## Drivers
+
+### Node.js (pg)
 
 ```javascript
-const { Client } = require('pg');
+import { Client } from 'pg';
 
 const client = new Client({
   host: 'localhost',
   port: 5432,
-  database: 'default/myapp',
-  user: 'admin',
-  password: 'your-password'
+  database: 'myapp',
+  user: 'default',
+  password: process.env.RAISIN_API_KEY,
 });
-
 await client.connect();
 
-// Execute query
 const result = await client.query(
-  'SELECT * FROM nodes WHERE node_type = $1 LIMIT $2',
-  ['Article', 10]
+  "SELECT path, properties->>'title' AS title FROM 'content' WHERE node_type = $1 LIMIT $2",
+  ['raisin:Page', 10],
 );
-
 console.log(result.rows);
-
 await client.end();
 ```
 
-### Python (psycopg2)
+### Python (psycopg)
 
 ```python
-import psycopg2
+import psycopg
 
-conn = psycopg2.connect(
-    host="localhost",
-    port=5432,
-    database="default/myapp",
-    user="admin",
-    password="your-password"
-)
-
-cur = conn.cursor()
-
-# Execute query
-cur.execute("""
-    SELECT * FROM nodes
-    WHERE node_type = %s
-    LIMIT %s
-""", ('Article', 10))
-
-rows = cur.fetchall()
-for row in rows:
-    print(row)
-
-cur.close()
-conn.close()
+with psycopg.connect(host="localhost", port=5432, dbname="myapp",
+                     user="default", password=os.environ["RAISIN_API_KEY"]) as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT path FROM 'content' WHERE node_type = %s LIMIT %s", ("raisin:Page", 10))
+        for row in cur.fetchall():
+            print(row)
 ```
 
 ### Go (pgx)
 
 ```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "github.com/jackc/pgx/v5"
-)
-
-func main() {
-    conn, err := pgx.Connect(context.Background(),
-        "postgres://admin:password@localhost:5432/default/myapp")
-    if err != nil {
-        panic(err)
-    }
-    defer conn.Close(context.Background())
-
-    // Execute query
-    rows, err := conn.Query(context.Background(),
-        "SELECT * FROM nodes WHERE node_type = $1 LIMIT $2",
-        "Article", 10)
-    if err != nil {
-        panic(err)
-    }
-    defer rows.Close()
-
-    for rows.Next() {
-        // Process rows
-    }
-}
+conn, err := pgx.Connect(ctx, "postgres://default:"+apiKey+"@localhost:5432/myapp")
+rows, err := conn.Query(ctx, "SELECT path FROM 'content' WHERE node_type = $1 LIMIT $2", "raisin:Page", 10)
 ```
 
 ### Java (JDBC)
 
 ```java
-import java.sql.*;
-
-public class RaisinDBExample {
-    public static void main(String[] args) throws Exception {
-        String url = "jdbc:postgresql://localhost:5432/default/myapp";
-        Properties props = new Properties();
-        props.setProperty("user", "admin");
-        props.setProperty("password", "your-password");
-
-        try (Connection conn = DriverManager.getConnection(url, props)) {
-            String sql = "SELECT * FROM nodes WHERE node_type = ? LIMIT ?";
-            try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-                stmt.setString(1, "Article");
-                stmt.setInt(2, 10);
-
-                try (ResultSet rs = stmt.executeQuery()) {
-                    while (rs.next()) {
-                        System.out.println(rs.getString("path"));
-                    }
-                }
-            }
-        }
+String url = "jdbc:postgresql://localhost:5432/myapp";
+Properties props = new Properties();
+props.setProperty("user", "default");
+props.setProperty("password", System.getenv("RAISIN_API_KEY"));
+try (Connection conn = DriverManager.getConnection(url, props);
+     PreparedStatement stmt = conn.prepareStatement("SELECT path FROM 'content' WHERE node_type = ? LIMIT ?")) {
+    stmt.setString(1, "raisin:Page");
+    stmt.setInt(2, 10);
+    try (ResultSet rs = stmt.executeQuery()) {
+        while (rs.next()) System.out.println(rs.getString("path"));
     }
 }
 ```
 
-## ORM Integration
+Set the driver's SSL mode to disabled or preferred for a local server; the listener does not negotiate TLS itself.
 
-### Prisma
+## What is not available over pgwire
 
-```prisma
-// schema.prisma
-datasource db {
-  provider = "postgresql"
-  url      = "postgresql://admin:password@localhost:5432/default/myapp"
-}
-
-generator client {
-  provider = "prisma-client-js"
-}
-
-model Node {
-  id         String   @id
-  node_type  String
-  path       String   @unique
-  properties Json
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  @@map("nodes")
-}
-```
-
-### TypeORM
-
-```typescript
-import { Entity, Column, PrimaryColumn } from 'typeorm';
-
-@Entity('nodes')
-export class Node {
-  @PrimaryColumn()
-  id: string;
-
-  @Column()
-  node_type: string;
-
-  @Column()
-  path: string;
-
-  @Column('jsonb')
-  properties: Record<string, any>;
-
-  @Column()
-  created_at: Date;
-
-  @Column()
-  updated_at: Date;
-}
-
-// Connection
-const connection = await createConnection({
-  type: 'postgres',
-  host: 'localhost',
-  port: 5432,
-  username: 'admin',
-  password: 'your-password',
-  database: 'default/myapp',
-  entities: [Node]
-});
-```
-
-## Advanced Features
-
-### Prepared Statements
-
-```sql
--- Create prepared statement
-PREPARE get_articles AS
-  SELECT * FROM nodes
-  WHERE node_type = 'Article'
-    AND properties->>'status' = $1
-  LIMIT $2;
-
--- Execute prepared statement
-EXECUTE get_articles('published', 10);
-
--- Deallocate
-DEALLOCATE get_articles;
-```
-
-### Transactions
-
-```sql
-BEGIN;
-
-UPDATE nodes
-SET properties = jsonb_set(properties, '{status}', '"published"')
-WHERE id = 'node-123';
-
-INSERT INTO nodes (node_type, path, properties)
-VALUES ('Comment', '/comments/c1', '{"text": "Great article!"}');
-
-COMMIT;
-```
-
-### Cursors for Large Results
-
-```sql
-BEGIN;
-
-DECLARE article_cursor CURSOR FOR
-  SELECT * FROM nodes WHERE node_type = 'Article';
-
-FETCH 100 FROM article_cursor;
-FETCH 100 FROM article_cursor;
-
-CLOSE article_cursor;
-COMMIT;
-```
-
-## Authentication
-
-### Password Authentication
-
-The default method. Provide username and password:
-
-```bash
-psql -h localhost -d default/myapp -U admin
-# Enter password when prompted
-```
-
-### API Key Authentication
-
-Use an API key as the password:
-
-```bash
-psql -h localhost -d default/myapp -U admin
-# When prompted for password, enter your API key
-```
-
-## Limitations
-
-While RaisinDB supports the PostgreSQL protocol, some PostgreSQL features are not available:
-
-**Not Supported:**
-- User-defined functions (UDFs) via SQL
-- Triggers via SQL (use RaisinDB Functions instead)
-- Custom aggregates
-- Foreign data wrappers
-- PL/pgSQL procedural language
-
-**Use RaisinDB Features Instead:**
-- Serverless Functions for custom logic
-- Event subscriptions for triggers
-- HTTP API for advanced operations
+- `PREPARE` / `EXECUTE` / `DEALLOCATE` statements and `DECLARE ... CURSOR`
+- ORMs that generate PostgreSQL DDL or rely on `information_schema`; there is no `nodes` table to map an entity to
+- User-defined functions, triggers and PL/pgSQL. Use [RaisinDB functions](../functions/creating-functions.md) and triggers instead
+- `BEGIN` / `COMMIT` transaction blocks; each statement is applied on its own
 
 ## Troubleshooting
 
-### Connection Refused
+| Symptom | Cause |
+|---------|-------|
+| `connection refused` | pgwire is not enabled (binary default), or bound to another address or port |
+| `FATAL: Invalid API key` | The password is not a valid, active API key |
+| `FATAL: User does not have pgwire access permission` | The key's admin user lacks `pgwire_access` |
+| `FATAL: Tenant ID mismatch` | The username is not the tenant the key belongs to |
+| `Table not found: pg_catalog....` | The client ran catalog introspection; run plain queries instead |
+| `Permission denied: Cannot create ...` | Row-level security for the current principal denies the write |
 
-Check if pgwire is enabled:
-
-```bash
-curl http://localhost:8080/health
-```
-
-Verify port in configuration:
-
-```toml
-[server]
-pgwire_port = 5432
-```
-
-### Authentication Failed
-
-Ensure credentials are correct:
+Check the listener from the server side:
 
 ```bash
-# Test HTTP authentication first
-curl -u admin:password http://localhost:8080/api/repositories
+raisindb server logs
+nc -zv localhost 5432
 ```
 
-### Database Does Not Exist
+## Next steps
 
-The database name must be in `{tenant}/{repository}` format:
-
-```bash
-# Correct
-psql -h localhost -d default/myapp -U admin
-
-# Incorrect
-psql -h localhost -d myapp -U admin
-```
-
-### Query Performance
-
-Add indexes for frequently queried properties:
-
-```sql
-CREATE INDEX idx_article_status
-ON nodes ((properties->>'status'))
-WHERE node_type = 'Article';
-```
-
-## Next Steps
-
-- [Use the HTTP API](./http-api.md) for advanced operations
-- [Install the JavaScript client](./javascript-client.md) for application development
-- [Learn SQL basics](../querying/sql-basics.md) for RaisinDB
+- [SQL basics](../querying/sql-basics.md)
+- [HTTP API](./http-api.md) for everything beyond SQL
+- [JavaScript client](./javascript-client.md) for application code

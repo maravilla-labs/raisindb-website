@@ -4,21 +4,21 @@ sidebar_position: 7
 
 # Framework Integrations
 
-The SDK ships dedicated subpath exports for the three major frameworks:
+The SDK ships subpath exports for three frameworks:
 
 | Framework | Import | Pattern |
 |-----------|--------|---------|
-| React | `@raisindb/client/react` | `createRaisinReact(React)` factory → Provider + hooks |
+| React | `@raisindb/client/react` | `createRaisinReact(React)` returns a Provider plus hooks |
 | Svelte 5 | `@raisindb/client/svelte` | Framework-free adapters that bind to runes |
-| Vue 3 | `@raisindb/client/vue` | `createRaisinVue(vue)` factory → composables |
+| Vue 3 | `@raisindb/client/vue` | `createRaisinVue(vue)` returns composables |
 
-None of them make the framework a dependency of the SDK: React and Vue use a "bring your own framework" factory (you pass the framework module in once at setup), and the Svelte adapters are plain snapshot/subscribe objects. The core `@raisindb/client` bundle never imports `react`, `svelte`, or `vue`.
+None of them makes the framework a dependency of the SDK. React and Vue use a "bring your own framework" factory (you pass the framework module in once), and the Svelte adapters are plain snapshot/subscribe objects. The core `@raisindb/client` bundle never imports `react`, `svelte` or `vue`.
 
-All three sit on the same framework-agnostic stores (`ConversationStore`, `ConversationListStore`) and adapters, so behavior — streaming, tool-call tracking, plan projection, hang recovery — is identical across frameworks. See [Chat & Conversations](./chat.md) for the underlying API.
+All three sit on the same framework-agnostic stores (`ConversationStore`, `ConversationListStore`) and adapters, so streaming, tool-call tracking, plan projection and hang recovery behave identically. See [Chat & Conversations](./chat.md) for the underlying API.
 
 ## React
 
-`createRaisinReact(React)` returns a `RaisinProvider` plus hooks: `useAuth`, `useConnection`, `useSql`, `useSubscription`, `useConversation`, `useConversationList`, `useFlow`, `useDatabase`, `useRaisinClient`.
+`createRaisinReact(React)` returns `RaisinProvider` and the hooks `useRaisinClient`, `useDatabase`, `useAuth`, `useConnection`, `useSql`, `useSubscription`, `useConversation`, `useConversationList` and `useFlow`.
 
 ```tsx
 // lib/raisin-react.ts
@@ -26,7 +26,7 @@ import React from 'react';
 import { RaisinClient, LocalStorageTokenStorage } from '@raisindb/client';
 import { createRaisinReact } from '@raisindb/client/react';
 
-export const client = new RaisinClient('ws://localhost:8081/ws/myrepo', {
+export const client = new RaisinClient('ws://localhost:8080/ws/myrepo', {
   tokenStorage: new LocalStorageTokenStorage('myapp'),
 });
 
@@ -67,11 +67,11 @@ export default function App() {
 }
 ```
 
-Hooks clean up automatically on unmount (stores are destroyed, subscriptions released).
+Hooks clean up on unmount: stores are destroyed and subscriptions released.
 
 ## Svelte 5
 
-The Svelte integration provides adapter factories — `createAuthAdapter`, `createConnectionAdapter`, `createSqlAdapter`, `createSubscriptionAdapter`, `createConversationAdapter`, `createConversationListAdapter`, `createFlowAdapter` — designed for `$state` in `.svelte.ts` files:
+The Svelte entry exports adapter factories: `createAuthAdapter`, `createConnectionAdapter`, `createSqlAdapter`, `createSubscriptionAdapter`, `createFlowAdapter`, `createConversationAdapter` and `createConversationListAdapter`, designed for `$state` in `.svelte.ts` files:
 
 ```typescript
 // lib/chat.svelte.ts
@@ -117,7 +117,7 @@ The [shiftboard example](https://github.com/maravilla-labs/raisindb/tree/main/ex
 
 ## Vue 3
 
-`createRaisinVue(vue)` returns composables: `useAuth`, `useConnection`, `useSql`, `useSubscription`, `useConversation`, `useConversationList`. Pass the Vue module once at setup — only `ref`, `computed`, and `onUnmounted` are used.
+`createRaisinVue(vue)` returns the composables `useAuth`, `useConnection`, `useSql`, `useSubscription`, `useConversation` and `useConversationList`. Pass the Vue module once; only `ref`, `computed` and `onUnmounted` are used.
 
 ```typescript
 // lib/raisin-vue.ts
@@ -125,7 +125,7 @@ import * as vue from 'vue';
 import { RaisinClient, LocalStorageTokenStorage } from '@raisindb/client';
 import { createRaisinVue } from '@raisindb/client/vue';
 
-export const client = new RaisinClient('ws://localhost:8081/ws/myrepo', {
+export const client = new RaisinClient('ws://localhost:8080/ws/myrepo', {
   tokenStorage: new LocalStorageTokenStorage('myapp'),
 });
 export const db = client.database('myrepo');
@@ -158,7 +158,7 @@ const chat = useConversation({
 </template>
 ```
 
-Composable return values are computed refs (`chat.messages.value`), plus plain action functions (`sendMessage`, `approvePlan`, `stop`, ...). Reactive subscriptions to node events work the same way:
+Composable return values are computed refs (`chat.messages.value`) plus plain action functions (`sendMessage`, `approvePlan`, `stop`). Node-event subscriptions work the same way:
 
 ```vue
 <script setup lang="ts">
@@ -176,6 +176,6 @@ useSubscription(
 </script>
 ```
 
-## Vanilla / other frameworks
+## Vanilla and other frameworks
 
-Everything above is sugar over `ConversationStore` / `ConversationListStore` and the `events()` subscriptions — all exposed from the core `@raisindb/client` entry with a plain `subscribe(callback)` / `getSnapshot()` contract, so any reactive system (Angular signals, SolidJS, lit, ...) can bind the same way.
+Everything above is sugar over `ConversationStore`, `ConversationListStore` and the `events()` subscriptions, all exported from the core `@raisindb/client` entry with a plain `subscribe(callback)` / `getSnapshot()` contract. Any reactive system (Angular signals, SolidJS, lit) can bind the same way.

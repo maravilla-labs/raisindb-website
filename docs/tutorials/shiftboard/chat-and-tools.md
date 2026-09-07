@@ -5,16 +5,16 @@ title: "Part 2: Chat with the Agent + Tools That Act"
 
 # Part 2: Chat with the Agent + Tools That Act
 
-**What you'll have at the end of this part:** a working understanding of the three pieces behind "tell the AI to assign Ben, watch the board change" — the agent node, its tool functions, and the token accounting that makes it operable.
+**What you'll have at the end of this part:** a working understanding of the three pieces behind "tell the AI to assign Ben, watch the board change": the agent node, its tool functions, and the token accounting that makes it operable.
 
-Log in to the frontend (or use the admin console's Test Chat) as `planner@example.com` and try:
+Log in to the frontend (Part 3), or use the admin console's Test Chat, as `planner@example.com` and try:
 
 > *Assign Ben to the Saturday evening shift, please.*
 
-The agent calls `assign-shift`, the node `/shifts/sat-evening` flips to `status: filled`, `assignee: Ben` — and in Part 3 you'll see the board card update live.
+The agent calls `assign-shift`, the node `/shifts/sat-evening` flips to `status: filled`, `assignee: Ben`, and in Part 3 you will see the board card update live.
 
 ![Login](./img/01-login.png)
-*The demo login — SSR form post, no client JavaScript required.*
+*The demo login. An SSR form post, no client JavaScript required.*
 
 ![Board with chat](./img/02-board-chat.png)
 *The shift board with the planning chat. Both render from the same nodes.*
@@ -40,6 +40,7 @@ properties:
   model: llama-3.3-70b-versatile
   temperature: 0.2
   max_tokens: 1024
+  task_creation_enabled: false
   execution_mode: automatic
   execution_context: system
   tools:
@@ -49,13 +50,17 @@ properties:
     - /lib/shiftboard/message-staff
     - /lib/shiftboard/start-shift-fill
     - /lib/raisin/ai/weather
+  rules:
+    - Never assign a staff member to a day they are not available on.
 ```
 
-`tools` is a list of function node paths. Five are shipped by this package; `/lib/raisin/ai/weather` comes from the builtin `ai-tools` package — tools compose across packages.
+`tools` is a list of function node paths. Five are shipped by this package; `/lib/raisin/ai/weather` comes from the builtin `ai-tools` package. Tools compose across packages.
+
+The agent also has a **home folder** in the `ai` workspace (`package/content/ai/agents/shift-planner/`) with `inbox`, `outbox`, `memory` and `sent` subfolders. The folder's `agent_ref` points back at the agent node, and its `user_id` (`agent:shift-planner`) is the identity the agent uses in conversations. The messaging pipeline delivers chat messages into `inbox/chats/<conversation>` there, and the agent's replies leave through `outbox`.
 
 ## A tool is a `raisin:Function` with an input schema
 
-Each tool is a function node whose `input_schema` (JSON Schema) becomes the tool definition the LLM sees. `list-shifts/.node.yaml`, trimmed:
+Each tool is a function node whose `input_schema` (JSON Schema) becomes the tool definition the model sees. `list-shifts/.node.yaml`, trimmed:
 
 ```yaml
 node_type: raisin:Function
@@ -79,13 +84,13 @@ properties:
         enum: [open, filled]
 ```
 
-The implementation is the sibling `index.js`. Here is `assign-shift` — the tool that actually changes the board:
+The implementation is the sibling `index.js`. Here is `assign-shift`, the tool that changes the board:
 
 ```javascript
 async function handler(input) {
   const { shift_path, staff_name } = input || {};
   if (!shift_path || !shift_path.startsWith('/shifts/')) {
-    throw new Error('shift_path is required and must start with /shifts/');
+    throw new Error('shift_path is required and must start with /shifts/, got: ' + shift_path);
   }
 
   // raisin.sql.query returns the row array directly in the function runtime
@@ -94,7 +99,9 @@ async function handler(input) {
     [shift_path],
   );
   const row = existing[0];
-  if (!row) throw new Error('shift not found: ' + shift_path);
+  if (!row) {
+    throw new Error('shift not found: ' + shift_path);
+  }
 
   const props = row.properties || {};
   const assignee = staff_name && String(staff_name).trim() ? String(staff_name).trim() : null;
@@ -106,6 +113,7 @@ async function handler(input) {
     [JSON.stringify(props), shift_path],
   );
 
+  console.log('[assign-shift]', shift_path, '->', assignee || '(cleared)');
   return { shift_path, assignee, status: props.status };
 }
 ```
@@ -113,13 +121,55 @@ async function handler(input) {
 ![Live tool call](./img/03-live-assign.png)
 *Tool-call badges stream into the chat while functions run; the board card flashes when the node updates.*
 
-:::warning The function-runtime SQL trap
-In the **function runtime**, `raisin.sql.query(...)` returns the **row array directly**. In the **client SDK**, `db.executeSql(...)` returns `{ rows }`. The same SQL string, two different shapes — `rows[0]` in a function, `result.rows?.[0]` in the browser/Node client. Every tool in this example carries a comment to that effect; copy the habit.
+:::note Two SQL result shapes
+In the function runtime, `raisin.sql.query(...)` returns the row array directly. In the client SDK, `db.executeSql(...)` returns a `SqlResult` with a `rows` array. The same SQL string, two shapes: `rows[0]` in a function, `result.rows?.[0]` in the browser or Node client. Every tool in this example carries a comment to that effect.
 :::
+
+### Run a tool without a model
+
+Tools are ordinary functions, so you can invoke them directly. The example's tools declare `execution_mode: async`, which means an HTTP invoke queues a job and returns immediately; the result is on the execution record:
+
+```bash
+curl -s -X POST http://localhost:8081/api/functions/shiftboard/list-shifts/invoke \
+  -H "Authorization: Bearer $RAISINDB_TOKEN" -H 'content-type: application/json' \
+  -d '{"input":{"status":"open"}}'
+```
+
+```json
+{"execution_id":"4qBoF1zXKIdH_RNGvJbYh","sync":false,"job_id":"XcD2AcRlGrv_1ascBNYzy","status":"scheduled","completed":false}
+```
+
+```bash
+curl -s http://localhost:8081/api/functions/shiftboard/list-shifts/executions/4qBoF1zXKIdH_RNGvJbYh \
+  -H "Authorization: Bearer $RAISINDB_TOKEN"
+```
+
+```json
+{
+  "execution_id": "4qBoF1zXKIdH_RNGvJbYh",
+  "function_path": "/lib/shiftboard/list-shifts",
+  "status": "completed",
+  "duration_ms": 16,
+  "result": {
+    "success": true,
+    "result": {
+      "shifts": [
+        { "path": "/shifts/fri-evening", "title": "Friday Evening", "day": "friday",
+          "start": "17:00", "end": "23:00", "location": "Main bar",
+          "outdoor": false, "status": "open", "assignee": null },
+        { "...": "..." }
+      ]
+    },
+    "logs": ["[info] [list-shifts] returning 4 shifts"]
+  }
+}
+```
+
+The function's `console.log` output lands in `logs`. A function with `execution_mode: sync` or `both` can be invoked with `"sync": true` and returns the result in the same response.
 
 ## Token accounting
 
-Every model call the agent makes is recorded as a `raisin:AICostRecord` node under the agent-side conversation in the `ai` workspace. The smoke test (`smoke.mjs`) verifies it with an admin session — regular users can't read the agent's side (row-level security):
+Every model call the agent makes is recorded as a `raisin:AICostRecord` node under the agent-side conversation in the `ai` workspace. The smoke test (`smoke.mjs`) checks it with an admin session, because row-level security hides the agent's side of the conversation from regular users:
 
 ```javascript
 const costRows = await adminDb.executeSql(
@@ -134,9 +184,9 @@ for (const row of costRows.rows ?? []) {
 }
 ```
 
-Cost records carry `input_tokens`, `output_tokens`, and `model` — your usage dashboard is one SQL query away.
+Cost records carry `input_tokens`, `output_tokens`, and `model`, so a usage dashboard is one SQL query away. The agent-handler also keeps a running `total_tokens_used` on the conversation node.
 
-Long conversations are kept in budget by properties on the agent node itself — declared in the package, like everything else (`package/content/functions/agents/shift-planner/.node.yaml`):
+Long conversations are kept in budget by four optional properties on the agent node. The shipped package leaves them commented out in `shift-planner/.node.yaml`; uncomment them to enable:
 
 ```yaml
 node_type: raisin:AIAgent
@@ -152,7 +202,11 @@ properties:
   max_conversation_tokens: 50000   # hard budget per conversation
 ```
 
-When a conversation crosses the threshold, the agent-handler summarizes older messages into a persisted `raisin:AICompaction` node (facts survive, tokens don't); when it exceeds the budget, the agent answers with a polite "start a new conversation" instead of failing or silently truncating. The repeatable proof for both behaviors is `npm run compaction-test` in the example.
+When a conversation crosses `compact_threshold_messages`, the agent-handler summarizes older messages with one extra model call into a persisted `raisin:AICompaction` node under the conversation, and builds later prompts from the summary plus the recent messages. When `total_tokens_used` reaches `max_conversation_tokens`, the handler answers without calling the model:
+
+> This conversation has reached its token budget (51203 used / 50000 limit). Please start a new conversation.
+
+The repeatable proof for both behaviors is `npm run compaction-test` in the example. It temporarily sets a threshold of 6 messages and a budget of 100 tokens on the agent, asserts the compaction node exists and that an early fact survives it, and restores the agent afterwards.
 
 ## Try it headlessly
 
@@ -164,6 +218,6 @@ npm install
 npm run smoke
 ```
 
-It sends two chat turns over the SDK, asserts the assistant streamed a reply, asserts `/shifts/sat-evening` was really updated (`assignee` includes "ben", `status: filled`), and asserts cost records exist.
+It sends two chat turns over the SDK, asserts the assistant streamed a reply, asserts `/shifts/sat-evening` was really updated (`assignee` includes "ben", `status: filled`), and asserts cost records exist. It targets repo `shiftboard` on `ws://localhost:8081` by default; `RAISIN_WS_URL`, `RAISIN_REPO`, `RAISIN_USER` and `RAISIN_PASSWORD` override that.
 
-**Next:** [Part 3 — A real app: SSR, live board, inbox notifications](./ssr-live-board)
+**Next:** [Part 3: A real app: SSR, live board, inbox notifications](./ssr-live-board)

@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Connection & Authentication
 
-Connect, authenticate, and manage client lifecycle.
+Connect, authenticate, and manage the client lifecycle.
 
 ## RaisinClient
 
@@ -16,7 +16,7 @@ new RaisinClient(url: string, options?: ClientOptions)
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `url` | `string` | WebSocket URL (e.g. `ws://localhost:8080/ws/myrepo`) |
+| `url` | `string` | WebSocket URL: a bare host (`ws://localhost:8080`, combined with `options.repository`) or a full path (`ws://localhost:8080/ws/myrepo`, `wss://host/sys/{tenant}/{repo}`) |
 | `options` | `ClientOptions` | Optional configuration |
 
 ```typescript
@@ -28,32 +28,22 @@ interface ClientOptions {
   connection?: ConnectionOptions;
   tokenStorage?: TokenStorage;
   logLevel?: LogLevel;
-  mode?: 'websocket' | 'http' | 'hybrid';
   httpBaseUrl?: string;
 }
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `repository` | extracted from URL | Repository name. With a bare host URL the client builds the tenant-less `/ws/{repository}` route internally. With a path URL it overrides the repository extracted from the URL (used for repo-scoped auth endpoints). |
-| `tenantId` | extracted from URL, else `'default'` | Optional — you normally never set this. The server resolves the tenant for `/ws/{repo}` connections; multi-tenant operators address a specific tenant with the `/sys/{tenant}/{repo}` URL form instead. |
-| `defaultBranch` | `'main'` | Branch used for all operations unless overridden. |
-| `requestTimeout` | `30000` | Per-request timeout in milliseconds. Requests that exceed it reject with `RaisinTimeoutError`. |
-| `connection` | — | Low-level `ConnectionOptions`: `autoReconnect` (default `true`), `reconnectOptions`, `heartbeatInterval` (default `30000`, `0` disables), `heartbeatTimeout` (default `5000`), `protocols`, `headers` (upgrade headers, Node.js only). |
+| `repository` | extracted from the URL | With a bare host URL the client builds the `/ws/{repository}` route. With a path URL it overrides the repository extracted from it (used for repository-scoped auth). |
+| `tenantId` | from the URL, else `'default'` | Rarely needed. The server resolves the tenant for `/ws/{repo}` connections; use the `/sys/{tenant}/{repo}` URL form to target a tenant explicitly. |
+| `defaultBranch` | `'main'` | Branch used for all operations unless overridden with `onBranch()`. |
+| `requestTimeout` | `30000` | Per-request timeout in milliseconds; exceeding it rejects with `RaisinTimeoutError`. |
+| `connection` | | `autoReconnect` (default `true`), `reconnectOptions`, `heartbeatInterval` (default `30000`, `0` disables), `heartbeatTimeout` (default `5000`), `protocols`, `headers` (upgrade headers, Node.js only). |
 | `tokenStorage` | `MemoryTokenStorage` | Where tokens are persisted (see [Token Storage](#token-storage)). |
-| `logLevel` | `LogLevel.Info` | `LogLevel` enum: `Silent`, `Error`, `Warn`, `Info`, `Debug`. |
-| `mode` | `'websocket'` | Client mode. |
-| `httpBaseUrl` | derived from WS URL | HTTP base URL for identity auth and uploads. |
-
-The `repository` option lets you connect with a bare host URL — `new
-RaisinClient('ws://localhost:8080', { repository: 'myrepo' })` builds the
-tenant-less `/ws/myrepo` route internally. Multi-tenant operators can
-address a specific tenant with the `/sys/{tenant}/{repository}` URL form
-instead.
+| `logLevel` | `LogLevel.Info` | `Silent`, `Error`, `Warn`, `Info`, `Debug`. |
+| `httpBaseUrl` | derived from the WS URL | HTTP base URL used for identity auth, uploads and flows. |
 
 ### connect()
-
-Establish the WebSocket connection.
 
 ```typescript
 await client.connect(): Promise<void>
@@ -61,44 +51,38 @@ await client.connect(): Promise<void>
 
 ### disconnect()
 
-Close the WebSocket connection.
-
 ```typescript
 client.disconnect(): void
 ```
 
 ### database()
 
-Get a database interface for the given repository.
-
 ```typescript
 client.database(name: string): Database
 ```
 
-The returned `Database` comes pre-configured with access to the [Conversations](./chat.md), [Flow](./flows.md), [Functions](./functions.md), and inbox-task APIs:
+The `Database` carries the repository and exposes:
+
+| Member | Returns | Reference |
+|--------|---------|-----------|
+| `workspace(name)` | `WorkspaceClient` with `nodes()`, `events()`, `onBranch()`, `atRevision()`, `transaction()`, uploads | [Node Operations](./node-operations.md) |
+| `executeSql(sql, params?)`, `` sql`...` `` | `SqlResult` `{ columns, rows, row_count }` | [SQL](../../guides/connecting/javascript-client.md#sql-queries) |
+| `onBranch(branch)`, `atRevision(revision)` | a `Database` scoped to that branch or revision | [Branches](./branches.md) |
+| `branches()`, `nodeTypes()`, `archetypes()`, `elementTypes()`, `tags()`, `scheduler()` | management APIs over WebSocket | [Schema Management](./schema-management.md) |
+| `conversations` | `ConversationManager` | [Chat & Conversations](./chat.md) |
+| `flow` | `FlowClient` (HTTP with SSE streaming) | [Flows](./flows.md) |
+| `flows()` | `FlowsApi` (WebSocket) | [Flows](./flows.md#flowsapi-websocket) |
+| `functions()` | `FunctionsApi` | [Functions](./functions.md) |
+| `inbox` | `InboxApi` | [Flows](./flows.md#inbox-tasks-dbinbox) |
+
+Accessors are created lazily and cached with the correct base URL, repository and auth manager.
 
 ```typescript
 const db = client.database('myapp');
-
-// Conversations — conversational AI
 const convo = await db.conversations.create({ participant: '/agents/support' });
-
-// Flow — workflow execution
 const result = await db.flow.runAndWait('/flows/process-order', { orderId: '123' });
-
-// Inbox — human-in-the-loop tasks
 const { tasks } = await db.inbox.listTasks({ status: 'pending' });
 ```
-
-| Accessor | Returns | Reference |
-|----------|---------|-----------|
-| `db.conversations` | [`ConversationManager`](./chat.md) — list/create/open conversations, streaming, plan actions | [Chat & Conversations](./chat.md) |
-| `db.flow` | [`FlowClient`](./flows.md) — run flows over HTTP with SSE streaming | [Flows](./flows.md) |
-| `db.flows()` | `FlowsApi` — flow execution over the WebSocket connection | [Flows](./flows.md#flowsapi-websocket) |
-| `db.functions()` | `FunctionsApi` — invoke server-side functions | [Functions](./functions.md) |
-| `db.inbox` | `InboxApi` — list/complete human-in-the-loop tasks | [Flows](./flows.md#inbox-tasks-dbinbox) |
-
-All accessors are lazily created and cached, pre-configured with the correct base URL, repository, and auth manager.
 
 ---
 
@@ -106,72 +90,38 @@ All accessors are lazily created and cached, pre-configured with the correct bas
 
 ### authenticate()
 
-Authenticate with admin credentials or a JWT token.
-
 ```typescript
 await client.authenticate(credentials: Credentials): Promise<void>
 ```
 
-Admin credentials:
+`Credentials` is one of:
 
 ```typescript
-await client.authenticate({
-  username: 'admin',
-  password: 'your-password'
-});
-```
-
-JWT token:
-
-```typescript
-await client.authenticate({
-  type: 'jwt',
-  token: 'eyJhbGciOiJIUzI...'
-});
+{ username: string; password: string }   // admin user
+{ type: 'jwt'; token: string }           // an existing JWT or API key
 ```
 
 ### loginWithEmail()
 
-Log in an existing user with email and password.
-
 ```typescript
-await client.loginWithEmail(
-  email: string,
-  password: string,
-  repository: string
-): Promise<IdentityUser>
+await client.loginWithEmail(email: string, password: string, repository: string): Promise<IdentityUser>
 ```
-
-Returns an `IdentityUser` with `id`, `email`, `displayName`, and `home` path.
 
 ### registerWithEmail()
 
-Register a new user account.
-
 ```typescript
-await client.registerWithEmail(
-  email: string,
-  password: string,
-  repository: string,
-  displayName?: string
-): Promise<IdentityUser>
+await client.registerWithEmail(email: string, password: string, repository: string, displayName?: string): Promise<IdentityUser>
 ```
 
 ### initSession()
 
-Restore a session from a previously stored token.
+Restore a session from a stored token. Returns the user, or `null` when there is no valid token.
 
 ```typescript
-await client.initSession(
-  repository: string
-): Promise<IdentityUser | null>
+await client.initSession(repository: string): Promise<IdentityUser | null>
 ```
 
-Returns the user if a valid stored token exists, or `null` otherwise.
-
 ### refreshToken()
-
-Manually refresh the access token.
 
 ```typescript
 await client.refreshToken(): Promise<IdentityUser | null>
@@ -179,130 +129,67 @@ await client.refreshToken(): Promise<IdentityUser | null>
 
 ### logout()
 
-Sign out and optionally disconnect.
-
 ```typescript
-await client.logout(options?: {
-  disconnect?: boolean;
-  reconnect?: boolean;
-}): Promise<void>
+await client.logout(options?: { disconnect?: boolean; reconnect?: boolean }): Promise<void>
 ```
 
 ---
 
-## Session & User Info
-
-### isAuthenticated()
+## Session and user info
 
 ```typescript
 client.isAuthenticated(): boolean
-```
-
-### isReady()
-
-Returns `true` when the client is both connected and authenticated.
-
-```typescript
-client.isReady(): boolean
-```
-
-### getCurrentUser()
-
-```typescript
-client.getCurrentUser(): CurrentUser | null
-```
-
-```typescript
-interface CurrentUser {
-  userId: string;
-  roles?: string[];
-  anonymous: boolean;
-  node?: UserNode;
-}
-```
-
-### getCurrentUserId()
-
-```typescript
+client.isReady(): boolean                       // connected and authenticated
+client.getCurrentUser(): CurrentUser | null     // { userId, roles?, anonymous, node? }
 client.getCurrentUserId(): string | null
-```
-
-### getCurrentUserPath()
-
-```typescript
 client.getCurrentUserPath(): string | null
+client.getSession(): { user: IdentityUser | null; accessToken: string | null } | null
+client.getUser(): IdentityUser | null           // getSession()?.user
+client.getStoredUser(): IdentityUser | null
+client.hasStoredToken(): boolean
+await client.fetchUserNode(repository): Promise<UserNode | null>
 ```
 
-### getSession()
-
-```typescript
-client.getSession(): {
-  user: IdentityUser | null;
-  accessToken: string | null;
-} | null
-```
-
-### getUser()
-
-Alias for `getSession()?.user`. Compatible with Supabase patterns.
-
-```typescript
-client.getUser(): IdentityUser | null
-```
+After `authenticate()` with admin credentials, `getCurrentUser()` returns `{ userId: 'admin', anonymous: false }`; the identity methods fill in email, roles and home.
 
 ---
 
-## State Listeners
+## State listeners
+
+Every listener returns an unsubscribe function.
 
 ### onAuthStateChange()
 
-Listen for authentication lifecycle events.
-
 ```typescript
-const unsubscribe = client.onAuthStateChange(
-  callback: (change: AuthStateChange) => void
-): () => void
-```
+client.onAuthStateChange((change: AuthStateChange) => void): () => void
 
-```typescript
 interface AuthStateChange {
-  event: 'SIGNED_IN' | 'SIGNED_OUT' | 'TOKEN_REFRESHED'
-       | 'SESSION_EXPIRED' | 'USER_UPDATED';
-  session: {
-    user: IdentityUser | null;
-    accessToken: string | null;
-  };
+  event: 'SIGNED_IN' | 'SIGNED_OUT' | 'TOKEN_REFRESHED' | 'SESSION_EXPIRED' | 'USER_UPDATED';
+  session: { user: IdentityUser | null; accessToken: string | null };
 }
 ```
+
+Fires for identity flows (`loginWithEmail`, `registerWithEmail`, `initSession`, `refreshToken`, `logout`); admin `authenticate()` does not emit it.
 
 ### onConnectionStateChange()
 
 ```typescript
-const unsubscribe = client.onConnectionStateChange(
-  callback: (state: ConnectionState) => void
-): () => void
+client.onConnectionStateChange((state: ConnectionState) => void): () => void
+// 'disconnected' | 'connecting' | 'connected' | 'reconnecting' | 'closed'
 ```
-
-`ConnectionState` is one of: `'disconnected'` | `'connecting'` | `'connected'` | `'reconnecting'` | `'closed'`.
 
 ### onReadyStateChange()
 
-Fires when the combined connected + authenticated state changes.
-
 ```typescript
-const unsubscribe = client.onReadyStateChange(
-  callback: (ready: boolean) => void
-): () => void
+client.onReadyStateChange((ready: boolean) => void): () => void
 ```
 
 ### onReconnected()
 
-Fires after the client automatically reconnects.
+Fires after the connection, authentication and subscription restore have all succeeded.
 
 ```typescript
-const unsubscribe = client.onReconnected(
-  callback: () => void
-): () => void
+client.onReconnected(() => void): () => void
 ```
 
 ### onUserChange()
@@ -310,76 +197,56 @@ const unsubscribe = client.onReconnected(
 Fires when the user's home node is updated.
 
 ```typescript
-const unsubscribe = client.onUserChange(
-  callback: (event: UserChangeEvent) => void
-): () => void
+client.onUserChange((event: UserChangeEvent) => void): () => void
 ```
+
+The client is also an `EventEmitter`: `client.on('subscription_restore_failed', handler)` reports a subscription that could not be restored after a reconnect.
 
 ---
 
-## Connection Info
-
-### isConnected()
+## Connection info
 
 ```typescript
 client.isConnected(): boolean
-```
-
-### getConnectionState()
-
-```typescript
 client.getConnectionState(): ConnectionState
-```
-
-### getBranch() / setBranch()
-
-```typescript
 client.getBranch(): string
 client.setBranch(branch: string): void
-```
-
-### getTenantId()
-
-```typescript
 client.getTenantId(): string
+client.httpBaseUrl: string
 ```
 
 ---
 
-## Reconnection & Request Queueing
+## Reconnection and request queueing
 
-The client reconnects automatically (exponential backoff) and re-authenticates with the stored token. Requests issued while the connection is re-establishing are **queued and flushed** after reconnect + re-auth, so brief network blips don't surface as errors. The queue is capped at **100 requests** — overflow rejects immediately (`Request queue is full`).
+The client reconnects with exponential backoff and re-authenticates with the stored token. Requests issued while reconnecting are queued and flushed afterwards, so short network interruptions do not surface as errors. The queue holds 100 requests; beyond that a request rejects immediately with `Request queue is full`.
 
-After a reconnect, active subscriptions are restored with retries; if restoration fails permanently the client emits `subscription_restore_failed` (see [Realtime Subscriptions & Inbox](./realtime-inbox.md#reconnection)). `onReconnected()` fires only after connection, auth, and subscription restore have all succeeded.
-
-Failures surface as typed errors:
+Active subscriptions are restored with retries; a permanent failure emits `subscription_restore_failed` (see [Realtime Subscriptions & Inbox](./realtime-inbox.md#reconnection)).
 
 | Error | Thrown when |
 |-------|-------------|
 | `RaisinTimeoutError` | A request exceeds `requestTimeout` (carries `timeoutMs`) |
 | `RaisinAuthError` | Authentication or token refresh fails (carries `code`, `status`) |
 | `RaisinConnectionError` | The connection drops unrecoverably |
+| `RaisinAbortError` | A request was aborted through its `AbortSignal` |
 
 ---
 
-## HTTP Client (SSR)
+## HTTP client (SSR)
 
-For server-side rendering where WebSocket is not available:
+For server-side rendering, or wherever WebSocket is unavailable:
 
 ```typescript
-const client = RaisinClient.forSSR('http://localhost:8080', {
-  tenantId: 'default'
-});
-
-// Also available as:
-const client = RaisinClient.createHttpClient('http://localhost:8080', options);
+const http = RaisinClient.forSSR('http://localhost:8080', options?: HttpClientOptions): RaisinHttpClient
+// alias
+const http = RaisinClient.createHttpClient('http://localhost:8080', options);
 ```
 
-The HTTP client supports the same authentication and database methods but communicates over REST instead of WebSocket. Real-time events and flows over WebSocket are not available.
+`RaisinHttpClient` shares `authenticate()`, `database()`, `executeSql()`, repository and workspace management, uploads and `signAssetUrl()` with the WebSocket client, and adds the identity-auth surface (`auth(repo)`, `setIdentityTokens()`, `clearIdentityTokens()`, see [Identity Authentication](./identity-auth.md)). Its workspace object is smaller: `getNode(id)`, `getNodeByPath(path)`, `createNode(payload)`, `updateNode(id, properties)`, `deleteNode(id)`. Real-time events and the WebSocket flow API are not available; `db.flow` (HTTP) is.
 
 ---
 
-## Token Storage
+## Token storage
 
 ```typescript
 interface TokenStorage {
@@ -391,12 +258,10 @@ interface TokenStorage {
 }
 ```
 
-Built-in implementations:
-
 | Class | Storage | Use case |
 |-------|---------|----------|
-| `MemoryTokenStorage` | In-memory | Default, server-side |
-| `LocalStorageTokenStorage` | `localStorage` | Browser persistence |
+| `MemoryTokenStorage` | In memory | Default; server-side |
+| `LocalStorageTokenStorage(prefix = 'raisindb')` | `localStorage` | Browser persistence across reloads |
 
 ---
 

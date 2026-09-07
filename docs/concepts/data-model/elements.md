@@ -4,706 +4,196 @@ sidebar_position: 4
 
 # Elements
 
-**Elements** (also called ElementTypes) define UI component specifications for rendering forms in the Admin Console and client applications. They map NodeType properties to visual field components, providing a schema-driven approach to building content editing interfaces.
+An **Element type** is a reusable content block: a named set of fields such as a hero banner, a text block or a quote. An **element** is an instance of that type stored inside a node's properties. Element types are what an [Archetype](/docs/concepts/data-model/archetypes) lists in a `SectionField`, so editors can compose a page from blocks while the server validates each block against its type.
 
-## What is an Element?
+Element types and archetypes share one field schema. This page is the reference for both.
 
-An Element defines how a property should be displayed and edited in a user interface:
-
-```yaml
-name: rich-text-editor
-component: RichTextEditor
-properties:
-  placeholder:
-    type: string
-  toolbar:
-    type: array
-  maxLength:
-    type: number
-defaultProps:
-  toolbar: [bold, italic, link, heading]
-```
-
-When you define a NodeType property, you can specify which Element to use:
+## An element type
 
 ```yaml
-name: blog:Article
-properties:
-  body:
-    type: richtext
-    element: rich-text-editor       # Maps to Element
-    elementProps:
-      placeholder: "Write your article..."
-      maxLength: 50000
-```
-
-The Admin Console automatically renders the appropriate UI component based on the Element definition.
-
-## Built-in Element Types
-
-RaisinDB includes standard elements for common field types:
-
-### Text Input
-
-```yaml
-name: text-input
-component: TextInput
-properties:
-  placeholder:
-    type: string
-  maxLength:
-    type: number
-  pattern:
-    type: string
-  autocomplete:
-    type: string
-```
-
-Usage:
-
-```yaml
-title:
-  type: string
-  element: text-input
-  elementProps:
-    placeholder: "Enter title..."
-    maxLength: 200
-```
-
-### Textarea
-
-```yaml
-name: textarea
-component: Textarea
-properties:
-  placeholder:
-    type: string
-  rows:
-    type: number
-  maxLength:
-    type: number
-```
-
-### Rich Text Editor
-
-```yaml
-name: rich-text-editor
-component: RichTextEditor
-properties:
-  toolbar:
-    type: array
-  allowedFormats:
-    type: array
-  imageUpload:
-    type: boolean
-```
-
-### Number Input
-
-```yaml
-name: number-input
-component: NumberInput
-properties:
-  min:
-    type: number
-  max:
-    type: number
-  step:
-    type: number
-  precision:
-    type: number
-```
-
-### Checkbox
-
-```yaml
-name: checkbox
-component: Checkbox
-properties:
-  label:
-    type: string
-  helpText:
-    type: string
-```
-
-### Select Dropdown
-
-```yaml
-name: select
-component: Select
-properties:
-  options:
-    type: array
-  multiple:
-    type: boolean
-  searchable:
-    type: boolean
-```
-
-Usage:
-
-```yaml
-status:
-  type: string
-  element: select
-  elementProps:
-    options:
-      - value: draft
-        label: Draft
-      - value: review
-        label: In Review
-      - value: published
-        label: Published
-```
-
-### Date Picker
-
-```yaml
-name: date-picker
-component: DatePicker
-properties:
-  format:
-    type: string
-  includeTime:
-    type: boolean
-  minDate:
-    type: datetime
-  maxDate:
-    type: datetime
-```
-
-### Media Picker
-
-```yaml
-name: media-picker
-component: MediaPicker
-properties:
-  accept:
-    type: array
-  maxSize:
-    type: number
-  multiple:
-    type: boolean
-  uploadPath:
-    type: string
-```
-
-Usage:
-
-```yaml
-featuredImage:
-  type: media
-  element: media-picker
-  elementProps:
-    accept: [image/jpeg, image/png, image/webp]
-    maxSize: 5242880  # 5MB in bytes
-```
-
-### Reference Picker
-
-```yaml
-name: reference-picker
-component: ReferencePicker
-properties:
-  nodeType:
-    type: string
-  workspace:
-    type: string
-  multiple:
-    type: boolean
-  searchable:
-    type: boolean
-```
-
-Usage:
-
-```yaml
-author:
-  type: reference
-  element: reference-picker
-  elementProps:
-    nodeType: user:Profile
-    workspace: default
-    searchable: true
-```
-
-### Tag Input
-
-```yaml
-name: tag-input
-component: TagInput
-properties:
-  suggestions:
-    type: array
-  allowCustom:
-    type: boolean
-  maxTags:
-    type: number
-```
-
-### Color Picker
-
-```yaml
-name: color-picker
-component: ColorPicker
-properties:
-  format:
-    type: string    # hex, rgb, hsl
-  presets:
-    type: array
-```
-
-### Geolocation Picker
-
-```yaml
-name: geo-picker
-component: GeoLocationPicker
-properties:
-  mapProvider:
-    type: string
-  zoom:
-    type: number
-  searchEnabled:
-    type: boolean
-```
-
-## Creating Custom Elements
-
-Define custom elements in `raisin:system.element_types`:
-
-```sql
--- Custom markdown editor element
-INSERT INTO raisin:system.element_types (name, component, properties, defaultProps) VALUES (
-  'markdown-editor',
-  'MarkdownEditor',
-  '{
-    "placeholder": {"type": "string"},
-    "preview": {"type": "boolean"},
-    "syntax": {"type": "string"}
-  }',
-  '{
-    "preview": true,
-    "syntax": "github"
-  }'
-);
-```
-
-Use in NodeType:
-
-```sql
-{
-  "content": {
-    "type": "string",
-    "element": "markdown-editor",
-    "elementProps": {
-      "placeholder": "Write markdown content..."
-    }
-  }
-}
-```
-
-## Element Properties
-
-### Common Properties
-
-All elements support these common properties:
-
-| Property | Type | Description |
-|----------|------|-------------|
-| `label` | string | Field label shown in UI |
-| `helpText` | string | Descriptive help text |
-| `placeholder` | string | Placeholder text |
-| `disabled` | boolean | Disable field editing |
-| `required` | boolean | Mark as required (visual indicator) |
-| `validation` | object | Custom validation rules |
-
-### Validation Rules
-
-Elements can specify UI-level validation:
-
-```yaml
-email:
-  type: email
-  element: text-input
-  elementProps:
-    label: Email Address
-    placeholder: "user@example.com"
-    validation:
-      pattern: "^[^@]+@[^@]+\\.[^@]+$"
-      message: "Please enter a valid email address"
-```
-
-## Conditional Elements
-
-Show/hide elements based on other field values:
-
-```yaml
-properties:
-  hasExpiration:
-    type: boolean
-    element: checkbox
-    elementProps:
-      label: Content expires
-  expiresAt:
-    type: datetime
-    element: date-picker
-    elementProps:
-      label: Expiration date
-      condition:
-        field: hasExpiration
-        equals: true
-```
-
-The `expiresAt` field only appears when `hasExpiration` is true.
-
-## Element Groups
-
-Group related fields together:
-
-```yaml
-name: blog:Article
-properties:
-  title:
-    type: string
-    element: text-input
-  body:
-    type: richtext
-    element: rich-text-editor
-elementGroups:
-  - name: seo
-    label: SEO Settings
-    fields: [metaTitle, metaDescription, ogImage]
-    collapsible: true
-    collapsed: true
-  - name: publish
-    label: Publishing
-    fields: [published, publishedAt, author]
-```
-
-In the Admin Console, fields are organized into collapsible groups.
-
-## Element Layouts
-
-Control field layout:
-
-```yaml
-elementLayout:
-  columns: 2
-  fields:
-    title:
-      span: 2       # Full width
-    author:
-      span: 1       # Half width
-    category:
-      span: 1       # Half width
-    body:
-      span: 2       # Full width
-```
-
-## Default Element Mapping
-
-If no element is specified, RaisinDB uses defaults:
-
-| Property Type | Default Element |
-|---------------|-----------------|
-| `string` | `text-input` |
-| `number` | `number-input` |
-| `boolean` | `checkbox` |
-| `datetime` | `date-picker` |
-| `date` | `date-picker` |
-| `richtext` | `rich-text-editor` |
-| `array` | `tag-input` |
-| `reference` | `reference-picker` |
-| `media` | `media-picker` |
-| `geo` | `geo-picker` |
-
-## Admin Console Integration
-
-The Admin Console automatically generates forms based on Elements:
-
-1. User navigates to create/edit a node
-2. Console fetches the NodeType schema
-3. For each property, renders the specified Element
-4. Applies validation rules from both schema and element
-5. Submits validated data to RaisinDB
-
-Example workflow:
-
-```sql
--- 1. Define NodeType with elements
-INSERT INTO raisin:system.node_types (name, properties) VALUES (
-  'blog:Article',
-  '{
-    "title": {
-      "type": "string",
-      "required": true,
-      "element": "text-input",
-      "elementProps": {"maxLength": 200}
-    },
-    "body": {
-      "type": "richtext",
-      "element": "rich-text-editor"
-    }
-  }'
-);
-
--- 2. User opens Admin Console
--- 3. Navigates to create Article
--- 4. Form auto-renders with TextInput and RichTextEditor
--- 5. User fills form, clicks Save
--- 6. Console validates and inserts node
-```
-
-## Custom Element Development
-
-Build custom React components for elements:
-
-```jsx
-// CustomSlugInput.jsx
-import React from 'react';
-
-export default function CustomSlugInput({ value, onChange, elementProps }) {
-  const handleChange = (e) => {
-    // Auto-convert to slug format
-    const slug = e.target.value
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '');
-    onChange(slug);
-  };
-
-  return (
-    <input
-      type="text"
-      value={value || ''}
-      onChange={handleChange}
-      placeholder={elementProps.placeholder}
-      maxLength={elementProps.maxLength}
-    />
-  );
-}
-```
-
-Register in RaisinDB:
-
-```sql
-INSERT INTO raisin:system.element_types (name, component, properties) VALUES (
-  'slug-input',
-  'CustomSlugInput',
-  '{
-    "placeholder": {"type": "string"},
-    "maxLength": {"type": "number"}
-  }'
-);
-```
-
-Use in NodeType:
-
-```sql
-{
-  "slug": {
-    "type": "string",
-    "element": "slug-input",
-    "elementProps": {
-      "placeholder": "article-slug",
-      "maxLength": 100
-    }
-  }
-}
-```
-
-## Element Inheritance
-
-Elements can extend other elements:
-
-```sql
--- Base text input
-INSERT INTO raisin:system.element_types (name, component, properties) VALUES (
-  'text-input',
-  'TextInput',
-  '{"placeholder": {"type": "string"}}'
-);
-
--- Extended slug input
-INSERT INTO raisin:system.element_types (name, extend, component, properties) VALUES (
-  'slug-input',
-  'text-input',
-  'SlugInput',
-  '{"autoGenerate": {"type": "boolean"}}'
-);
-```
-
-`slug-input` inherits all properties from `text-input` and adds `autoGenerate`.
-
-## Querying Elements
-
-List available elements:
-
-```sql
--- Get all element types
-SELECT name, component, properties
-FROM raisin:system.element_types
-ORDER BY name;
-
--- Find elements for a specific component
-SELECT name, properties
-FROM raisin:system.element_types
-WHERE component = 'RichTextEditor';
-```
-
-## Real-World Example
-
-Complete blog article editing interface:
-
-```sql
--- Define custom elements
-INSERT INTO raisin:system.element_types (name, component, properties) VALUES
-  ('slug-generator', 'SlugGenerator', '{"sourceField": {"type": "string"}}'),
-  ('featured-image', 'FeaturedImagePicker', '{"aspectRatio": {"type": "string"}}');
-
--- Define NodeType with elements
-INSERT INTO raisin:system.node_types (name, properties, elementGroups) VALUES (
-  'blog:Article',
-  '{
-    "title": {
-      "type": "string",
-      "required": true,
-      "element": "text-input",
-      "elementProps": {"maxLength": 200, "placeholder": "Article title"}
-    },
-    "slug": {
-      "type": "string",
-      "required": true,
-      "element": "slug-generator",
-      "elementProps": {"sourceField": "title"}
-    },
-    "excerpt": {
-      "type": "string",
-      "element": "textarea",
-      "elementProps": {"rows": 3, "maxLength": 500}
-    },
-    "body": {
-      "type": "richtext",
-      "required": true,
-      "element": "rich-text-editor",
-      "elementProps": {
-        "toolbar": ["heading", "bold", "italic", "link", "image"],
-        "imageUpload": true
-      }
-    },
-    "featuredImage": {
-      "type": "media",
-      "element": "featured-image",
-      "elementProps": {"aspectRatio": "16:9"}
-    },
-    "author": {
-      "type": "reference",
-      "required": true,
-      "element": "reference-picker",
-      "elementProps": {
-        "nodeType": "user:Profile",
-        "searchable": true
-      }
-    },
-    "tags": {
-      "type": "array",
-      "element": "tag-input",
-      "elementProps": {
-        "allowCustom": true,
-        "maxTags": 10
-      }
-    },
-    "published": {
-      "type": "boolean",
-      "element": "checkbox",
-      "elementProps": {"label": "Publish immediately"}
-    },
-    "publishedAt": {
-      "type": "datetime",
-      "element": "date-picker",
-      "elementProps": {
-        "includeTime": true,
-        "condition": {"field": "published", "equals": true}
-      }
-    }
-  }',
-  '[
-    {
-      "name": "content",
-      "label": "Content",
-      "fields": ["title", "slug", "excerpt", "body", "featuredImage"]
-    },
-    {
-      "name": "meta",
-      "label": "Metadata",
-      "fields": ["author", "tags", "published", "publishedAt"],
-      "collapsible": true
-    }
-  ]'
-);
-```
-
-This creates a professional content editing interface with:
-- Auto-generating slug from title
-- Rich text editor with media upload
-- Featured image with aspect ratio enforcement
-- Author reference picker
-- Conditional publishing date
-- Organized field groups
-
-## Element and Field Metadata
-
-Element types carry a free-form `meta` map — both at the element-type level and on each individual field. RaisinDB stores and round-trips `meta` untouched; it never interprets the contents, so it's the right place for editor hints, layout flags, categorization, or integration configuration that isn't part of a field's value.
-
-```yaml
-name: marketing:HeroBlock
-meta:
-  category: "marketing"
-  previewImage: "/assets/hero-preview.png"
+name: arch:Hero
+title: Hero
 fields:
   - $type: TextField
-    name: headline
-    label: Headline
-    meta:
-      group: "content"
-      maxPreviewChars: 60
+    name: heading
+    title: Heading
+    required: true
+    translatable: true
+    config:
+      max_length: 120
   - $type: MediaField
-    name: background
-    label: Background image
-    meta:
-      group: "appearance"
+    name: image
+  - $type: OptionsField
+    name: align
+    config:
+      options: [left, center]
+      render_as: Radio
 ```
 
-`meta` values may be strings, numbers, booleans, arrays, or objects. Both maps are editable in the Admin Console element editor — element-level `meta` lives under **Element Settings**, and per-field `meta` is in the field editor's **metadata** tab (the braces icon).
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | string | Identifier, conventionally `namespace:Name` |
+| `extends` | string | Parent element type; fields merge by name, child wins, 20 levels maximum |
+| `title`, `description`, `icon` | string | Editor labels |
+| `fields` | array | The field schemas below. Defaults to an empty list |
+| `layout` | array | Optional layout tree for the editor (same format as archetypes) |
+| `strict` | bool | When true, an element may only contain keys named in the resolved fields |
+| `publishable` | bool | Set by publishing. Not required for the type to be used |
+| `initial_content`, `meta` | object | Stored and returned untouched |
 
-:::tip Where meta lives
-Element-type `meta` attaches to the whole element. Per-field `meta` attaches to a single field via the shared field base, so any field type (`TextField`, `MediaField`, `CompositeField`, …) can carry it.
-:::
+Created with `POST /api/management/{repo}/{branch}/elementtypes` and a `{"element_type": {...}}` body, or as `package/elementtypes/<name>.yaml` in a package. The response is the stored record:
 
-## Resolving inheritance
-
-Element types support `extends`. To get an element type with its inheritance chain merged (base fields first, child overrides by name), use the **resolved** view — available on both the [HTTP API](/docs/reference/http-api/nodetypes-api) and the [JavaScript client](/docs/reference/javascript-client/schema-management):
-
-```typescript
-const resolved = await db.elementTypes().getResolved('marketing:HeroBlock');
-// { element_type, resolved_fields, resolved_layout, inheritance_chain, resolved_strict }
+```json
+{"id":"3tPiu1sfNV89jWlU","name":"arch:Hero","title":"Hero","description":null,
+ "fields":[{"$type":"TextField","name":"heading","title":"Heading","required":true,"translatable":true,"config":{"max_length":120}},
+           {"$type":"MediaField","name":"image"},
+           {"$type":"OptionsField","name":"align","config":{"options":["left","center"],"render_as":"Radio"}}],
+ "version":1,"created_at":"2026-09-06T18:37:57.033632Z","updated_at":"2026-09-06T18:37:57.033632Z",
+ "published_at":null,"published_by":null,"publishable":null,"previous_version":null}
 ```
 
-The same `getResolved()` exists for NodeTypes and Archetypes. Schemas are **per-branch**, so resolution runs against the database's branch — use `db.onBranch('staging')` to resolve on another branch. See [Schema Management](/docs/reference/javascript-client/schema-management).
+## An element in a node
 
-## Best Practices
+An element is a JSON object with an `element_type` key, an optional `uuid`, and the field values at the top level:
 
-1. **Use semantic elements**: Choose elements that match the data type
-2. **Provide helpful props**: Set placeholder, labels, and help text
-3. **Validate at both levels**: Schema validation + UI validation
-4. **Group related fields**: Use elementGroups for better UX
-5. **Consider mobile**: Choose elements that work on all devices
-6. **Custom elements sparingly**: Only when built-ins don't fit
-7. **Test thoroughly**: Ensure elements handle edge cases
+```json
+{
+  "name": "spring",
+  "node_type": "blog:Article",
+  "archetype": "arch:LandingPage",
+  "properties": {
+    "title": "Spring sale",
+    "sections": [
+      { "element_type": "arch:Hero", "uuid": "hero-1", "heading": "Welcome", "align": "center" },
+      { "element_type": "arch:TextBlock", "body": "<p>Hi</p>" }
+    ]
+  }
+}
+```
 
-## Next Steps
+The server stores the object as written and returns it in the same shape. A nested `{"element_type": "...", "content": {...}}` form is also accepted on input. `uuid` is optional in general; it becomes mandatory for items of a repeatable composite that has translatable sub-fields, because the translation overlay addresses items by uuid (see [Translations](/docs/guides/data-modeling/translations)).
 
-- **[NodeTypes](/docs/concepts/data-model/nodetypes)** - Define schemas that use elements
-- **[Admin Console Guide](/docs/guides/admin-console/using-admin-console)** - Use the visual interface
-- **[Archetypes](/docs/concepts/data-model/archetypes)** - Reusable fields with elements
-- **[Data Modeling Guide](/docs/guides/data-modeling/creating-nodetypes)** - Build complete content models
+Elements can appear anywhere in `properties`, not only under an archetype field. On every write the validator walks all property values, and any object with an `element_type` is checked against that element type. An unknown type is an error:
+
+```json
+{"code":"VALIDATION_FAILED","message":"Failed to resolve element type 'nope:X': Not found: ElementType not found: nope:X (at element 'nope:X', path 'blocks[0]')"}
+```
+
+## Field schemas
+
+Every field is an object tagged with `$type`. All types share the base keys; some add a `config` object.
+
+### Base keys
+
+| Key | Type | Meaning |
+|---|---|---|
+| `name` | string | Property key in the stored content |
+| `title`, `label`, `description`, `help_text` | string | Editor text |
+| `required` | bool | Enforced on write |
+| `default_value` | any | Editor default. Not applied by the server |
+| `multiple` | bool | Repeatable. Enforced for `ElementField`; the uuid rule above applies to `CompositeField` |
+| `translatable` | bool | The field takes part in translation overlays |
+| `is_hidden`, `design_value` | bool | Editor hints |
+| `validations` | array of strings | Stored for clients; not evaluated by the server |
+| `index` | array | `Fulltext`, `Vector`, `Property` |
+| `encrypted` | bool | Value is moved to the secret store on write and read back as a `secret://` reference |
+| `meta` | map | Free-form, stored untouched |
+
+### Types
+
+| `$type` | `config` keys | Notes |
+|---|---|---|
+| `TextField` | `max_length` | |
+| `RichTextField` | `max_length` | |
+| `NumberField` | `is_integer`, `min_value`, `max_value` | |
+| `DateField` | `date_format`, `date_mode` (`DateTime`, `Date`, `Time`) | |
+| `BooleanField` | | |
+| `LocationField` | | |
+| `MediaField` | `allowed_types` | |
+| `ReferenceField` | `allowed_entry_types` | |
+| `TagField` | `allowed_tags`, `max_tags` | |
+| `OptionsField` | `options`, `render_as` (`Dropdown`, `Radio`, `Checkbox`), `multi_select` | |
+| `JsonObjectField` | | Arbitrary JSON |
+| `ListingField` | `allowed_entry_types`, `sort_by`, `sort_order`, `limit` | |
+| `CompositeField` | | Has its own `fields` and optional `layout`; an inline group with no separate type |
+| `ElementField` | | `element_type` names the one type allowed; the value is a single element, or a list when `multiple` |
+| `SectionField` | | `allowed_element_types` lists the types allowed in the list; `render_as` is an editor hint |
+
+`config` values are editor hints. The server enforces `required`, `strict`, the type checks on `ElementField` and `SectionField`, and the uuid rule for translatable composites. It does not check lengths, ranges or option membership.
+
+## Layout
+
+`layout` is a list of layout nodes, tagged by `type`:
+
+```yaml
+layout:
+  - type: container
+    direction: Vertical      # or Horizontal
+    spacing: 8
+    alignment: Leading       # Leading, Center, Trailing
+    children:
+      - type: field
+        name: heading
+      - type: group
+        label: Appearance
+        children:
+          - type: field
+            name: image
+            width: 50%
+          - type: field
+            name: align
+            condition:
+              field: image
+              operator: NotEquals   # Equals, NotEquals, GreaterThan, LessThan, Contains
+              value: null
+      - type: tab_panel
+        tabs:
+          - name: Advanced
+            children:
+              - type: field
+                name: cta
+      - type: grid
+        rows: 1
+        columns: 2
+        children: []
+```
+
+The layout is stored and returned as-is; rendering it is the editor's job.
+
+## Inheritance and the resolved view
+
+`GET /api/management/{repo}/{branch}/elementtypes/{name}/resolved` returns the type with its `extends` chain merged:
+
+```json
+{
+  "element_type": { "name": "arch:Hero", "fields": [ ... ], "version": 2, "publishable": true },
+  "resolved_fields": [
+    { "$type": "OptionsField", "name": "align", "config": { "options": ["left", "center"], "render_as": "Radio" } },
+    { "$type": "TextField", "name": "heading", "title": "Heading", "required": true, "translatable": true, "config": { "max_length": 120 } },
+    { "$type": "MediaField", "name": "image" }
+  ],
+  "resolved_layout": null,
+  "inheritance_chain": ["arch:Hero"],
+  "resolved_strict": false
+}
+```
+
+`resolved_fields` is sorted by name. The JavaScript client has `db.elementTypes().getResolved(name)`; schemas are per branch, so use `db.onBranch('staging')` to resolve elsewhere.
+
+## Strict element types
+
+With `strict: true` on the type, an element carrying a key that is not a resolved field is rejected:
+
+```json
+{"code":"VALIDATION_FAILED","message":"Undefined property 'extra' in strict element type 'arch:TextBlock' at path 'archetype 'arch:LandingPage'.sections[0]'"}
+```
+
+## SQL
+
+`CREATE ELEMENTTYPE 'arch:Quote' DESCRIPTION 'A quote' PUBLISHABLE` creates the record and `DROP ELEMENTTYPE 'arch:Quote'` removes it. A `FIELDS (...)` clause is accepted by the parser but the fields are not stored, so define fields over HTTP, the client or YAML.
+
+## Next steps
+
+- [Defining Element Types](/docs/guides/data-modeling/defining-elements) for the step-by-step guide
+- [Archetypes](/docs/concepts/data-model/archetypes) for where element types are used
+- [Translations](/docs/guides/data-modeling/translations) for translatable fields and the uuid rule

@@ -4,140 +4,117 @@ sidebar_position: 2
 
 # CLI Commands
 
-Complete command reference for the RaisinDB CLI.
+Reference for every `raisindb` command. Options marked with a repository
+default fall back to `RAISINDB_REPO`, then `default_repo` in `.raisinrc`.
 
 ## Authentication
 
 ### login
 
-Authenticate with a RaisinDB server. By default opens your browser for login, then saves the token to `.raisinrc`. All subsequent commands use this authentication.
-
-For CI and scripts, two non-interactive modes are available: username/password against system auth, or storing an existing token directly.
+Authenticate with a server and store the token in `.raisinrc`. Without
+options, the CLI opens the server's `/auth/cli` page in your browser and waits
+on `localhost:9999` for the token. For scripts, pass a username and password
+(system auth) or an existing token.
 
 ```bash
 raisindb login
-raisindb login --server https://my-server.example.com
+raisindb login --server https://db.example.com
 
-# Non-interactive (CI)
+# Non-interactive
 raisindb login --server https://db.example.com --username admin --password "$PASSWORD"
 raisindb login --server https://db.example.com --token "$TOKEN"
 ```
 
 | Option | Description |
 |--------|-------------|
-| `-s, --server <url>` | Server URL (default: `http://localhost:8080` or from `.raisinrc`) |
+| `-s, --server <url>` | Server URL (default: from `.raisinrc`, else `http://localhost:8080`) |
 | `-u, --username <username>` | Username for non-interactive login (requires `--password`) |
 | `-p, --password <password>` | Password for non-interactive login |
-| `-t, --token <token>` | Store an existing token directly (non-interactive) |
+| `-t, --token <token>` | Store an existing token directly |
 | `--tenant <tenant>` | Tenant for username/password login (default: `default`) |
 
-Alternatively, set `RAISINDB_SERVER` and `RAISINDB_TOKEN` environment variables — they take precedence over `.raisinrc` and skip `login` entirely (see [Environment variables](./overview.md#environment-variables)).
+Username/password login posts to `/api/raisindb/sys/{tenant}/auth` and prints
+the token's expiry. `RAISINDB_SERVER` and `RAISINDB_TOKEN` take precedence over
+the stored values and make `login` unnecessary (see
+[Environment variables](./overview.md#environment-variables)).
 
 ### logout
 
-Clear the stored authentication token.
+Clear the stored token from `.raisinrc`.
 
 ```bash
 raisindb logout
 ```
 
-## Server Management
+## Server management
+
+The server binary is installed to `~/.raisindb/bin/raisindb`; the PID file and
+log live in `~/.raisindb/`. Data goes to `./.data` under the directory you
+start from.
 
 ### server install
 
-Download and install the RaisinDB server binary for your platform.
-
 ```bash
 raisindb server install
-raisindb server install --version v0.1.3
+raisindb server install --version v0.4.0
 ```
 
 | Option | Description |
 |--------|-------------|
-| `-v, --version <tag>` | Install a specific version |
-| `-f, --force` | Force reinstall |
+| `-v, --version <tag>` | Install a specific release tag |
+| `-f, --force` | Reinstall even if that version is present |
 
 ### server start
 
-Start the RaisinDB server. On first run, downloads the binary automatically.
+Start the server in the background. Installs the binary first if it is missing.
+Runs in dev mode unless `--production` is given; on the first start in dev mode
+it generates an admin password and prints it once.
 
 ```bash
 raisindb server start
-raisindb server start --port 9090 --detach
+raisindb server start --port 9090
+raisindb server start ./my-project --verbose
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--port <port>` | HTTP port (default: 8080) |
 | `--pgwire-port <port>` | PostgreSQL protocol port (default: 5432) |
-| `--config <path>` | Path to config file |
-| `--production` | Production mode |
-| `--verbose` | Show server logs in terminal |
-| `-d, --detach` | Run in background |
+| `--config <path>` | Server config file |
+| `--production` | Production mode (no dev defaults; requires configured secrets) |
+| `--verbose` | Log at `info` level instead of `warn` |
+| `-d, --detach` | Accepted; the server always runs detached |
 
-On first start, admin credentials are printed to the terminal.
+A directory given as the first argument becomes the working directory. Unknown
+options are passed through to the server binary.
 
-### server stop
-
-Stop a running RaisinDB server.
+### server stop, status, logs, update, version
 
 ```bash
 raisindb server stop
-```
-
-### server status
-
-Check server health and status.
-
-```bash
 raisindb server status
-```
-
-### server logs
-
-View server logs.
-
-```bash
-raisindb server logs
 raisindb server logs -f -n 100
-```
-
-| Option | Description |
-|--------|-------------|
-| `-f, --follow` | Stream logs in real-time |
-| `-n, --lines <count>` | Number of lines to show (default: 50) |
-
-### server update
-
-Update the server binary to the latest version.
-
-```bash
 raisindb server update
-```
-
-### server version
-
-Show the installed server version.
-
-```bash
 raisindb server version
 ```
 
-## Package Management
+| Option (`logs`) | Description |
+|--------|-------------|
+| `-f, --follow` | Stream the log |
+| `-n, --lines <count>` | Lines to show (default: 50) |
+
+## Package management
 
 ### package init
 
-Scaffold a new RaisinDB project with package structure, frontend placeholder, and AI agent skills.
+Scaffold a project: a `package/` folder with `manifest.yaml`, empty schema
+directories, a workspace definition and a root content folder, plus agent
+instruction files and a `frontend/` placeholder.
 
 ```bash
 raisindb package init my-app
-raisindb package init my-app --name "My App" --workspace content
+raisindb package init my-app --name "my-app" --workspace content --pack minimal
 ```
-
-This automatically:
-1. Creates the project structure (`package/`, `frontend/`, `package.json`, etc.)
-2. Runs `npm install` (installs `@raisindb/functions-types`)
-3. Installs AI agent skills via `npx skills add`
 
 | Option | Description |
 |--------|-------------|
@@ -145,11 +122,19 @@ This automatically:
 | `-n, --name <name>` | Package name (default: folder name) |
 | `-w, --workspace <name>` | Workspace name (default: package name) |
 | `-d, --description <text>` | Package description |
-| `--skip-install` | Skip `npm install` and skills installation |
+| `--skip-install` | Skip `npm install` and the agent-skills installation |
+
+The `minimal` pack also writes a root `package.json` with `validate`, `build`,
+`deploy` and `sync` scripts; `npm install` and the skills installation run only
+for packs that write one. Otherwise the next step is
+`raisindb package validate ./package`.
 
 ### package validate
 
-Validate a package folder without building a `.rap`: schema validation (manifest, node types, workspaces, content, translations) plus static flow analysis — every `raisin:Flow` node's `workflow_data` is run through the same checks as `raisindb flow doctor` (templates, REL pitfalls, container/loop configuration). Exits `0` when clean, `1` when there are errors; warnings are printed but don't fail validation.
+Validate a package folder without building: manifest, node types, workspaces,
+content and translations, plus the same static flow checks as
+[`flow doctor`](#flow-doctor). Exits `0` when clean and `1` on errors; warnings
+are printed but do not fail.
 
 ```bash
 raisindb package validate ./package
@@ -159,63 +144,63 @@ raisindb package validate ./package --env production
 | Option | Description |
 |--------|-------------|
 | `-e, --env <profile>` | Env profile for `{env:...}` tokens (loads `.env.<profile>`) |
-| `--env-file <path...>` | Additional env file(s) for `{env:...}` tokens |
+| `--env-file <path...>` | Additional env file(s) |
 
-Validation runs against the **substituted** content, so an unset variable is
-reported here as an `UNRESOLVED_ENV_TOKEN` error with its file and line — see
-[Environment Variables](../../guides/packages/environment-variables.md).
-
-This is the final gate before a package is built or uploaded — `package create` and `package deploy` run the same validation automatically and abort on errors. Use `raisindb flow doctor` as the fast, focused loop while editing a single flow.
+Validation runs on the substituted content, so an unset variable is reported as
+an `UNRESOLVED_ENV_TOKEN` error with its file and line.
 
 ### package create
 
-Create a `.rap` package file from a folder. Runs the full package validation (schema + flow doctor, see `package validate`) first and refuses to build on errors.
+Build a `.rap` from a folder. Validates first and refuses to build on errors.
+The output defaults to `<name>-<version>.rap` in the current directory.
 
 ```bash
 raisindb package create ./package
+raisindb package create ./package -o dist/my-app.rap
 raisindb package create ./package --check
-raisindb package create ./package -o custom-name.rap
-raisindb package create ./package --env production
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-o, --output <file>` | Output file path |
-| `--check` | Validate only (don't create package; same as `package validate`) |
+| `--check` | Validate only, same as `package validate` |
 | `--no-validate` | Skip validation |
-| `-e, --env <profile>` | Env profile for `{env:...}` tokens (loads `.env.<profile>`) |
-| `--env-file <path...>` | Additional env file(s) for `{env:...}` tokens |
+| `-e, --env <profile>` | Env profile for `{env:...}` tokens |
+| `--env-file <path...>` | Additional env file(s) |
 
-`{env:NAME}` / `{env:NAME:-default}` tokens in the package's YAML are resolved
-into the built `.rap`. An unset variable with no default aborts the build and
-writes no file — see
-[Environment Variables](../../guides/packages/environment-variables.md).
+Files matched by `.gitignore`, `.rapignore` or the built-in ignore list are
+excluded. `{env:...}` tokens are resolved into the archive; an unresolved token
+aborts the build.
 
 ### package deploy
 
-Validate, build, and upload a package in one step. Reads `manifest.yaml` for the name and version automatically. Also available as a top-level alias: `raisindb deploy`.
+Validate, build, upload and optionally install in one step. Reads the name and
+version from `manifest.yaml`. Also available as `raisindb deploy`.
 
 ```bash
-raisindb package deploy ./package
 raisindb package deploy ./package --repo demo
 raisindb deploy ./package --repo demo --install
-
-# Deploy (and install) to a non-default branch
-raisindb deploy ./package --repo demo --branch staging --install
+raisindb deploy ./package --repo demo --branch staging --install --mode skip
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-s, --server <url>` | Server URL |
-| `-r, --repo <name>` | Repository name |
-| `-b, --branch <name>` | Target branch (default: `main`). Uploads — and, with `--install`, installs — onto this branch. |
-| `-i, --install` | Install after upload; waits until the package status is `installed` (fails on `failed` with the error detail) |
-| `-e, --env <profile>` | Env profile for `{env:...}` tokens (loads `.env.<profile>`) |
-| `--env-file <path...>` | Additional env file(s) for `{env:...}` tokens |
+| `-r, --repo <name>` | Repository (has a default) |
+| `-b, --branch <name>` | Target branch (default: `main`) |
+| `-i, --install` | Install after upload and wait for status `installed`; fails on `failed` with the error detail |
+| `--mode <mode>` | With `--install`: `skip`, `sync` (default) or `overwrite` |
+| `-e, --env <profile>` | Env profile for `{env:...}` tokens |
+| `--env-file <path...>` | Additional env file(s) |
+
+After an install, workspaces that already existed have their
+`allowed_node_types` and `allowed_root_node_types` re-applied from the
+package's `workspaces/*.yaml`.
 
 ### package upload
 
-Upload a `.rap` package to the server.
+Upload a `.rap`. The package node is created under the `packages` workspace on
+`main`, named after the manifest.
 
 ```bash
 raisindb package upload my-app-0.1.0.rap --repo demo
@@ -224,12 +209,14 @@ raisindb package upload my-app-0.1.0.rap --repo demo
 | Option | Description |
 |--------|-------------|
 | `-s, --server <url>` | Server URL |
-| `-r, --repo <name>` | Repository name |
-| `-p, --path <path>` | Target path in repository |
+| `-r, --repo <name>` | Repository (has a default) |
+| `-p, --path <path>` | Target path inside the `packages` workspace |
 
 ### package list
 
-List packages in a repository, including a `Status` column that tracks the install lifecycle: `uploaded → installing → installed | failed` (for `failed`, the error detail is printed). Built-in packages installed at repository creation show `-`.
+List the packages in a repository with version, installed flag and status
+(`uploaded`, `installing`, `installed`, `failed`). Failed packages print their
+error.
 
 ```bash
 raisindb package list --repo demo
@@ -238,172 +225,144 @@ raisindb package list --repo demo
 | Option | Description |
 |--------|-------------|
 | `-s, --server <url>` | Server URL |
-| `-r, --repo <name>` | Repository name |
+| `-r, --repo <name>` | Repository (has a default) |
 
 ### package install
 
-Install a package by name. Starts the install job and polls until the package reaches a terminal status: succeeds on `installed`, fails on `failed` (printing the server's error detail).
+Install an uploaded package by name and poll until it reaches a terminal
+status. Uses the server's default install mode, `skip`, so an already-installed
+package is left alone; use `deploy --install` to choose a mode.
 
 ```bash
-raisindb package install my-package --repo demo
-raisindb package install my-package --repo demo --branch staging
+raisindb package install my-app --repo demo
+raisindb package install my-app --repo demo --branch staging
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-s, --server <url>` | Server URL |
-| `-r, --repo <name>` | Repository name |
-| `-b, --branch <name>` | Branch the package lives on / installs into (default: `main`) |
+| `-r, --repo <name>` | Repository (has a default) |
+| `-b, --branch <name>` | Branch to install into (default: `main`) |
 
 ### package sync
 
-Synchronize a local package directory with the server. Supports watch mode for live development. Also available as a top-level alias: `raisindb sync`. With `--repo` no `.raisin-sync.yaml` is required. In non-TTY environments (CI, piped output) watch mode prints plain log lines instead of the interactive UI. See [Sync and Watch](../../guides/packages/sync-and-watch.md).
+Push a package directory to the server, watch it for changes, or pull. Also
+available as `raisindb sync`. With `--repo` no config file is needed; otherwise
+`.raisindb-cli.yaml` in the package directory is used. See
+[Sync and Watch](../../guides/packages/sync-and-watch.md).
 
 ```bash
-raisindb package sync ./package --watch
-raisindb package sync ./package --push
-raisindb sync ./package --repo demo --watch
+raisindb sync ./package --repo demo --push
+raisindb sync ./package --repo demo --watch --push
+raisindb sync ./package --init --repo demo
 ```
 
 | Option | Description |
 |--------|-------------|
-| `-w, --watch` | Watch mode (continuous sync) |
-| `-p, --push` | One-way: local to server only |
-| `-l, --pull` | One-way: server to local only |
+| `-w, --watch` | Watch mode: push once, then push each change |
+| `-p, --push` | One-way, local to server |
+| `-l, --pull` | One-way, server to local |
 | `-y, --yes` | Skip confirmations |
-| `-f, --force` | Overwrite conflicts |
-| `-n, --dry-run` | Show changes without applying |
-| `-r, --repo <name>` | Repository name |
+| `-f, --force` | Overwrite conflicts and token-bearing local files |
+| `-n, --dry-run` | Show what would be synced |
+| `-r, --repo <name>` | Repository |
 | `-s, --server <url>` | Server URL |
-| `-b, --branch <name>` | Branch to sync against (default: `main`) |
-| `--init` | Initialize sync configuration |
-| `-e, --env <profile>` | Env profile for `{env:...}` tokens (loads `.env.<profile>`) |
-| `--env-file <path...>` | Additional env file(s) for `{env:...}` tokens |
+| `-b, --branch <name>` | Branch (default: `main`) |
+| `--init` | Write `.raisindb-cli.yaml` |
+| `-e, --env <profile>` | Env profile for `{env:...}` tokens |
+| `--env-file <path...>` | Additional env file(s) |
 
-Pushed files have their `{env:...}` tokens resolved first, and
-`.raisin-sync.yaml` may itself use them (`server: "{env:RAISIN_SERVER:-http://localhost:8080}"`).
-`--pull` refuses to overwrite a local file containing tokens unless `--force`
-is passed — see
-[Environment Variables](../../guides/packages/environment-variables.md).
+When stdout is not a TTY, watch mode prints plain log lines.
 
 ### package clone
 
-Clone a package from the server to a local directory.
+Export a package from the server and unpack it into a local directory.
 
 ```bash
-raisindb package clone my-package
-raisindb package clone my-package -o ./local-dir
+raisindb package clone my-app
+raisindb package clone my-app -o ./local-dir --repo demo
 ```
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output <dir>` | Output directory |
+| `-o, --output <dir>` | Output directory (default: `./<package-name>`) |
 | `-s, --server <url>` | Server URL |
-| `-r, --repo <name>` | Repository name |
-| `-b, --branch <name>` | Branch name (default: `main`) |
+| `-r, --repo <name>` | Repository (has a default) |
+| `-b, --branch <name>` | Branch (default: `main`) |
 
 ### package create-from-server
 
-Interactive: create a new package by selecting content from the server.
+Interactive: pick content on the server and download it as a new `.rap`.
 
 ```bash
 raisindb package create-from-server --repo demo
 ```
 
-| Option | Description |
-|--------|-------------|
-| `-s, --server <url>` | Server URL |
-| `-r, --repo <name>` | Repository name |
-
-## Workflow Tools
-
-Offline static analysis for flow definitions — no server needed.
-
-### flow doctor
-
-Statically analyze flow definitions (a flow YAML file or a whole package folder): templates, REL pitfalls, container/loop configuration. The same checks run inside `package validate` / `package create` / `package deploy`.
-
-```bash
-raisindb flow doctor ./package
-raisindb flow doctor ./package/content/flows/onboarding.yaml --strict
-```
-
-| Option | Description |
-|--------|-------------|
-| `--json` | Machine-readable JSON output |
-| `--strict` | Treat warnings as failures (non-zero exit) |
-
-### flow explain
-
-Print the lowered execution plan the engine will actually run for a flow definition.
-
-```bash
-raisindb flow explain ./package/content/flows/onboarding.yaml
-```
-
-## Functions
-
-Scaffold, build and run server functions. `create function` starts one in any
-language; `function build` and `doctor` are offline, `run` and `test --server`
-talk to a server.
+## Scaffolding
 
 ### create function
 
-Scaffold a `raisin:Function` node and its source (or its toolchain project).
+Scaffold a `raisin:Function` node inside a package, either as source (JavaScript
+or Starlark) or as a WebAssembly project under `wasm/`.
 
 ```bash
-raisindb create function greet --lang rust --ns demo          # compiled to wasm
-raisindb create function hello --lang js --ns demo            # source, no build
+raisindb create function greet --lang rust --ns demo
+raisindb create function hello --lang js --ns demo
 raisindb create function greet-shout --into wasm/demo/greet --handler shout
 ```
 
 | Option | Description |
 |--------|-------------|
-| `-l, --lang <lang>` | `rust`, `go`, `assemblyscript`, `ts` (compiled to WebAssembly) or `js`, `starlark` (source, no build step) |
+| `-l, --lang <lang>` | `rust`, `go`, `assemblyscript`, `ts` (compiled to WebAssembly) or `js`, `starlark` (source) |
 | `--ns <namespace>` | Namespace under `content/functions/lib` (default: package name) |
 | `-d, --dir <path>` | Package directory (default: nearest `manifest.yaml` above cwd) |
 | `--handler <name>` | Handler name (default `default`, or the function name with `--into`) |
-| `--into <project>` | Add a SECOND handler to an existing wasm project, sharing its artifact |
+| `--into <project>` | Add a second handler to an existing wasm project |
 | `--description <text>` | Description for the Function node |
 
-Compiled languages get a project under `wasm/<ns>/<name>/` and only the built
-`main.wasm` ships; source languages get their code beside the node, which is
-what ships. See [Creating Functions](../../guides/functions/creating-functions.md).
+See [Creating Functions](../../guides/functions/creating-functions.md).
+
+### create adapter
+
+Scaffold a connector-adapter package skeleton.
+
+```bash
+raisindb create adapter acme --provider acme
+```
+
+| Option | Description |
+|--------|-------------|
+| `-d, --dir <path>` | Target directory (default: `./<name>-adapter`) |
+| `-p, --provider <slug>` | Provider type slug (default: `<name>`) |
+| `--description <text>` | Package description |
+
+## Functions
 
 ### function build
 
-Build a wasm project and copy the artifact into its Function node.
+Build a wasm project with its own toolchain (`cargo`, TinyGo or `asc` plus
+`wasm-tools`) and copy the artifact into its Function node.
 
 ```bash
 raisindb function build wasm/demo/greet
 raisindb function build --all --watch
 ```
 
-It is a wrapper around your own toolchain, not a compiler: it reads
-`raisin.build.yaml` and runs `cargo build --release --target wasm32-wasip2`,
-the TinyGo equivalent, or for AssemblyScript `asc` followed by
-`wasm-tools component embed` and `component new`. Then it copies the result to
-the node's artifact path and prints the size, sha256 and every Function node
-that artifact backs.
-
 | Option | Description |
 |--------|-------------|
 | `--all` | Build every wasm project in the package |
-| `-w, --watch` | Rebuild on change until interrupted |
-| `--release` / `--debug` | Profile (release is the default) |
+| `-w, --watch` | Rebuild on change |
+| `--release` / `--debug` | Build profile (release is the default) |
 
 ### function doctor
 
-Offline checks that otherwise fail late.
+Offline checks: missing toolchains, an `entry_file` that does not resolve, an
+artifact over the server's size cap, a handler the source does not define.
 
 ```bash
-raisindb function doctor            # every function in the package
-raisindb function doctor wasm/demo/greet
+raisindb function doctor
+raisindb function doctor wasm/demo/greet --strict
 ```
-
-Reports missing toolchains, an `entry_file` that does not resolve or escapes
-the functions workspace, an artifact over the server's 32 MiB cap, and a
-handler name a node asks for that the source does not define.
 
 | Option | Description |
 |--------|-------------|
@@ -412,8 +371,8 @@ handler name a node asks for that the source does not define.
 
 ### function run
 
-Invoke a function against a server, uploading the local code first when it
-differs from what is deployed. Works for wasm, JavaScript and Starlark.
+Invoke a function on a server, uploading the local artifact first when it
+differs from what is deployed.
 
 ```bash
 raisindb function run wasm/demo/greet --input '{"name":"Ada"}'
@@ -422,10 +381,10 @@ raisindb function run content/functions/lib/demo/hello --input-file in.json
 
 | Option | Description |
 |--------|-------------|
-| `-i, --input <json>` / `--input-file <path>` | Input for the handler |
-| `--handler <name>` | Call a different handler than the node's `entry_file` names |
+| `-i, --input <json>` / `--input-file <path>` | Handler input |
+| `--handler <name>` | Call a different handler than the node's `entry_file` |
 | `-t, --timeout <ms>` | Timeout |
-| `-s, --server` / `-r, --repo` / `-b, --branch` | Target |
+| `-s, --server <url>` / `-r, --repo <name>` / `-b, --branch <name>` | Target |
 | `--json` | One JSON object instead of the live view |
 
 ### function test
@@ -435,120 +394,137 @@ raisindb function test wasm/demo/greet             # native tests, no server
 raisindb function test wasm/demo/greet --server    # scenarios against a server
 ```
 
-For a compiled language this runs the project's **native** tests — `cargo test`
-or `go test ./...` against a mock host, so no server is needed. With `--server`
-it runs the scenarios in `tests/server.json`.
+| Option | Description |
+|--------|-------------|
+| `--server [url]` | Replay `tests/server.json` against a server |
+| `-r, --repo <name>` / `-b, --branch <name>` | Target (with `--server`) |
+| `-t, --timeout <ms>` | Per-case timeout |
 
-JavaScript and Starlark functions have no native test step (nothing to compile,
-no mock host), so they need `--server`. Their scenarios live in a **hidden**
-`.tests.json` beside the node — hidden because everything else under
-`content/` is uploaded, and a visible file would become a node:
+For a compiled language this runs `cargo test` or `go test ./...` against a mock
+host. JavaScript and Starlark functions have no native step and need
+`--server`; their scenarios live in a `.tests.json` beside the node:
 
 ```json
 [{ "input": { "name": "Ada" }, "expect": { "greeting": "Hello, Ada" } }]
 ```
 
-An object in `expect` is matched as a SUBSET, so a case asserts the fields it
-names and ignores the rest.
+An object in `expect` is matched as a subset.
 
-## Repository Administration
+## Workflow tools
 
-Repo commands operate over the HTTP API with your stored token — they work identically against local and remote servers.
+Offline static analysis; no server needed.
 
-### repo create
-
-```bash
-raisindb repo create myapp
-raisindb repo create myapp --exists-ok
-```
-
-| Option | Description |
-|--------|-------------|
-| `-d, --description <text>` | Repository description |
-| `--exists-ok` | Succeed if the repository already exists (idempotent for CI) |
-
-### repo list
+### flow doctor
 
 ```bash
-raisindb repo list
-raisindb repo list --json
+raisindb flow doctor ./package
+raisindb flow doctor ./package/content/flows/onboarding.yaml --strict
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--json` | Machine-readable JSON output |
+| `--strict` | Treat warnings as failures |
 
-### repo delete
+### flow explain
 
-Delete a repository. Irreversible — requires explicit confirmation via `--yes`.
+Print the lowered execution plan the engine will run for a flow definition.
 
 ```bash
+raisindb flow explain ./package/content/flows/onboarding.yaml
+```
+
+## Repository administration
+
+These commands call the HTTP API with the stored token.
+
+```bash
+raisindb repo create myapp --description "My app"
+raisindb repo create myapp --exists-ok
+raisindb repo list
+raisindb repo list --json
 raisindb repo delete myapp --yes
 ```
 
-| Option | Description |
-|--------|-------------|
-| `-y, --yes` | Confirm deletion (required) |
+| Command | Options |
+|---------|---------|
+| `repo create <name>` | `-d, --description <text>`; `--exists-ok` succeeds if it already exists |
+| `repo list` | `--json` |
+| `repo delete <name>` | `-y, --yes` (required) |
 
-## AI Provider Configuration
+`repo list` prints the repository id, default branch, creation time and
+description.
 
-Manage tenant-level AI providers, gh-secret style: API keys are write-only and **never echoed** back by any command.
+## AI provider configuration
+
+Tenant-level providers are keyed by a slug. API keys are write-only: no
+command prints one back.
 
 ### ai provider set
 
-Create or update a provider. Read-modify-write semantics: other providers and already-stored keys are preserved — omitting `--api-key*` keeps the existing key.
+Create or update a provider. Existing providers and stored keys are preserved;
+omitting the key options keeps the current key.
 
 ```bash
-# Interactive shells
-raisindb ai provider set openai --api-key sk-... --model gpt-4o:GPT-4o
+raisindb ai provider set openai --kind openai --api-key sk-... --model gpt-4o:GPT-4o
 
-# CI: never put keys in argv
-echo "$OPENAI_KEY" | raisindb ai provider set openai --api-key-stdin
-raisindb ai provider set anthropic --api-key-env ANTHROPIC_API_KEY \
+# CI: keep keys out of argv
+echo "$OPENAI_KEY" | raisindb ai provider set openai --kind openai --api-key-stdin
+raisindb ai provider set anthropic --kind anthropic --api-key-env ANTHROPIC_API_KEY \
   --model claude-sonnet-4-5 --enabled
 ```
 
 | Option | Description |
 |--------|-------------|
-| `--api-key <value>` | API key value (prefer `--api-key-stdin` or `--api-key-env` in CI) |
-| `--api-key-stdin` | Read the API key from stdin |
-| `--api-key-env <var>` | Read the API key from an environment variable |
+| `--kind <kind>` | Provider kind (`openai`, `anthropic`, `custom`, ...); required when creating a new slug |
+| `--api-key <value>` | API key (prefer stdin or env in CI) |
+| `--api-key-stdin` | Read the key from stdin |
+| `--api-key-env <var>` | Read the key from an environment variable |
 | `--endpoint <url>` | Custom API endpoint |
-| `--enabled` / `--disabled` | Enable or disable the provider |
-| `-m, --model <spec>` | Model as `model_id[:display_name]` (repeatable; the first becomes the default) |
-| `--tenant <tenant>` | Tenant ID (default: `default`) |
+| `--display-name <name>`, `--icon-url <url>` | Display metadata |
+| `--enabled` / `--disabled` | Enable or disable |
+| `-m, --model <spec>` | `model_id[:display_name]`, repeatable; the first becomes the default |
+| `--tenant <tenant>` | Tenant (default: `default`) |
 
-### ai provider list
-
-List configured providers: provider, enabled, `has_api_key`, model count. Keys themselves are never shown.
+### ai provider list, test
 
 ```bash
 raisindb ai provider list
 raisindb ai provider list --json
-```
-
-| Option | Description |
-|--------|-------------|
-| `--tenant <tenant>` | Tenant ID (default: `default`) |
-| `--json` | Machine-readable JSON output |
-
-### ai provider test
-
-Test the live connection to a configured provider.
-
-```bash
 raisindb ai provider test openai
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--tenant <tenant>` | Tenant ID (default: `default`) |
+`list` shows slug, kind, endpoint, enabled, `has_api_key` and model count.
+Both accept `--tenant <tenant>`; `list` also accepts `--json`.
 
-## User Administration
+## Secrets
+
+Branch-scoped encrypted secrets. Values are read from stdin by default and are
+never echoed; there is no `secret get`, because the API exposes no plaintext
+read. Functions read secrets through `raisin.secrets`.
+
+```bash
+echo -n "$STRIPE_KEY" | raisindb secret set stripe_key --repo myapp
+raisindb secret set stripe_key --value-env STRIPE_KEY --repo myapp
+raisindb secret list --repo myapp
+raisindb secret show stripe_key --repo myapp --json
+echo -n "$NEW_KEY" | raisindb secret rotate stripe_key --repo myapp
+raisindb secret rm stripe_key --repo myapp --yes
+```
+
+| Command | Options |
+|---------|---------|
+| `secret set <name>` | `--value <value>` (discouraged), `--value-env <var>`, `-r, --repo`, `-b, --branch` (default `main`) |
+| `secret list` | `-r, --repo`, `-b, --branch`, `--json` |
+| `secret show <name>` | Metadata only (version, timestamps, author); `-r, --repo`, `-b, --branch`, `--json` |
+| `secret rotate <name>` | Same as `set`, stamped as a rotation |
+| `secret rm <name>` | `-r, --repo`, `-b, --branch`, `-y, --yes` (required) |
+
+## User administration
 
 ### user register
 
-Register an identity user (demo/login user) for a repository.
+Register an identity user (a login user) for a repository.
 
 ```bash
 raisindb user register alice@example.com --repo myapp --display-name "Alice"
@@ -559,51 +535,37 @@ echo "$PASSWORD" | raisindb user register alice@example.com --repo myapp --passw
 
 | Option | Description |
 |--------|-------------|
-| `-p, --password <password>` | Password (prefer `--password-stdin` in CI) |
+| `-p, --password <password>` | Password (prefer `--password-stdin`) |
 | `--password-stdin` | Read the password from stdin |
 | `-r, --repo <name>` | Target repository (required) |
 | `--display-name <name>` | Display name |
-| `--tenant <tenant>` | Tenant ID (default: `default`) |
+| `--tenant <tenant>` | Tenant (default: `default`) |
 | `--exists-ok` | Succeed if the user already exists |
 
 ## CORS
 
-Manage CORS allowed origins. Repo-level by default; `--tenant-level` operates on the tenant-wide fallback used when a repo has no config of its own.
-
-### cors add
+Manage allowed origins. Repository-level by default; `--tenant-level` edits the
+tenant-wide fallback used when a repository has no configuration of its own.
 
 ```bash
 raisindb cors add https://app.example.com --repo myapp
-raisindb cors add https://app.example.com --tenant-level
-```
-
-### cors list
-
-```bash
 raisindb cors list --repo myapp
 raisindb cors list --tenant-level --json
-```
-
-### cors remove
-
-```bash
 raisindb cors remove https://app.example.com --repo myapp
 ```
-
-Shared options:
 
 | Option | Description |
 |--------|-------------|
 | `-r, --repo <name>` | Target repository |
-| `--tenant-level` | Operate on the tenant-level config instead of a repo |
-| `--tenant <tenant>` | Tenant ID (default: `default`) |
-| `--json` | Machine-readable JSON output (`cors list` only) |
+| `--tenant-level` | Operate on the tenant-level config |
+| `--tenant <tenant>` | Tenant (default: `default`) |
+| `--json` | Machine-readable output (`list` only) |
 
-## Interactive Shell
+## Interactive shell
 
 ### shell
 
-Start an interactive SQL shell with syntax highlighting and auto-completion.
+An interactive shell with a SQL mode.
 
 ```bash
 raisindb shell
@@ -613,14 +575,18 @@ raisindb shell --server http://remote:8080 --database demo
 | Option | Description |
 |--------|-------------|
 | `-s, --server <url>` | Server URL |
-| `-d, --database <name>` | Database/repository to use |
+| `-d, --database <name>` | Repository to use |
 
-Shell commands (inside the shell):
-- `/connect <url>` — Connect to a server
-- `/login` — Authenticate via browser
-- `/logout` — Clear authentication
-- `use <database>` — Switch database
-- `/databases` — List databases
-- `/sql` — Enter SQL mode
-- `/help` — Show help
-- `/quit` — Exit
+Commands inside the shell:
+
+| Command | Description |
+|---------|-------------|
+| `/connect <url>` | Connect to a server |
+| `/login`, `/logout` | Authenticate via the browser flow, or clear the token |
+| `/auth`, `/status` | Show authentication and connection state |
+| `/databases` (or `/repos`) | List repositories |
+| `/sql`, `/exit-sql` | Enter and leave SQL mode |
+| `/packages`, `/upload <file>`, `/install <name>`, `/create <folder>` | Package operations against the current repository |
+| `/clear` | Clear the screen |
+| `/help` | Show help |
+| `/quit` (or `/exit`) | Exit |

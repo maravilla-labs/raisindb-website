@@ -4,544 +4,213 @@ sidebar_position: 11
 
 # Workspaces
 
-**Workspaces** are app-specific organizational units for grouping related data within a repository. They separate different types of content — like "content", "dam", "customers" — while sharing the same version control and branching infrastructure. Workspaces are completely independent of multi-tenancy (which is handled by RaisinDB's built-in tenant isolation).
+A workspace is a named container of nodes inside a repository. A repository typically has several: one for site content, one for assets, one for users and roles, one for functions. All workspaces in a repository share the same branches and revision history, so a branch or a merge covers every workspace at once. Workspaces are unrelated to tenants; see [Multi-Tenancy](/docs/concepts/multi-tenancy) for how customers are kept apart.
 
-## What is a Workspace?
+## What a workspace is
 
-In the Admin Console, workspaces are displayed as cards showing their purpose and available NodeTypes:
+In the Admin Console, workspaces are shown as cards with their purpose and the NodeTypes they accept:
 
 ![Workspace Selector](/img/admin-console/workspace-selector.png)
 
-A workspace is a named container for nodes:
+In SQL, each workspace is a table. Quote the name, since most workspace names contain characters such as `:` or `-`.
 
 ```sql
--- Each workspace is queryable as a table
-SELECT * FROM default;              -- User content
-SELECT * FROM raisin:system;        -- System metadata
-SELECT * FROM raisin:access_control;-- Users, roles, permissions
-SELECT * FROM functions;             -- Serverless functions
+SELECT path, node_type FROM 'site';
+SELECT path, node_type FROM 'raisin:access_control' WHERE node_type = 'raisin:User';
 ```
 
-Workspaces provide:
-- **Isolation**: Content in one workspace doesn't interfere with another
-- **Organization**: Separate concerns (content, config, users, etc.)
-- **Security**: Different access controls per workspace
-- **Performance**: Independent indexes and optimization
+Over HTTP, the workspace is part of every node URL:
 
-## System Workspaces
-
-RaisinDB includes built-in workspaces:
-
-### default
-
-Primary content workspace for your application:
-
-```sql
--- User-facing content
-SELECT * FROM default WHERE node_type = 'blog:Article';
-
--- This is where most INSERT/UPDATE operations happen
-INSERT INTO default (path, node_type, properties) VALUES (
-  '/content/blog/my-post',
-  'blog:Article',
-  '{"title": "My Article"}'
-);
+```
+/api/repository/{repo}/{branch}/head/{workspace}/{path}
 ```
 
-### raisin:system
+A workspace record looks like this:
 
-System configuration and schemas. The workspace name is the table, and you filter by node_type:
-
-```sql
--- Query the system workspace for NodeType definitions
-SELECT path, properties->>'name' AS name
-FROM "raisin:system"
-WHERE node_type = 'raisin:NodeType';
-
--- Query archetypes
-SELECT path, properties->>'name' AS name
-FROM "raisin:system"
-WHERE node_type = 'raisin:Archetype';
-
--- Query element definitions
-SELECT path, properties->>'name' AS name
-FROM "raisin:system"
-WHERE node_type = 'raisin:ElementType';
+```json
+{
+  "name": "site",
+  "description": "Marketing site",
+  "allowed_node_types": ["raisin:Folder", "blog:Article"],
+  "allowed_root_node_types": ["raisin:Folder", "blog:Article"],
+  "depends_on": [],
+  "initial_structure": null,
+  "created_at": "2026-09-06T18:33:16.528620+00:00",
+  "updated_at": null,
+  "config": { "default_branch": "main", "node_type_pins": {} }
+}
 ```
 
-### raisin:access_control
+| Field | Meaning |
+|---|---|
+| `allowed_node_types` | NodeTypes that may exist anywhere in the workspace. A write with any other type is rejected. |
+| `allowed_root_node_types` | NodeTypes that may sit directly under the workspace root. |
+| `initial_structure` | Nodes created once, when the workspace is created (`{"children": [...]}`). |
+| `config.default_branch` | The branch used when the workspace is first initialized. |
+| `config.node_type_pins` | Optional map of NodeType name to revision. A pinned workspace keeps resolving that NodeType at the pinned revision even after the NodeType is republished. |
+| `depends_on` | Informational list of other workspaces this one relies on; it is stored but not enforced. |
 
-User management and permissions. Users, groups, and roles are nodes in this workspace:
+## Built-in workspaces
+
+Every repository is created with a set of system workspaces. The ones you will meet most often:
+
+| Workspace | Holds |
+|---|---|
+| `default` | General content (`raisin:Folder`, `raisin:Page`, `raisin:Asset`, ...) |
+| `raisin:system` | Authentication configuration, identities, sessions, integrations, flow instances |
+| `raisin:access_control` | Users, roles, groups, profiles, security configuration |
+| `functions` | Serverless functions, triggers and flows, under `/lib`, `/apps` and `/triggers` |
+| `packages` | Installed package records |
+| `ai` | AI agents, prompts and conversations |
+| `job_activity` | One node with the repository's background-job activity |
+
+They are ordinary workspaces, so you can query them:
 
 ```sql
--- Query users (nodes at /users/...)
-SELECT path, properties->>'user_id' AS user_id,
-       properties->>'email' AS email
-FROM "raisin:access_control"
-WHERE node_type = 'raisin:User';
-
--- Query groups (nodes at /groups/...)
-SELECT path, properties->>'group_id' AS group_id
-FROM "raisin:access_control"
-WHERE node_type = 'raisin:Group';
-
--- Query roles (nodes at /roles/...)
-SELECT path, properties->>'role_id' AS role_id
-FROM "raisin:access_control"
-WHERE node_type = 'raisin:Role';
+SELECT path, node_type FROM 'raisin:access_control' LIMIT 5;
 ```
 
-### functions
-
-Serverless JavaScript functions:
-
-```sql
--- Stored functions
-SELECT * FROM functions WHERE path = '/api/custom-endpoint';
-
--- Triggers
-SELECT * FROM functions WHERE type = 'trigger';
-
--- Create a function
-INSERT INTO functions (path, code, trigger_on) VALUES (
-  '/api/hello',
-  'export default function(req) { return { message: "Hello" }; }',
-  NULL
-);
+```json
+{"columns":["path","node_type"],
+ "rows":[{"path":"/config","node_type":"raisin:AclFolder"},
+         {"path":"/config/default","node_type":"raisin:SecurityConfig"},
+         {"path":"/config/stewardship","node_type":"raisin:StewardshipConfig"},
+         {"path":"/users","node_type":"raisin:AclFolder"},
+         {"path":"/users/system","node_type":"raisin:AclFolder"}]}
 ```
 
-### packages
+NodeTypes, archetypes and element types are not nodes. They live in their own store and are managed through the [NodeTypes API](/docs/reference/http-api/nodetypes-api) or SQL DDL, not by querying `raisin:system`.
 
-Installed RAP (RaisinDB Application Package) content:
+## Creating a workspace
 
-```sql
--- Installed packages
-SELECT * FROM packages;
+There is no SQL statement for workspaces. Create or replace one with a `PUT` to the workspaces endpoint (operator or superadmin token required). The name in the URL wins over the name in the body, and a successful call returns `204 No Content`.
 
--- Package content
-SELECT * FROM packages WHERE path LIKE '/packages/cms-toolkit/%';
-```
-
-## Creating Custom Workspaces
-
-Create workspaces for specific purposes:
-
-```sql
--- Create a workspace for drafts
-CREATE WORKSPACE drafts;
-
--- Create a workspace for archives
-CREATE WORKSPACE archives;
-
--- Create a workspace for media
-CREATE WORKSPACE media;
-
--- Create a workspace for analytics
-CREATE WORKSPACE analytics;
-```
-
-### Workspace Metadata
-
-```sql
--- List all workspaces
-SELECT name, created_at, created_by, description
-FROM __workspaces__
-ORDER BY name;
-
--- Get workspace details
-SELECT * FROM __workspaces__
-WHERE name = 'drafts';
-```
-
-## Using Workspaces
-
-### Insert into Workspace
-
-```sql
--- Insert into default workspace
-INSERT INTO default (path, node_type, properties) VALUES (
-  '/content/blog/post1',
-  'blog:Article',
-  '{"title": "Published Article"}'
-);
-
--- Insert into drafts workspace
-INSERT INTO drafts (path, node_type, properties) VALUES (
-  '/content/blog/draft1',
-  'blog:Article',
-  '{"title": "Draft Article"}'
-);
-
--- Insert into media workspace
-INSERT INTO media (path, node_type, properties) VALUES (
-  '/images/header.jpg',
-  'media:Image',
-  '{"url": "https://cdn.example.com/header.jpg"}'
-);
-```
-
-### Query from Workspace
-
-```sql
--- Query default workspace
-SELECT * FROM default WHERE node_type = 'blog:Article';
-
--- Query drafts workspace
-SELECT * FROM drafts WHERE properties->>'status' = 'review';
-
--- Query media workspace
-SELECT * FROM media WHERE node_type = 'media:Image';
-
--- Join across workspaces
-SELECT
-  d.properties->>'title' AS title,
-  m.properties->>'url' AS image_url
-FROM default d
-LEFT JOIN media m ON d.properties->>'featuredImage' = m.path
-WHERE d.node_type = 'blog:Article';
-```
-
-### Cross-Workspace References
-
-```sql
--- Article in default references media in media workspace
-INSERT INTO default (path, node_type, properties) VALUES (
-  '/content/blog/post1',
-  'blog:Article',
-  '{
-    "title": "My Article",
-    "featuredImage": "/images/header.jpg"
+```bash
+curl -X PUT http://localhost:8080/api/workspaces/myrepo/site \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{
+    "name": "site",
+    "description": "Marketing site",
+    "allowed_node_types": ["raisin:Folder", "blog:Article"],
+    "allowed_root_node_types": ["raisin:Folder"],
+    "initial_structure": {
+      "children": [
+        { "name": "pages", "node_type": "raisin:Folder", "properties": { "title": "Pages" } }
+      ]
+    }
   }'
-);
-
--- Resolve reference across workspaces
-SELECT
-  d.properties->>'title' AS title,
-  (SELECT properties FROM media WHERE path = d.properties->>'featuredImage') AS image
-FROM default d
-WHERE path = '/content/blog/post1';
 ```
 
-## Workspace Patterns
-
-### Content Staging
-
-Separate draft and published content:
+Creating a workspace also creates its root node and the `initial_structure` children, so the workspace is immediately queryable:
 
 ```sql
--- Create staging workspaces
-CREATE WORKSPACE drafts;
-CREATE WORKSPACE review;
-CREATE WORKSPACE published;
-
--- Author writes in drafts
-INSERT INTO drafts (path, node_type, properties) VALUES (
-  '/content/blog/new-article',
-  'blog:Article',
-  '{"title": "New Article", "status": "draft"}'
-);
-
--- Move to review workspace
-INSERT INTO review (path, node_type, properties)
-SELECT path, node_type, properties
-FROM drafts
-WHERE path = '/content/blog/new-article';
-
-DELETE FROM drafts WHERE path = '/content/blog/new-article';
-
--- Publish to published workspace
-INSERT INTO published (path, node_type, properties)
-SELECT path, node_type, properties || '{"published": true, "publishedAt": NOW()}'
-FROM review
-WHERE path = '/content/blog/new-article';
+SELECT path, node_type FROM 'site';
 ```
 
-### Multi-Tenancy
+```json
+{"columns":["path","node_type"],"rows":[{"path":"/pages","node_type":"raisin:Folder"}],"row_count":1}
+```
 
-Isolate data per tenant:
+The other management calls:
+
+```bash
+# List workspaces (paginated: {"items": [...], "page": {...}})
+curl http://localhost:8080/api/workspaces/myrepo -H "Authorization: Bearer $TOKEN"
+
+# Read one
+curl http://localhost:8080/api/workspaces/myrepo/site -H "Authorization: Bearer $TOKEN"
+
+# Read or replace only the config block
+curl http://localhost:8080/api/workspaces/myrepo/site/config -H "Authorization: Bearer $TOKEN"
+curl -X PUT http://localhost:8080/api/workspaces/myrepo/site/config \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"default_branch": "main", "node_type_pins": {}}'
+```
+
+Packages can also ship workspaces: a `workspaces/site.yaml` file with the same fields is created on install, and a manifest's `workspace_patches` block can add allowed NodeTypes to a workspace that already exists. See [Define the Schema](/docs/tutorials/content-app/define-schema).
+
+There is currently no endpoint or statement that deletes a workspace.
+
+## Allowed NodeTypes
+
+The two allow-lists are enforced on every write, whether it arrives over HTTP, WebSocket or SQL:
+
+```bash
+curl -X POST http://localhost:8080/api/repository/myrepo/main/head/site/ \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"x","node_type":"blog:Article","properties":{"title":"t"}}'
+```
+
+```json
+{"code":"VALIDATION_FAILED",
+ "message":"Workspace 'site' does not allow root nodes of type 'blog:Article'. Allowed root types: [\"raisin:Folder\"]"}
+```
+
+A `PUT` with a wider list is how you open a workspace to a new type. Keep `allowed_root_node_types` narrower than `allowed_node_types` when you want a fixed set of top-level folders.
+
+## Using workspaces
+
+Reads and writes name the workspace explicitly. In SQL:
 
 ```sql
--- Create workspace per tenant
-CREATE WORKSPACE tenant:acme;
-CREATE WORKSPACE tenant:globex;
-CREATE WORKSPACE tenant:initech;
+INSERT INTO 'site' (path, node_type, name, properties)
+VALUES ('/pages/hello', 'blog:Article', 'hello', '{"title": "Hello"}'::jsonb);
 
--- Tenant-specific data
-INSERT INTO tenant:acme (path, node_type, properties) VALUES (
-  '/content/page',
-  'cms:Page',
-  '{"title": "Acme Corp Homepage"}'
-);
-
-INSERT INTO tenant:globex (path, node_type, properties) VALUES (
-  '/content/page',
-  'cms:Page',
-  '{"title": "Globex Homepage"}'
-);
-
--- Query tenant data
-SELECT * FROM tenant:acme WHERE node_type = 'cms:Page';
+SELECT path, properties->>'title' AS title FROM 'site' WHERE node_type = 'blog:Article';
 ```
 
-### Environment Separation
+Over HTTP:
 
-Different workspaces for different environments:
+```bash
+curl -X POST http://localhost:8080/api/repository/myrepo/main/head/site/pages \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"name":"hello","node_type":"blog:Article","properties":{"title":"Hello"}}'
+```
+
+A `POST` to a path creates a child of that node and answers `{"node": {...}}`; a `POST` to the workspace root (`.../head/site/`) creates a root-level node and answers the node itself.
+
+One SQL statement can read several workspaces by joining their tables (`UNION` is not supported):
 
 ```sql
--- Create environment workspaces
-CREATE WORKSPACE env:development;
-CREATE WORKSPACE env:staging;
-CREATE WORKSPACE env:production;
-
--- Development config
-INSERT INTO env:development (path, node_type, properties) VALUES (
-  '/config/api',
-  'config:API',
-  '{"endpoint": "https://dev-api.example.com"}'
-);
-
--- Production config
-INSERT INTO env:production (path, node_type, properties) VALUES (
-  '/config/api',
-  'config:API',
-  '{"endpoint": "https://api.example.com"}'
-);
-
--- Application reads from appropriate workspace
-SELECT properties->>'endpoint'
-FROM env:production
-WHERE path = '/config/api';
+SELECT a.path AS page, b.path AS other
+FROM 'site' a JOIN 'archive' b ON a.node_type = b.node_type;
 ```
 
-### Archive Storage
-
-Move old content to archive workspace:
+Relations can cross workspaces. Name the workspace on each side of a `RELATE`:
 
 ```sql
--- Create archive workspace
-CREATE WORKSPACE archives;
-
--- Move old content to archive
-INSERT INTO archives (path, node_type, properties)
-SELECT path, node_type, properties
-FROM default
-WHERE (properties->>'publishedAt')::timestamp < NOW() - INTERVAL '1 year';
-
--- Remove from default
-DELETE FROM default
-WHERE (properties->>'publishedAt')::timestamp < NOW() - INTERVAL '1 year';
-
--- Query archived content
-SELECT * FROM archives WHERE node_type = 'blog:Article';
+RELATE FROM path='/pages/hello' IN WORKSPACE 'site'
+    TO path='/header.jpg' IN WORKSPACE 'assets'
+  TYPE 'FEATURED_IMAGE';
 ```
 
-## Workspace Versioning
+## Workspaces and branches
 
-Workspaces share the same versioning and branching:
+Branches belong to the repository, not to a workspace. A branch created with `CREATE BRANCH 'feature/x' FROM 'main'` carries every workspace, and a `MERGE BRANCH` brings back changes from all of them. The branch is part of every HTTP URL (`/api/repository/{repo}/{branch}/head/{workspace}/...`) and of the SQL endpoint (`POST /api/sql/{repo}/{branch}`).
 
-```sql
--- Create branch (affects all workspaces)
-CREATE BRANCH feature/redesign FROM main;
+## Access control
 
--- Switch branch
-SET BRANCH = 'feature/redesign';
+Permissions are granted per role and can be limited to a workspace. A role's permission entry names the workspace it applies to:
 
--- Changes in any workspace are on this branch
-INSERT INTO default (path, node_type, properties) VALUES ('/content/page', 'cms:Page', '{}');
-INSERT INTO media (path, node_type, properties) VALUES ('/images/new.jpg', 'media:Image', '{}');
-
--- Both changes are on feature/redesign branch
-SELECT __branch FROM default WHERE path = '/content/page';  -- feature/redesign
-SELECT __branch FROM media WHERE path = '/images/new.jpg';  -- feature/redesign
-
--- Merge brings changes from all workspaces
-MERGE BRANCH feature/redesign INTO main;
+```yaml
+permissions:
+  - path: "**"
+    operations: ["read"]
+    workspace: "site"
 ```
 
-## Workspace Access Control
+The built-in `anonymous` role uses exactly this shape to make one workspace publicly readable while everything else stays closed. See [Access Control](/docs/concepts/access-control).
 
-Control access per workspace:
+## Patterns that work well
 
-```sql
--- Grant access to specific workspace
-GRANT SELECT ON default TO ROLE viewer;
-GRANT INSERT, UPDATE, DELETE ON default TO ROLE editor;
+- **One workspace per kind of content.** `site`, `assets`, `customers` and `config` are easier to reason about, and to secure, than one large tree.
+- **Use branches for staging, not workspaces.** Draft and published states are the same nodes on different branches, which is what merge and time travel are for. Copying nodes between a `drafts` and a `published` workspace loses that history.
+- **Use tenants for customer isolation, not workspaces.** Tenants are isolated at the storage-key level and cannot be crossed by a query; a workspace can.
+- **Keep the root allow-list short.** A handful of root folders with a wider set of allowed child types gives editors a stable top level.
 
--- Restrict access to system workspaces
-GRANT SELECT ON raisin:system TO ROLE admin;
-REVOKE ALL ON raisin:system FROM ROLE viewer;
+## Next steps
 
--- Tenant isolation
-GRANT ALL ON tenant:acme TO ROLE acme_admin;
-GRANT SELECT ON tenant:acme TO ROLE acme_viewer;
-REVOKE ALL ON tenant:globex FROM ROLE acme_admin;  -- No cross-tenant access
-```
-
-## Workspace Configuration
-
-Configure workspace behavior:
-
-```sql
--- Enable full-text search for workspace
-ALTER WORKSPACE default SET INDEXING = 'enabled';
-
--- Set retention policy
-ALTER WORKSPACE archives SET REVISION_RETENTION = 'DURATION 180 DAYS';
-
--- Configure workspace metadata
-ALTER WORKSPACE drafts SET DESCRIPTION = 'Draft content pending review';
-
--- Set workspace-specific schema
-ALTER WORKSPACE media SET ALLOWED_NODE_TYPES = '["media:Image", "media:Video", "media:Document"]';
-```
-
-## Workspace Queries
-
-### List All Nodes Across Workspaces
-
-```sql
--- Union across workspaces
-SELECT 'default' AS workspace, path, node_type FROM default
-UNION ALL
-SELECT 'drafts', path, node_type FROM drafts
-UNION ALL
-SELECT 'media', path, node_type FROM media;
-```
-
-### Count Nodes Per Workspace
-
-```sql
--- Using information schema
-SELECT workspace_name, COUNT(*) AS node_count
-FROM (
-  SELECT 'default' AS workspace_name, path FROM default
-  UNION ALL
-  SELECT 'drafts', path FROM drafts
-  UNION ALL
-  SELECT 'media', path FROM media
-) combined
-GROUP BY workspace_name;
-```
-
-### Cross-Workspace Search
-
-```sql
--- Search across multiple workspaces
-SELECT 'default' AS workspace, path, properties->>'title' AS title
-FROM default
-WHERE properties->>'title' ILIKE '%search term%'
-UNION ALL
-SELECT 'drafts', path, properties->>'title'
-FROM drafts
-WHERE properties->>'title' ILIKE '%search term%';
-```
-
-## Deleting Workspaces
-
-```sql
--- Delete empty workspace
-DROP WORKSPACE temp;
-
--- Force delete (removes all content)
-DROP WORKSPACE old_drafts CASCADE;
-```
-
-## Performance Considerations
-
-### Workspace Indexes
-
-Each workspace has independent indexes:
-
-```sql
--- Create index on default workspace
-CREATE INDEX idx_default_type ON default (node_type);
-
--- Create index on media workspace
-CREATE INDEX idx_media_url ON media ((properties->>'url'));
-
--- Indexes don't affect other workspaces
-```
-
-### Workspace Size
-
-```sql
--- Get workspace sizes
-SELECT
-  'default' AS workspace,
-  COUNT(*) AS node_count,
-  pg_size_pretty(pg_total_relation_size('default')) AS size
-FROM default
-UNION ALL
-SELECT
-  'media',
-  COUNT(*),
-  pg_size_pretty(pg_total_relation_size('media'))
-FROM media;
-```
-
-## Best Practices
-
-1. **Use default for primary content**: Keep main user-facing content in default
-2. **Separate concerns**: Use workspaces to organize different data types (content, dam, customers)
-3. **Don't over-segment**: Too many workspaces add complexity
-4. **Document workspace purpose**: Add descriptions to workspaces
-5. **Control access**: Use workspace-level permissions
-6. **Index independently**: Optimize each workspace separately
-7. **Consider query patterns**: Design workspaces around how you query
-8. **Use tenants for isolation**: Multi-tenancy is handled by RaisinDB's tenant system, not workspaces
-
-## Real-World Examples
-
-### CMS with Workflow
-
-```sql
--- Content lifecycle workspaces
-CREATE WORKSPACE content:drafts;
-CREATE WORKSPACE content:review;
-CREATE WORKSPACE content:published;
-CREATE WORKSPACE content:archived;
-
--- Media library
-CREATE WORKSPACE media:images;
-CREATE WORKSPACE media:videos;
-CREATE WORKSPACE media:documents;
-
--- Configuration
-CREATE WORKSPACE config:site;
-CREATE WORKSPACE config:features;
-```
-
-### Multi-Site Platform
-
-```sql
--- Site-specific workspaces
-CREATE WORKSPACE site:corporate;
-CREATE WORKSPACE site:blog;
-CREATE WORKSPACE site:ecommerce;
-
--- Shared media
-CREATE WORKSPACE shared:media;
-
--- Each site queries its workspace
-SELECT * FROM site:corporate WHERE node_type = 'cms:Page';
-SELECT * FROM site:blog WHERE node_type = 'blog:Article';
-```
-
-### SaaS Application
-
-```sql
--- Tenant isolation
-CREATE WORKSPACE customer:123;
-CREATE WORKSPACE customer:456;
-CREATE WORKSPACE customer:789;
-
--- Application queries current customer's workspace
-SELECT * FROM customer:${customer_id} WHERE user_id = ${user_id};
-```
-
-## Next Steps
-
-- **[Nodes](/docs/concepts/data-model/nodes)** - Create content in workspaces
-- **[Access Control](/docs/concepts/access-control)** - Secure workspaces with permissions
-- **[Branching](/docs/concepts/versioning/branches-and-tags)** - Version control across workspaces
-- **[SQL Reference](/docs/reference/sql/statements/select)** - Workspace management commands
+- [Nodes](/docs/concepts/data-model/nodes) for what goes into a workspace
+- [Access Control](/docs/concepts/access-control) for workspace-scoped permissions
+- [Branches and Tags](/docs/concepts/versioning/branches-and-tags) for versioning across workspaces
+- [Define the Schema](/docs/tutorials/content-app/define-schema) for shipping workspaces in a package

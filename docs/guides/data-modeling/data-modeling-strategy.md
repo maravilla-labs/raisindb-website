@@ -4,19 +4,23 @@ sidebar_position: 4
 
 # Data Modeling Strategy
 
-Practical guidance for designing your RaisinDB data model. This guide covers when to use inheritance vs mixins, how to organize workspaces and paths, and common anti-patterns to avoid.
+Practical guidance for designing a RaisinDB data model: when to share
+properties through inheritance and when through mixins, how to organize
+workspaces and paths, when a relation belongs in the tree and when in the
+graph, and a few patterns to avoid.
 
-## NodeType Inheritance vs Mixins
+## Inheritance vs mixins
 
-RaisinDB supports two ways to share properties across NodeTypes: **inheritance** (`extends`) and **mixins**.
+A NodeType can share properties in two ways: `extends` (one parent) and
+`mixins` (any number).
 
-### When to Use Inheritance
+### When to use inheritance
 
-Use `extends` when you have a clear "is-a" relationship with a single parent type:
+Use `extends` for a clear "is a kind of" relationship with a single parent:
 
 ```yaml
 # Base type with shared fields
-name: content:BaseContent
+name: content:Base
 properties:
   - name: title
     type: String
@@ -29,9 +33,9 @@ auditable: true
 ```
 
 ```yaml
-# BlogPost IS A BaseContent
-name: blog:BlogPost
-extends: content:BaseContent
+# A BlogPost is a content:Base
+name: blog:Post
+extends: content:Base
 properties:
   - name: body
     type: String
@@ -40,9 +44,9 @@ properties:
 ```
 
 ```yaml
-# NewsArticle IS A BaseContent
-name: news:NewsArticle
-extends: content:BaseContent
+# A NewsArticle is a content:Base
+name: news:Article
+extends: content:Base
 properties:
   - name: body
     type: String
@@ -50,45 +54,48 @@ properties:
     type: URL
 ```
 
-**Use inheritance when:**
-- Types share a core identity (BlogPost, NewsArticle, and Documentation are all "content")
-- You want inherited types to be queryable as the base type
-- The relationship is genuinely hierarchical
-
-### When to Use Mixins
-
-Use mixins for cross-cutting concerns that apply to unrelated types:
+Nodes of a subtype can be found by their base type: the server stamps every
+node written through the node API with `$supertypes`, and `IS_A` queries it.
 
 ```sql
-CREATE MIXIN 'myapp:SEO'
+SELECT name, node_type FROM 'content' WHERE IS_A(properties, 'content:Base');
+```
+
+Use inheritance when the types share an identity, when you want to query them
+as the base type, and when the relationship is genuinely hierarchical.
+
+### When to use mixins
+
+Use mixins for capabilities that apply to unrelated types:
+
+```sql
+CREATE MIXIN 'myapp:Seo'
   DESCRIPTION 'SEO metadata fields'
   PROPERTIES (
     meta_title String,
     meta_description String,
-    og_image String
+    og_image URL
   );
 
-CREATE MIXIN 'myapp:Timestamps'
-  DESCRIPTION 'Standard timestamp fields'
+CREATE MIXIN 'myapp:Reviewed'
   PROPERTIES (
-    created_at Date REQUIRED,
-    updated_at Date REQUIRED
+    reviewed_by String REQUIRED,
+    reviewed_on Date
   );
 
-CREATE MIXIN 'myapp:Taggable'
-  DESCRIPTION 'Tag support'
+CREATE MIXIN 'myapp:Tagged'
   PROPERTIES (
-    tags Array
+    tags Array OF String
   );
 ```
 
 ```yaml
-# An Article needs SEO + Timestamps + Tags
+# An Article needs SEO, review metadata and tags
 name: blog:Article
 mixins:
-  - myapp:SEO
-  - myapp:Timestamps
-  - myapp:Taggable
+  - myapp:Seo
+  - myapp:Reviewed
+  - myapp:Tagged
 properties:
   - name: title
     type: String
@@ -96,11 +103,11 @@ properties:
 ```
 
 ```yaml
-# A Product also needs SEO + Timestamps but NOT tags
-name: ecommerce:Product
+# A Product needs SEO and review metadata but not tags
+name: shop:Product
 mixins:
-  - myapp:SEO
-  - myapp:Timestamps
+  - myapp:Seo
+  - myapp:Reviewed
 properties:
   - name: name
     type: String
@@ -109,202 +116,204 @@ properties:
     type: Number
 ```
 
-**Use mixins when:**
-- The capability applies to unrelated types (SEO applies to articles AND products)
-- You need to compose multiple capabilities (a type can have many mixins)
-- The relationship is "has-a" rather than "is-a"
+Use a mixin when the capability cuts across unrelated types, when a type needs
+several capabilities, and when the relationship is "also has" rather than
+"is a".
 
-### Combining Both
+### Combining both
 
-You can use inheritance and mixins together:
+Inheritance and mixins compose. The parent's properties are merged first, then
+each mixin in order, then the type's own properties:
 
 ```yaml
 name: blog:FeaturedArticle
-extends: content:BaseContent
+extends: content:Base
 mixins:
-  - myapp:SEO
-  - myapp:Taggable
+  - myapp:Seo
+  - myapp:Tagged
 properties:
   - name: hero_image
-    type: String
+    type: Resource
   - name: featured_order
     type: Number
 ```
 
-## Workspace Design Patterns
+See [Using Mixins](./using-mixins.md) for the resolution rules.
 
-Workspaces provide logical separation within a repository. Each workspace is independently queryable as a SQL table.
+## Workspace design
 
-### By Domain
+A workspace is a named tree inside a repository with its own list of allowed
+NodeTypes. Each workspace is queried as its own SQL table.
 
-Separate workspaces for different content domains:
+### By domain
 
 | Workspace | Purpose | NodeTypes |
 |-----------|---------|-----------|
-| `content` | Website pages and blog posts | Page, Article, Category |
-| `media` | Images, videos, documents | Asset, Folder |
-| `users` | User profiles and preferences | Profile, Settings |
-| `products` | Product catalog | Product, Category, Review |
+| `content` | Pages and posts | `site:Page`, `blog:Article` |
+| `media` | Images, videos, documents | `raisin:Asset`, `raisin:Folder` |
+| `people` | Profiles | `crm:Contact` |
+| `catalog` | Products | `shop:Product`, `shop:Category` |
 
 ```sql
--- Query content workspace
 SELECT * FROM 'content' WHERE node_type = 'blog:Article';
-
--- Query media workspace
-SELECT * FROM 'media' WHERE node_type = 'Asset';
+SELECT * FROM 'media' WHERE node_type = 'raisin:Asset';
 ```
 
-**Best for:** Applications with clearly separated content domains.
+This fits applications with clearly separated content areas.
 
-### By Access Level
-
-Separate workspaces based on who accesses the data:
+### By access level
 
 | Workspace | Purpose |
 |-----------|---------|
-| `public` | Published content visible to end users |
+| `public` | Content visible to end users |
 | `internal` | Internal documents and drafts |
-| `system` | Configuration, NodeTypes, system data |
 
-**Best for:** Applications where access control boundaries are more important than content type boundaries.
+This fits applications where the access boundary matters more than the content
+type. Row-level security rules and workspace access grants can then follow the
+workspace boundary.
 
-### Keep It Simple
+### Keep it simple
 
-Start with fewer workspaces and split later. One `default` workspace is fine for small projects. Split when you need:
-- Different query isolation
-- Different allowed NodeTypes per workspace
-- Independent indexing or search scopes
+Start with few workspaces and split later. One workspace is fine for a small
+project. Split when you need a different set of allowed NodeTypes, a separate
+tree with its own root, or a separate search scope.
 
-## Path Hierarchy Design
+## Path design
 
-Paths organize nodes into a tree structure within each workspace. Good path design makes hierarchical queries efficient.
+Nodes form a tree within each workspace, and a node's path is its address.
+Good path design keeps hierarchical queries simple.
 
-### URL-Friendly Paths
+### URL-friendly paths
 
-If your content maps to URLs, mirror the URL structure:
+If content maps to URLs, mirror the URL structure:
 
 ```
-/blog/
-  /blog/2026/
-    /blog/2026/03/
-      /blog/2026/03/hello-world
-      /blog/2026/03/second-post
-/pages/
-  /pages/about
-  /pages/contact
+/blog/2026/03/hello-world
+/blog/2026/03/second-post
+/pages/about
+/pages/contact
 ```
 
-Query all March 2026 posts:
+Query everything under one folder:
 
 ```sql
-SELECT * FROM 'content'
-WHERE PATH_STARTS_WITH(path, '/blog/2026/03/');
+SELECT path FROM 'content' WHERE DESCENDANT_OF('/blog/2026/03');
+-- or, as a prefix match on the path string
+SELECT path FROM 'content' WHERE PATH_STARTS_WITH(path, '/blog/2026/03/');
 ```
 
-### Categorical Paths
+### Categorical paths
 
-Group by domain concept rather than date:
+Group by concept rather than date:
 
 ```
-/products/
-  /products/electronics/
-    /products/electronics/laptop-x1
-  /products/clothing/
-    /products/clothing/blue-shirt
-/categories/
-  /categories/electronics
-  /categories/clothing
+/products/electronics/laptop-x1
+/products/clothing/blue-shirt
+/categories/electronics
+/categories/clothing
 ```
 
-### Flat Paths
+### Flat paths
 
-For simple collections without hierarchy, use a single level:
+For simple collections without hierarchy, use one level:
 
 ```
 /users/jane
 /users/john
-/users/alice
 ```
 
-### Path Design Principles
+### Principles
 
-1. **Keep paths stable** — Changing a path moves the node and all its children. Design paths that won't need to change.
-2. **Use meaningful segments** — `/content/blog/hello-world` is better than `/c/b/hw`.
-3. **Limit depth** — Deep paths (5+ levels) are harder to manage. Flatten where possible.
-4. **Use hierarchy for queries** — If you frequently query "all items in category X", make category a path segment.
+1. **Keep paths stable.** Moving a node moves its whole subtree and changes
+   every descendant's address.
+2. **Use meaningful segments.** `/content/blog/hello-world` reads better than
+   `/c/b/hw`.
+3. **Limit depth.** Paths deeper than four or five levels are hard to manage.
+4. **Use the hierarchy for containment queries.** If you often ask for
+   "everything in category X", make the category a path segment.
 
-## When to Use Graph Edges vs Hierarchy
+## Hierarchy vs graph relations
 
-RaisinDB supports both parent-child hierarchy (paths) and graph edges (RELATE). Choose based on the relationship:
+RaisinDB has both a tree (paths) and a graph (relations created with
+`RELATE`). Pick by the shape of the relationship.
 
-### Use Path Hierarchy When
+### Use the tree when
 
-- The relationship is **ownership** or **containment** (a folder contains files)
-- A node has exactly **one parent**
-- You need **prefix scan** queries (find all content under `/blog/`)
-- The structure mirrors a **navigation tree** or **folder system**
+- the relationship is ownership or containment (a folder contains files),
+- a node has exactly one parent,
+- you need subtree queries (`DESCENDANT_OF`, `CHILD_OF`),
+- the structure mirrors navigation or a folder system.
 
-```
-/blog/
-  /blog/post-1      (a blog post LIVES IN the blog folder)
-  /blog/post-2
-```
+### Use relations when
 
-### Use Graph Edges When
-
-- The relationship is **many-to-many** (articles have many tags, tags apply to many articles)
-- Nodes can have **multiple relationships** of different types
-- You need **traversal queries** (friends of friends, recommendation chains)
-- The relationship is **semantic** rather than structural (AUTHORED_BY, LIKES, RELATED_TO)
+- the relationship is many-to-many (articles have many tags, tags apply to
+  many articles),
+- a node has several relationships of different kinds,
+- you need traversal queries,
+- the relationship is semantic (`AUTHORED_BY`, `RELATED_TO`) rather than
+  structural.
 
 ```sql
-RELATE FROM path='/blog/post-1' TO path='/users/jane' TYPE 'AUTHORED_BY';
-RELATE FROM path='/blog/post-1' TO path='/tags/rust' TYPE 'TAGGED_WITH';
-RELATE FROM path='/blog/post-1' TO path='/blog/post-2' TYPE 'RELATED_TO';
+RELATE FROM path='/blog/post-1' IN WORKSPACE 'content'
+    TO path='/users/jane' IN WORKSPACE 'people'
+    TYPE 'AUTHORED_BY';
+
+RELATE FROM path='/blog/post-1' IN WORKSPACE 'content'
+    TO path='/blog/post-2' IN WORKSPACE 'content'
+    TYPE 'RELATED_TO';
 ```
 
-### Combining Both
+Each endpoint names its workspace, so a relation can cross workspaces.
+`UNRELATE` with the same clauses removes one.
 
-A common pattern: hierarchy for structure, edges for relationships.
+### Combining both
+
+A common pattern is the tree for structure and relations for everything else:
 
 ```
-/blog/post-1           (hierarchy: post lives in blog)
-  └── AUTHORED_BY → /users/jane      (edge: author relationship)
-  └── TAGGED_WITH → /tags/rust       (edge: tag relationship)
-  └── RELATED_TO → /blog/post-2      (edge: content relationship)
+/blog/post-1                 (tree: the post lives in the blog)
+   AUTHORED_BY  /users/jane  (relation)
+   RELATED_TO   /blog/post-2 (relation)
 ```
 
-## Anti-Patterns to Avoid
+A `Reference` property is a third option for a single pointer stored on the
+node itself, for example a `category` field:
 
-### Deeply Nested Type Hierarchies
+```json
+{"category": {"raisin:ref": "/categories/tech", "raisin:workspace": "catalog"}}
+```
+
+The server resolves the path to the target's id on write and stores
+`raisin:ref`, `raisin:workspace` and `raisin:path`. `REFERENCES('catalog:/categories/tech')`
+finds the nodes that point at it. Use a reference for a one-to-one pointer that
+belongs to the node, and relations for edges you want to traverse or count.
+
+## Patterns to avoid
+
+### Deep inheritance chains
 
 ```yaml
-# Avoid: 4+ levels of inheritance
-name: SpecialFeaturedBlogPost
-extends: FeaturedBlogPost     # extends BlogPost → extends BaseContent → extends Node
+# Four levels: hard to reason about
+name: blog:SpecialFeaturedPost
+extends: blog:FeaturedPost   # extends blog:Post, extends content:Base
 ```
 
-Keep inheritance to 2 levels maximum. Use mixins for additional capabilities instead.
+Keep inheritance to two levels and add capabilities with mixins.
 
-### One Workspace Per NodeType
+### One workspace per NodeType
 
-```
-# Avoid: too many workspaces
-articles workspace   → only Article nodes
-categories workspace → only Category nodes
-tags workspace       → only Tag nodes
-```
+Workspaces mark domain boundaries, not type boundaries. Filter on `node_type`
+inside a workspace instead of creating `articles`, `categories` and `tags`
+workspaces.
 
-Workspaces are for domain boundaries, not type boundaries. Use `node_type` filters within a workspace.
-
-### Encoding Data in Paths
+### Encoding data in paths
 
 ```
-# Avoid: data-dependent paths that break when data changes
 /articles/status-published/category-tech/post-123
 ```
 
-Use properties and filters instead:
+A path like this has to change whenever the status or category changes. Keep
+that data in properties and filter on it:
 
 ```sql
 SELECT * FROM 'content'
@@ -313,44 +322,21 @@ WHERE node_type = 'blog:Article'
   AND properties->>'category'::String = 'tech';
 ```
 
-### Skipping Namespaces
+### Unnamespaced types
 
-```yaml
-# Avoid: bare names that can conflict
-name: Article
-name: Category
-```
+NodeType names must be `namespace:Name` (`blog:Article`, not `Article`). The
+namespace keeps packages from colliding when installed side by side.
 
-```yaml
-# Better: namespaced names
-name: blog:Article
-name: blog:Category
-```
+### One type with everything
 
-Namespaces prevent conflicts when installing packages or sharing types across teams.
-
-### Giant Monolithic NodeTypes
-
-```yaml
-# Avoid: 30+ properties on a single type
-name: Everything
-properties:
-  - name: title
-  - name: body
-  - name: seo_title
-  - name: seo_description
-  - name: author_name
-  - name: author_email
-  # ... 25 more fields
-```
-
-Split into a focused type with mixins:
+A type with thirty properties is hard to validate and hard to edit. Keep the
+type to its own fields and move cross-cutting groups into mixins:
 
 ```yaml
 name: blog:Article
 mixins:
-  - myapp:SEO
-  - myapp:Authorable
+  - myapp:Seo
+  - myapp:Reviewed
 properties:
   - name: title
     type: String
@@ -359,9 +345,8 @@ properties:
     type: String
 ```
 
-## Next Steps
+## Next steps
 
-- [Creating NodeTypes](/docs/guides/data-modeling/creating-nodetypes) — Define schemas
-- [Using Archetypes](/docs/guides/data-modeling/using-archetypes) — Reusable property sets
-- [Paths and Hierarchy](/docs/concepts/data-model/paths-and-hierarchy) — Path design details
-- [Graph Model](/docs/concepts/graph-model) — Graph edge patterns
+- [Creating NodeTypes](./creating-nodetypes.md)
+- [Using Mixins](./using-mixins.md)
+- [Paths and Hierarchy](../../concepts/data-model/paths-and-hierarchy.md)

@@ -4,39 +4,58 @@ sidebar_position: 7
 
 # Geospatial Functions
 
-PostGIS-compatible functions for spatial data operations.
+PostGIS-style functions over GeoJSON geometries. A geometry is stored as a
+JSON value in a node property and addressed in SQL as `properties->>'name'`
+(a declared property can also be written as the bare column `name`).
+Constructors such as `ST_POINT` and `ST_GEOMFROMGEOJSON` build values inline.
+
+```sql
+-- stored geometry
+SELECT name, ST_X(properties->>'location') AS lon
+FROM 'places';
+
+-- proximity, answered from the spatial index
+SELECT name, __distance
+FROM 'places'
+WHERE ST_DWITHIN(properties->>'location', ST_POINT(8.5402, 47.3779), 5000);
+```
+
+```json
+{"columns":["name","__distance"],
+ "rows":[{"name":"zurich-hb","__distance":0.0},{"name":"oerlikon","__distance":3748.88}]}
+```
+
+`ST_DWITHIN` against a constant centre and `ORDER BY ST_DISTANCE(…) LIMIT k`
+are answered from the spatial index (`SpatialDistanceScan` and
+`SpatialKnnScan` in `EXPLAIN`); the other predicates are evaluated per row.
 
 ## Every function accepts every geometry type
 
-All seven GeoJSON geometry types — `Point`, `MultiPoint`, `LineString`,
-`MultiLineString`, `Polygon`, `MultiPolygon` and `GeometryCollection` — are valid
-**input** to every ST_\* function whose signature takes a geometry, including
-nested `GeometryCollection`s. There is no "unsupported geometry type" error, and
-the output of any function is valid input to any other: `ST_AREA(ST_UNION(a, b))`
-works when the union yields a `MultiPolygon`, and `ST_LENGTH(ST_BOUNDARY(poly))`
-works too.
+All seven GeoJSON geometry types (`Point`, `MultiPoint`, `LineString`,
+`MultiLineString`, `Polygon`, `MultiPolygon`, `GeometryCollection`) are valid
+input to every function that takes a geometry, including nested
+`GeometryCollection`s, and the output of any function is valid input to any
+other: `ST_AREA(ST_UNION(a, b))` works when the union yields a
+`MultiPolygon`, and so does `ST_LENGTH(ST_BOUNDARY(poly))`.
 
-Two conventions hold everywhere:
+Three conventions hold everywhere:
 
-- **Axis order is `(longitude, latitude)`.** `ST_POINT(8.54, 47.37)` is Zurich.
-  This matches GeoJSON RFC 7946, PostGIS and every web mapping library, and it
-  deliberately diverges from the EPSG authority's lat/lon definition of EPSG:4326.
-  `ST_POINT` rejects an obviously reversed pair and warns on an ambiguous one.
-- **`NULL` propagates.** Any `NULL` argument gives `NULL`, never an error.
+- **Axis order is `(longitude, latitude)`.** `ST_POINT(8.54, 47.37)` is
+  Zurich. This matches GeoJSON, PostGIS and web mapping libraries. `ST_POINT`
+  rejects a pair that is out of range and logs a warning for an ambiguous one.
+- **`NULL` propagates.** Any `NULL` argument gives `NULL`.
 - **Empty geometries propagate.** The canonical empty geometry is
-  `{"type":"GeometryCollection","geometries":[]}`. Every function accepts it; set
-  operations return it rather than failing when nothing is left. It is distinct
-  from `NULL`: `NULL` means "no value", empty means "a geometry with no extent".
+  `{"type":"GeometryCollection","geometries":[]}`. Every function accepts it,
+  and set operations return it when nothing is left. It is distinct from
+  `NULL`.
 
 ## Units and coordinate systems
 
-RaisinDB has **one** geometry type and selects measurement semantics from the
-SRID, rather than PostGIS's two types (`geometry` and `geography`). The rule, in
-one sentence:
-
-> Topological predicates and set operations are **planar** in the geometry's own
-> coordinate space; measurements are **geodesic** when the CRS is geographic and
-> **planar** when it is projected.
+RaisinDB has one geometry type and picks measurement semantics from the SRID,
+rather than PostGIS's separate `geometry` and `geography` types. Topological
+predicates and set operations are planar in the geometry's own coordinate
+space; measurements are geodesic when the CRS is geographic and planar when
+it is projected.
 
 | Function | Geographic CRS (EPSG:4326 and other lon/lat) | Projected CRS (3857, UTM, …) |
 |---|---|---|
@@ -44,76 +63,71 @@ one sentence:
 | `ST_DWITHIN(g1, g2, d)` | `d` in metres | `d` in native units |
 | `ST_LENGTH` / `ST_PERIMETER` | metres | native units |
 | `ST_AREA` | square metres (ellipsoidal, Karney 2013) | square native units |
-| `ST_BUFFER(g, d)` | `d` in **metres** | `d` in native units |
-| `ST_SIMPLIFY(g, t)` | `t` in **metres** | `t` in native units |
+| `ST_BUFFER(g, d)` | `d` in metres | `d` in native units |
+| `ST_SIMPLIFY(g, t)` | `t` in metres | `t` in native units |
 | `ST_AZIMUTH` | radians, geodesic, north-clockwise | radians, planar |
 | `ST_3DDISTANCE` | metres, `hypot(ST_DISTANCE, Δz)` | native units, `hypot` |
 | `__distance` column on a spatial scan | always metres | always metres |
 
-Two things worth knowing about the numbers:
+Two things to know about the numbers:
 
-- **EPSG:3857 metres are Mercator-distorted** by roughly `1 / cos(latitude)` — about
-  1.5x at 48°N — so a length measured in 3857 is not a ground distance. This is
-  PostGIS's behaviour too and is not silently corrected. Store in EPSG:4326 or in a
-  UTM zone if you need ground truth.
-- **`ST_BUFFER`, `ST_SIMPLIFY` and non-point `ST_DISTANCE` project internally.** On a
-  geographic CRS they reproject into the best-fitting UTM zone, operate there, and
-  come back, because the underlying planar algorithms work in whatever units they
-  are handed. Accuracy therefore degrades slightly for geometries spanning more
-  than a zone or two of longitude.
+- EPSG:3857 metres are Mercator-distorted by roughly `1 / cos(latitude)`,
+  about 1.5x at 48°N, so a length measured in 3857 is not a ground distance.
+  Store 4326 or a UTM zone when you need ground truth.
+- `ST_BUFFER`, `ST_SIMPLIFY` and non-point `ST_DISTANCE` project internally.
+  On a geographic CRS they reproject into the best-fitting UTM zone, operate
+  there and project back, so accuracy degrades slightly for geometries
+  spanning more than a zone or two of longitude.
 
 ## Differences from PostGIS
 
-Every divergence below is a considered choice, and all the measurement ones make
-RaisinDB behave like PostGIS's `geography` type rather than its `geometry` type —
-which is what people usually mean when they store lon/lat.
+The measurement differences make RaisinDB behave like PostGIS's `geography`
+type rather than its `geometry` type, which is what most people expect when
+they store lon/lat.
 
-| Behaviour | PostGIS (`geometry`) | RaisinDB | Why |
-|---|---|---|---|
-| `ST_AREA` on a 4326 polygon | square **degrees** | square **metres** | Square degrees are physically meaningless and users end up applying a fudge factor. |
-| `ST_LENGTH` / `ST_PERIMETER` on 4326 | degrees | metres | Same reason. |
-| `ST_BUFFER(g, d)` on 4326 | `d` in degrees | `d` in **metres** | What every caller actually means, without requiring a `geography` cast. |
-| `ST_SIMPLIFY(g, t)` on 4326 | `t` in degrees | `t` in **metres** | Same reason. |
-| `ST_3DDISTANCE` | fully Cartesian, rejects `geography` | geodesic horizontal ⊕ Euclidean vertical | The only defensible answer for lon/lat degrees plus metres of altitude. |
-| `ST_ISSIMPLE` on a self-intersecting polygon | `true` (GEOS ignores rings) | `false` | Reporting `true` for a bow-tie is indistinguishable from a stub and tells the user nothing. |
-| `ST_NUMPOINTS` on a non-LineString | `NULL` (use `ST_NPoints`) | the vertex count | Answering for every type cannot mislead. |
-| `ST_BOUNDARY` on a `GeometryCollection` | error | the members' boundaries | Propagating is more useful than failing. |
-| Mixed SRIDs in one call | error | error | Same as PostGIS. An implicit transform would hide a modelling mistake *and* make a query's success depend on build features. |
+| Behaviour | PostGIS (`geometry`) | RaisinDB |
+|---|---|---|
+| `ST_AREA` on a 4326 polygon | square degrees | square metres |
+| `ST_LENGTH` / `ST_PERIMETER` on 4326 | degrees | metres |
+| `ST_BUFFER(g, d)` on 4326 | `d` in degrees | `d` in metres |
+| `ST_SIMPLIFY(g, t)` on 4326 | `t` in degrees | `t` in metres |
+| `ST_3DDISTANCE` | fully Cartesian, rejects `geography` | geodesic horizontal, Euclidean vertical |
+| `ST_ISSIMPLE` on a self-intersecting polygon | `true` | `false` |
+| `ST_NUMPOINTS` on a non-LineString | `NULL` | the vertex count |
+| `ST_BOUNDARY` on a `GeometryCollection` | error | the members' boundaries |
+| Two explicit, different SRIDs in one call | error | error (a 4326 geometry is unlabelled and adopts the other side's SRID; see [CRS and SRID](./crs-and-srid.md)) |
 
-**Where RaisinDB matches PostGIS `geometry`, including its limitation:**
-topological predicates (`ST_INTERSECTS`, `ST_CONTAINS`, `ST_WITHIN`, …) on EPSG:4326
-use **planar edges** — a straight line in lon/lat space, not a great circle. A
-polygon spanning the antimeridian, or a containment test across a very wide
-longitude span, behaves as it does in PostGIS: approximately, and poorly near the
-poles and the dateline. This is a documented limitation, not a bug.
+Where RaisinDB matches PostGIS `geometry`, including its limitation:
+topological predicates (`ST_INTERSECTS`, `ST_CONTAINS`, `ST_WITHIN`, …) on
+EPSG:4326 use planar edges, a straight line in lon/lat space rather than a
+great circle. A polygon spanning the antimeridian, or a containment test over
+a very wide longitude span, behaves approximately, as it does in PostGIS.
 
 ### Behaviour changes in this release
 
-If you are upgrading, these are the results that changed:
+If you are upgrading, these results changed:
 
-- `ST_LENGTH` of a **Polygon** is now `0`, not its exterior-ring length. Use
-  `ST_PERIMETER`, which now also counts interior rings.
-- `ST_EQUALS` no longer has a `1e-8` coordinate tolerance; it is the DE-9IM
-  topological predicate. For fuzzy comparison use
-  `ST_DWITHIN(a, b, tolerance_in_metres)`, which is explicit about its unit.
-- `ST_BUFFER` buffers the **actual geometry** instead of collapsing it to its
-  centroid and drawing a 32-gon, so a line's buffer is a corridor rather than a
-  disc.
-- `ST_DISTANCE` between two polygons is now the true minimum separation, not the
-  distance between their centroids. Overlapping shapes are `0` apart.
-- `ST_ISVALID` performs real OGC validation, so a self-intersecting polygon is now
-  correctly invalid. `ST_ISSIMPLE` no longer returns a constant `true`.
-- `ST_COLLECT` of two same-type geometries returns the matching `Multi*` rather
-  than a `GeometryCollection`.
-- `ST_BOUNDARY` of a **closed** LineString is now empty (a ring has no boundary).
+- `ST_LENGTH` of a Polygon is now `0`. Use `ST_PERIMETER`, which also counts
+  interior rings.
+- `ST_EQUALS` is now the DE-9IM topological predicate with no coordinate
+  tolerance. For a fuzzy comparison use `ST_DWITHIN(a, b, tolerance_in_metres)`.
+- `ST_BUFFER` buffers the actual geometry instead of a disc around its
+  centroid, so a line's buffer is a corridor.
+- `ST_DISTANCE` between two polygons is the true minimum separation, not the
+  distance between centroids. Overlapping shapes are `0` apart.
+- `ST_ISVALID` performs OGC validation, so a self-intersecting polygon is
+  invalid. `ST_ISSIMPLE` no longer returns a constant `true`.
+- `ST_COLLECT` of two same-type geometries returns the matching `Multi*`
+  rather than a `GeometryCollection`.
+- `ST_BOUNDARY` of a closed LineString is now empty.
 
-New in this release: `ST_ISVALIDREASON`, `ST_MAKEVALID`, `ST_RELATE`, the
-three-argument `ST_BUFFER(g, d, quad_segments)`, the two-argument
+New: `ST_ISVALIDREASON`, `ST_MAKEVALID`, `ST_RELATE`, the three-argument
+`ST_BUFFER(g, d, quad_segments)`, the two-argument
 `ST_ASGEOJSON(g, max_decimals)` and the five-argument
 `ST_MAKEENVELOPE(xmin, ymin, xmax, ymax, srid)`.
 
-See [CRS and SRID](./crs-and-srid.md) for `ST_SRID`, `ST_SETSRID`, `ST_TRANSFORM`
-and the set of coordinate systems available in each build.
+See [CRS and SRID](./crs-and-srid.md) for `ST_SRID`, `ST_SETSRID`,
+`ST_TRANSFORM` and the coordinate systems available in each build.
 
 ## Geometry Constructors
 
@@ -144,15 +158,16 @@ GEOMETRY - Point geometry.
 SELECT ST_POINT(-122.4194, 37.7749);
 -- Result: Point geometry for San Francisco
 
--- Insert location
-INSERT INTO stores (name, location)
-VALUES ('Downtown Store', ST_POINT(-122.4194, 37.7749));
+-- Store a point: geometry is written as GeoJSON in the properties
+INSERT INTO 'stores' (path, node_type, name, properties)
+VALUES ('/downtown', 'shop:Store', 'downtown',
+        '{"name":"Downtown Store","location":{"type":"Point","coordinates":[-122.4194,37.7749]}}'::jsonb);
 
--- Create from columns
+-- Build a point from two numeric properties
 SELECT
     name,
-    ST_POINT(lon, lat) AS location
-FROM locations;
+    ST_POINT(properties->>'lon', properties->>'lat') AS location
+FROM 'locations';
 ```
 
 ---
@@ -347,7 +362,7 @@ RFC 7946 asks.
 
 Swapped minima and maxima are corrected rather than producing an inverted rectangle.
 The `srid` argument labels the result and interprets the bounds in that CRS; it does
-**not** reproject — use `ST_TRANSFORM` for that.
+**not** reproject; use `ST_TRANSFORM` for that.
 
 #### Examples
 
@@ -435,7 +450,7 @@ ST_ASGEOJSON(geometry, max_decimals) → TEXT
 TEXT - GeoJSON string.
 
 This serializes the **stored** representation, so a third ordinate (altitude)
-survives — this is the one function where it must not be dropped. A non-4326 geometry
+survives. A non-4326 geometry
 keeps its `srid` member, a documented RaisinDB extension since RFC 7946 mandates
 WGS84; a 4326 geometry emits no `srid`, so its output is strictly RFC-7946 conformant
 and drops straight into any mapping library.
@@ -701,8 +716,7 @@ BOOLEAN - true if the geometry is valid, false otherwise.
 SELECT ST_ISVALID(ST_POINT(-122.4194, 37.7749));
 -- Result: true
 
--- A self-intersecting "bow-tie" polygon is invalid. This previously returned
--- true, because only the array shape of the coordinates was checked.
+-- A self-intersecting "bow-tie" polygon is invalid.
 SELECT ST_ISVALID(ST_GEOMFROMGEOJSON(
   '{"type":"Polygon","coordinates":[[[0,0],[2,2],[2,0],[0,2],[0,0]]]}'
 ));
@@ -788,8 +802,10 @@ GEOMETRY - a geometry that `ST_ISVALID` accepts.
 #### Examples
 
 ```sql
-UPDATE 'regions' SET boundary = ST_MAKEVALID(boundary)
- WHERE NOT ST_ISVALID(boundary);
+-- Preview the repaired shape of the invalid rows
+SELECT path, ST_ASGEOJSON(ST_MAKEVALID(boundary)) AS repaired
+FROM 'regions'
+WHERE NOT ST_ISVALID(boundary);
 ```
 
 ---
@@ -887,17 +903,16 @@ ST_ISSIMPLE(geom) → BOOLEAN
 
 BOOLEAN - true if the geometry has no anomalous self-intersection or self-tangency.
 
-Previously a constant `true` for every input; this now runs a real Bentley-Ottmann
-sweep. By type:
+By type:
 
-- **Point** — always simple. **MultiPoint** — simple unless a location repeats.
-- **LineString** — simple unless it crosses or touches itself. A closed ring's
+- **Point**: always simple. **MultiPoint**: simple unless a location repeats.
+- **LineString**: simple unless it crosses or touches itself. A closed ring's
   coincident first and last vertex is exempt; a loop returning to an *interior*
   vertex is not. A spike doubling back along itself is not simple. A merely repeated
   vertex is tolerated.
-- **MultiLineString** — every component simple, and components meeting only at each
+- **MultiLineString**: every component simple, and components meeting only at each
   other's boundary endpoints. Touching the middle of another component is a tangency.
-- **GeometryCollection** — simple only if every member is.
+- **GeometryCollection**: simple only if every member is.
 
 **Divergence from PostGIS:** GEOS returns `true` for every polygon regardless of its
 rings, on the grounds that ring quality is `ST_ISVALID`'s concern. RaisinDB reports
@@ -912,7 +927,7 @@ SELECT ST_ISSIMPLE(ST_MAKELINE(
 ));
 -- Result: true
 
--- A figure-eight route. This previously returned true.
+-- A figure-eight route
 SELECT ST_ISSIMPLE(ST_GEOMFROMGEOJSON(
   '{"type":"LineString","coordinates":[[0,0],[2,2],[2,0],[0,2]]}'
 ));
@@ -949,10 +964,8 @@ ST_DISTANCE(geometry1, geometry2) → DOUBLE
 DOUBLE - the **minimum** distance between the two shapes, in meters on a geographic
 CRS and native units on a projected one. Intersecting geometries are `0` apart.
 
-True shape-to-shape minimum for every type pair, `Multi*` and `GeometryCollection`
-included. (This changed: Polygon/Polygon and every `Multi*` pair previously fell
-back to a **centroid-to-centroid** approximation, which reported a positive distance
-between overlapping shapes and roughly double the true gap between adjacent ones.)
+This is the true shape-to-shape minimum for every type pair, `Multi*` and
+`GeometryCollection` included.
 
 Point-to-point is exact Haversine. Other pairs are measured after projecting both
 operands into one shared UTM zone, so accuracy degrades slightly for operands far
@@ -982,13 +995,15 @@ FROM stores
 ORDER BY distance_meters
 LIMIT 10;
 
--- Distance from user location
+-- Distance between every pair of stores
 SELECT
-    s.name,
-    ST_DISTANCE(s.location, u.current_location) AS distance
-FROM stores s
-CROSS JOIN user_location u
-WHERE u.user_id = '550e8400-e29b-41d4-a716-446655440000';
+    s1.name AS from_store,
+    s2.name AS to_store,
+    ROUND(ST_DISTANCE(s1.location, s2.location)) AS metres
+FROM stores s1
+CROSS JOIN stores s2
+WHERE s1.id < s2.id
+ORDER BY metres;
 ```
 
 #### Notes
@@ -1083,8 +1098,8 @@ square native units on a projected one. Puntal and linear components contribute 
 `ST_AREA` of a Point or LineString is `0` rather than an error.
 
 Interior rings are subtracted. `MultiPolygon` and `GeometryCollection` sum their areal
-members — which is what makes `ST_AREA(ST_UNION(a, b))` work when the union yields a
-`MultiPolygon`, previously an error.
+members, so `ST_AREA(ST_UNION(a, b))` works when the union yields a
+`MultiPolygon`.
 
 #### Examples
 
@@ -1125,9 +1140,8 @@ DOUBLE - Length in meters (Haversine on a geographic CRS, native units on a
 projected one).
 
 `LineString` and `MultiLineString` sum their segments, and a `GeometryCollection`
-sums its linear members. **Areal components contribute 0** — a Polygon's boundary is
-measured by [`ST_PERIMETER`](#st_perimeter), which is why both functions exist. (This
-changed: `ST_LENGTH` previously returned a Polygon's exterior-ring length.)
+sums its linear members. Areal components contribute 0; a Polygon's boundary is
+measured by [`ST_PERIMETER`](#st_perimeter).
 
 #### Examples
 
@@ -1169,8 +1183,7 @@ DOUBLE - Perimeter in meters (Haversine on a geographic CRS, native units on a
 projected one).
 
 **Every ring counts, interior rings included**, so a Polygon with a hole has a
-longer perimeter than the same Polygon without one. (This changed: only the
-exterior ring was measured previously.) `MultiPolygon` and `GeometryCollection` sum
+longer perimeter than the same Polygon without one. `MultiPolygon` and `GeometryCollection` sum
 their areal members. Puntal and linear components contribute 0, matching PostGIS.
 
 #### Examples
@@ -1217,11 +1230,11 @@ SELECT ST_AZIMUTH(
     ST_POINT(-118.2437, 34.0522)
 );
 
--- Convert to degrees
-SELECT DEGREES(ST_AZIMUTH(
+-- Convert to degrees (there is no DEGREES() function)
+SELECT ST_AZIMUTH(
     ST_POINT(-122.4194, 37.7749),
     ST_POINT(-118.2437, 34.0522)
-)) AS bearing_degrees;
+) * 180 / 3.141592653589793 AS bearing_degrees;
 ```
 
 ---
@@ -1273,12 +1286,11 @@ FROM points p
 JOIN regions r ON ST_CONTAINS(r.boundary, p.location)
 WHERE r.name = 'Downtown';
 
--- Filter by containment
-SELECT * FROM stores
-WHERE ST_CONTAINS(
-    (SELECT boundary FROM regions WHERE name = 'Service Area'),
-    location
-);
+-- Filter by containment (a scalar subquery is not supported; join instead)
+SELECT s.name
+FROM stores s
+JOIN regions r ON ST_CONTAINS(r.boundary, s.location)
+WHERE r.name = 'Service Area';
 ```
 
 ---
@@ -1322,12 +1334,11 @@ SELECT ST_WITHIN(
     }')
 );
 
--- Find stores in service area
-SELECT name FROM stores
-WHERE ST_WITHIN(
-    location,
-    (SELECT boundary FROM regions WHERE name = 'Service Area')
-);
+-- Find stores in a service area
+SELECT s.name
+FROM stores s
+JOIN regions r ON ST_WITHIN(s.location, r.boundary)
+WHERE r.name = 'Service Area';
 ```
 
 #### Notes
@@ -1361,11 +1372,12 @@ BOOLEAN - true if geometries intersect, false otherwise.
 #### Examples
 
 ```sql
--- Check if geometries intersect
+-- Does a line cross a box?
 SELECT ST_INTERSECTS(
-    ST_GEOMFROMGEOJSON('{"type":"LineString","coordinates":[...]}'),
-    ST_GEOMFROMGEOJSON('{"type":"Polygon","coordinates":[...]}')
+    ST_MAKELINE(ST_POINT(-122.5, 37.7), ST_POINT(-122.3, 37.9)),
+    ST_MAKEENVELOPE(-122.45, 37.75, -122.40, 37.80)
 );
+-- true
 
 -- Find intersecting regions
 SELECT r1.name, r2.name
@@ -1373,13 +1385,11 @@ FROM regions r1
 JOIN regions r2 ON ST_INTERSECTS(r1.boundary, r2.boundary)
 WHERE r1.id < r2.id;
 
--- Find routes through area
-SELECT route_name
-FROM routes
-WHERE ST_INTERSECTS(
-    path,
-    (SELECT boundary FROM regions WHERE name = 'Downtown')
-);
+-- Find routes through an area
+SELECT rt.name
+FROM routes rt
+JOIN regions rg ON ST_INTERSECTS(rt.path, rg.boundary)
+WHERE rg.name = 'Downtown';
 ```
 
 ---
@@ -1416,11 +1426,10 @@ SELECT ST_DISJOINT(
 -- Result: true (SF and LA don't overlap)
 
 -- Find stores outside a restricted zone
-SELECT name FROM stores
-WHERE ST_DISJOINT(
-    location,
-    (SELECT boundary FROM zones WHERE name = 'Restricted')
-);
+SELECT s.name
+FROM stores s
+JOIN zones z ON ST_DISJOINT(s.location, z.boundary)
+WHERE z.name = 'Restricted';
 ```
 
 ---
@@ -1617,7 +1626,8 @@ SELECT ST_COVERS(
 -- Find regions that fully cover a delivery zone
 SELECT r.name
 FROM regions r
-WHERE ST_COVERS(r.boundary, (SELECT boundary FROM zones WHERE name = 'Zone A'));
+JOIN zones z ON ST_COVERS(r.boundary, z.boundary)
+WHERE z.name = 'Zone A';
 ```
 
 ---
@@ -1654,11 +1664,46 @@ SELECT ST_COVEREDBY(
 -- Result: true
 
 -- Find stores covered by at least one delivery zone
-SELECT s.name FROM stores s
-WHERE EXISTS (
-    SELECT 1 FROM zones z
-    WHERE ST_COVEREDBY(s.location, z.boundary)
-);
+SELECT DISTINCT s.name
+FROM stores s
+JOIN zones z ON ST_COVEREDBY(s.location, z.boundary);
+```
+
+---
+
+### ST_RELATE
+
+Return the DE-9IM intersection matrix of two geometries, or test it against a
+pattern.
+
+#### Syntax
+
+```sql
+ST_RELATE(g1, g2) → TEXT
+ST_RELATE(g1, g2, pattern) → BOOLEAN
+```
+
+#### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| g1, g2 | GEOMETRY | Geometries to compare |
+| pattern | TEXT | Nine-character DE-9IM pattern using `T`, `F`, `0`, `1`, `2` and `*` |
+
+#### Return Value
+
+TEXT (two arguments): the nine-character matrix. BOOLEAN (three arguments):
+whether the matrix matches the pattern.
+
+#### Examples
+
+```sql
+SELECT ST_RELATE(ST_MAKEENVELOPE(0,0,2,2), ST_MAKEENVELOPE(1,1,3,3));
+-- Result: '212101212'
+
+-- overlap test written as a pattern
+SELECT ST_RELATE(ST_MAKEENVELOPE(0,0,2,2), ST_MAKEENVELOPE(1,1,3,3), 'T*T***T**');
+-- Result: true
 ```
 
 ---
@@ -1689,10 +1734,8 @@ ST_BUFFER(geom, distance_meters, quad_segments) → GEOMETRY
 GEOMETRY - a `Polygon` or `MultiPolygon` covering everything within `distance` of the
 input.
 
-The **actual geometry** is buffered. (This changed: every non-Point input was
-previously collapsed to its centroid and a 32-sided circle drawn around that, so a
-road's buffer was a disc at its midpoint rather than a corridor along it, and a
-polygon's buffer could be smaller than the polygon.)
+The actual geometry is buffered, so a road's buffer is a corridor along it and
+a polygon's buffer contains the polygon.
 
 A negative distance can legitimately erode a shape to nothing; that yields the empty
 geometry, not an error.
@@ -1847,14 +1890,10 @@ ST_SIMPLIFY(geom, tolerance) → GEOMETRY
 
 GEOMETRY - Simplified geometry with fewer vertices, of the same type.
 
-The tolerance is in **metres** on EPSG:4326, not degrees. (This changed: the
-tolerance was previously applied in raw coordinate units, so `0.001` meant a
-thousandth of a degree — roughly 111 m of latitude but only 75 m of longitude at
-47°N, and different amounts at different latitudes.)
+The tolerance is in metres on EPSG:4326, not degrees.
 
 Puntal components pass through unchanged and areal components keep their rings
-closed. `Multi*` and `GeometryCollection` simplify member by member; they were
-previously rejected.
+closed. `Multi*` and `GeometryCollection` simplify member by member.
 
 **Caveat:** Douglas-Peucker is per-component and does not preserve topology. A large
 tolerance can make a polygon self-intersect or make neighbouring polygons overlap.
@@ -1942,17 +1981,15 @@ ST_BOUNDARY(geom) → GEOMETRY
 
 GEOMETRY - the boundary, one dimension lower than the input:
 
-- **Point / MultiPoint** — empty. A 0-dimensional geometry has no boundary.
-- **LineString** — a `MultiPoint` of its two endpoints, or **empty** when the line is
-  closed. (This changed: a closed ring previously reported its coincident endpoints; a
-  ring has no boundary.)
-- **MultiLineString** — the endpoints appearing an **odd** number of times across the
+- **Point / MultiPoint**: empty. A 0-dimensional geometry has no boundary.
+- **LineString**: a `MultiPoint` of its two endpoints, or empty when the line is
+  closed (a ring has no boundary).
+- **MultiLineString**: the endpoints appearing an **odd** number of times across the
   components (the OGC mod-2 rule), so two lines joined end to end have the boundary of
   the single line they form rather than four points.
-- **Polygon / MultiPolygon** — the rings, **interior rings included**. A single-ring
-  polygon gives a `LineString`, anything else a `MultiLineString`. (This changed: only
-  the exterior ring was returned.)
-- **GeometryCollection** — its members' boundaries, collected. PostGIS errors here.
+- **Polygon / MultiPolygon**: the rings, interior rings included. A single-ring
+  polygon gives a `LineString`, anything else a `MultiLineString`.
+- **GeometryCollection**: its members' boundaries, collected (PostGIS returns an error here).
 
 #### Examples
 
@@ -1971,10 +2008,8 @@ FROM regions;
 
 ## Set Operations
 
-The four set operations — `ST_UNION`, `ST_INTERSECTION`, `ST_DIFFERENCE` and
-`ST_SYMDIFFERENCE` — share these rules. (All four previously supported
-Polygon+Polygon only, plus Point+Point for union, and returned "not supported" for
-the other type combinations.)
+The four set operations (`ST_UNION`, `ST_INTERSECTION`, `ST_DIFFERENCE` and
+`ST_SYMDIFFERENCE`) share these rules.
 
 - **Every pair of geometry types is defined**, in every combination of dimensions.
 - The result is the **narrowest type** that represents it: one polygon is a
@@ -2094,11 +2129,10 @@ GEOMETRY - Part of g1 that does not intersect with g2.
 #### Examples
 
 ```sql
--- Remove restricted area from delivery zone
-SELECT ST_DIFFERENCE(
-    (SELECT boundary FROM zones WHERE name = 'Delivery Zone'),
-    (SELECT boundary FROM zones WHERE name = 'Restricted Area')
-) AS adjusted_zone;
+-- Remove a restricted area from a delivery zone
+SELECT ST_DIFFERENCE(d.boundary, r.boundary) AS adjusted_zone
+FROM zones d, zones r
+WHERE d.name = 'Delivery Zone' AND r.name = 'Restricted Area';
 
 -- Service area excluding competitor coverage
 SELECT ST_DIFFERENCE(our.boundary, their.boundary) AS exclusive_area
@@ -2283,10 +2317,7 @@ ST_LINEINTERPOLATEPOINT(linestring, fraction) → GEOMETRY
 | linestring | GEOMETRY | LineString, or a one-component MultiLineString |
 | fraction | DOUBLE | Position along the line, `0.0` = start, `1.0` = end. Outside that range is an error, not a clamp. |
 
-The fraction is of **geodesic length** on a geographic CRS. (This changed: it was
-previously measured in raw coordinate units, which weighted a degree of longitude the
-same as a degree of latitude, so at 47°N the "halfway" point of a diagonal line was
-placed noticeably off.)
+The fraction is of geodesic length on a geographic CRS.
 
 #### Return Value
 
@@ -2312,7 +2343,7 @@ WHERE id = '550e8400-e29b-41d4-a716-446655440000';
 
 A position may carry a third ordinate. It survives storage, `ST_ASGEOJSON`,
 `ST_TRANSFORM` and replication; the **spatial index is 2-D**, so altitude never
-narrows an index scan — it is applied when the predicate is evaluated.
+narrows an index scan; it is applied when the predicate is evaluated.
 
 | Function | Signature | Returns |
 |----------|-----------|---------|
@@ -2350,7 +2381,7 @@ SELECT ST_ZMIN(path) AS lowest, ST_ZMAX(path) AS highest FROM 'flights';
 
 ### Adding and removing altitude
 
-`ST_FORCE3D` **fills** the missing ordinate — positions that already carry a Z
+`ST_FORCE3D` fills the missing ordinate; positions that already carry a Z
 keep it, as in PostGIS. To overwrite unconditionally, drop first:
 
 ```sql
@@ -2364,7 +2395,7 @@ SELECT ST_FORCE3D(ST_FORCE2D(location), 100) FROM 'sensors';
 ### 3D distance
 
 On EPSG:4326, `ST_3DDISTANCE` is **geodesic horizontally and Euclidean
-vertically** — `hypot(ST_DISTANCE, Δz)` in metres. This diverges from PostGIS,
+vertically**, `hypot(ST_DISTANCE, Δz)` in metres. This diverges from PostGIS,
 which is fully Cartesian and rejects `geography`: mixing degrees of longitude
 with metres of altitude has no defensible Cartesian answer. On a projected CRS
 both components are already native units, so it is a plain 3D `hypot`.
@@ -2384,7 +2415,7 @@ under the same conditions.
 :::note How `ST_3DDWITHIN` uses the index
 The spatial index is two-dimensional, but `ST_3DDWITHIN` still narrows through
 it. Horizontal distance is never greater than 3D distance, so the cell ring of
-radius `d` is a conservative **superset** of the answer — it cannot drop a row
+radius `d` is a conservative superset of the answer; it cannot drop a row
 the 3D test would have kept.
 
 The index therefore selects candidates and the altitude component is re-applied
@@ -2424,10 +2455,8 @@ SELECT
     ST_X(p.location) AS longitude,
     ST_Y(p.location) AS latitude
 FROM points_of_interest p
-WHERE ST_CONTAINS(
-    (SELECT boundary FROM regions WHERE name = 'Downtown'),
-    p.location
-);
+JOIN regions r ON ST_CONTAINS(r.boundary, p.location)
+WHERE r.name = 'Downtown';
 ```
 
 ### Distance Matrix
@@ -2460,14 +2489,16 @@ ORDER BY point_count DESC;
 ### Route Analysis
 
 ```sql
--- Find routes intersecting multiple regions
+-- Which regions does each route pass through? (HAVING is not supported;
+-- filter the counts in an outer query if you need it)
 SELECT
     rt.name AS route_name,
+    COUNT(rg.id) AS region_count,
     ARRAY_AGG(rg.name) AS intersected_regions
 FROM routes rt
 JOIN regions rg ON ST_INTERSECTS(rt.path, rg.boundary)
 GROUP BY rt.name
-HAVING COUNT(rg.id) > 1;
+ORDER BY region_count DESC;
 ```
 
 ### Closest Point
@@ -2486,17 +2517,13 @@ LIMIT 1;
 ### Coverage Check
 
 ```sql
--- Check if all points are covered by service areas
+-- Which points are covered by a service area? (EXISTS is not supported)
 SELECT
     p.name,
-    CASE
-        WHEN EXISTS (
-            SELECT 1 FROM service_areas sa
-            WHERE ST_CONTAINS(sa.boundary, p.location)
-        ) THEN 'Covered'
-        ELSE 'Not Covered'
-    END AS coverage_status
-FROM points p;
+    CASE WHEN COUNT(sa.id) > 0 THEN 'Covered' ELSE 'Not Covered' END AS coverage_status
+FROM points p
+LEFT JOIN service_areas sa ON ST_CONTAINS(sa.boundary, p.location)
+GROUP BY p.name;
 ```
 
 ### Buffer Zone
@@ -2571,13 +2598,11 @@ ORDER BY overlap_sq_km DESC;
 
 ## Notes
 
-- All distance calculations use meters
-- 49 PostGIS-compatible geospatial functions available
-- Coordinates are in WGS84 (longitude, latitude)
-- Longitude is X coordinate, Latitude is Y coordinate
-- Functions use spheroid calculations for accuracy
-- Spatial indexes improve query performance
-- GeoJSON format: `[longitude, latitude]` (X, Y order)
-- Compatible with PostGIS conventions
-- Supports Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon, and GeometryCollection types
-- Set operations (ST_UNION, ST_INTERSECTION, ST_DIFFERENCE, ST_SYMDIFFERENCE) work on Polygon types
+- Distances, lengths and areas are in metres on a geographic CRS; see
+  [Units and coordinate systems](#units-and-coordinate-systems).
+- Coordinates are `[longitude, latitude]` (x, y), as in GeoJSON.
+- All seven GeoJSON geometry types are accepted by every function.
+- `ST_DWITHIN` with a constant centre and `ORDER BY ST_DISTANCE(…) LIMIT k`
+  use the spatial index; other predicates are evaluated per row.
+- Scalar subqueries, `EXISTS` and `HAVING` are not available in RaisinDB SQL;
+  the examples above use joins instead.

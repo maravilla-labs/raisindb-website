@@ -6,282 +6,223 @@ description: Use RaisinDB's git-like branching to give AI agents isolated, audit
 
 # Agent Memory with Branches
 
-This is RaisinDB's key differentiator for AI applications. While other databases store vectors in a flat namespace, RaisinDB gives each AI agent its own **branch** — an isolated, versioned workspace where the agent can read, write, and reason without interfering with other agents or production data.
+RaisinDB can give each AI agent its own **branch**: a versioned copy of the
+data where the agent reads, writes and reasons without touching other agents or
+production content. Every write is a revision with an actor and a message, so
+you can see what an agent did, roll it back, and merge the result the way a
+developer merges a feature branch.
 
-Every change is tracked with full revision history. When the agent finishes, its branch merges back — just like a developer merging a feature branch.
+## Why branches for agent memory
 
-## Why Branches for Agent Memory?
+| Concern | Flat namespace | RaisinDB branches |
+|---------|----------------|-------------------|
+| Agent A overwrites agent B's work | Possible | Each agent writes to its own branch |
+| Debugging what an agent did | No history | Per-node history and a branch diff |
+| Rolling back bad agent output | Manual cleanup | Move the branch head to an earlier revision |
+| Running agents in parallel | Coordination needed | One branch per agent |
+| Auditing agent decisions | Not built in | Every revision has an actor, message and timestamp |
 
-Traditional vector databases give agents a single shared namespace. This creates problems:
+## The pattern: branch, work, merge
 
-| Problem | Flat namespace | RaisinDB branches |
-|---------|---------------|-------------------|
-| Agent A overwrites Agent B's work | Common | Impossible — isolated branches |
-| Debugging what an agent did | Difficult — no history | Full revision history per branch |
-| Rolling back bad agent output | Manual cleanup | Reset branch HEAD to prior revision |
-| Running agents in parallel | Risk of conflicts | Each agent has its own branch |
-| Auditing agent decisions | Not built in | Every commit has actor + message + timestamp |
-
-## The Pattern: Branch → Work → Merge
-
-### 1. Create a Branch for the Agent Task
-
-```sql
--- Create an isolated branch for the agent's work
--- Branches from the current state of main
-INSERT INTO 'raisin:branches' (name, from_branch) VALUES ('agent/research-task-42', 'main');
-```
-
-Or via the REST API:
-
-```bash
-POST /api/repository/myrepo/branches
-{
-  "name": "agent/research-task-42",
-  "from_branch": "main"
-}
-```
-
-The agent now has a complete copy of the data at the point of branching. It can read everything that exists on `main`, but writes go only to its branch.
-
-### 2. Agent Stores Findings
-
-The agent works on its branch, creating and updating nodes as it discovers information:
+### 1. Create a branch for the task
 
 ```sql
--- Agent creates nodes to store its findings (on agent branch)
-INSERT INTO 'default' (name, path, node_type, properties) VALUES (
-  'finding-1',
-  '/research/findings',
-  'research:Finding',
-  '{"title": "Market Analysis Q1", "summary": "Revenue grew 15%...", "confidence": 0.92, "sources": ["report-a", "report-b"]}'
-);
-
-INSERT INTO 'default' (name, path, node_type, properties) VALUES (
-  'finding-2',
-  '/research/findings',
-  'research:Finding',
-  '{"title": "Competitor Landscape", "summary": "Three new entrants...", "confidence": 0.87, "sources": ["press-release-1"]}'
-);
+CREATE BRANCH 'agent/research-task-42' FROM 'main';
 ```
 
-Each write can optionally be committed for a permanent audit trail:
+```typescript
+await db.branches().create('agent/research-task-42', { fromBranch: 'main' });
+```
 
 ```bash
-POST /api/repository/myrepo/agent/research-task-42/default/raisin:cmd/commit
-{
-  "message": "Agent: completed market analysis with 2 findings",
-  "actor": "research-agent-v2"
-}
+curl -X POST http://localhost:8080/api/management/repositories/default/myrepo/branches \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "agent/research-task-42", "upstream_branch": "main", "created_by": "orchestrator"}'
 ```
 
-### 3. Merge Results Back
+The branch is a copy of `main` at that revision, schema included. The agent can
+read everything that existed and its writes land only on the branch.
 
-When the agent completes its task, merge the branch back to `main`:
+### 2. The agent stores findings
 
-```bash
-# Update main to include the agent's work
-PUT /api/management/repositories/default/myrepo/branches/main/head
-{
-  "head": <agent-branch-latest-revision>
-}
+Hand the agent a branch-scoped handle so every tool call targets the branch:
+
+```typescript
+const agentDb = db.onBranch('agent/research-task-42');
+const findings = agentDb.workspace('findings').nodes();
+
+await findings.create({
+  type: 'research:Finding',
+  path: '/research/market-analysis',
+  properties: { title: 'Market Analysis Q1', summary: 'Revenue grew 15%.', confidence: 0.92, sources: ['report-a'] },
+});
 ```
 
-Or clean up if the results aren't needed:
+Or over SQL, addressing the branch in the URL (`POST /api/sql/myrepo/agent%2Fresearch-task-42`):
 
-```bash
-# Delete the branch if results were not useful
-DELETE /api/repository/myrepo/branches/agent/research-task-42
+```sql
+INSERT INTO 'findings' (path, node_type, name, properties)
+VALUES ('/research/competitors', 'research:Finding', 'competitors',
+        '{"title":"Competitor Landscape","summary":"Three new entrants.","confidence":0.87}'::jsonb);
 ```
 
-## Multi-Agent Coordination
+To attach a message to a group of writes, wrap them in a SQL transaction:
 
-Run multiple agents in parallel, each on its own branch:
+```sql
+BEGIN;
+UPDATE 'findings' SET properties = '{"title":"Market Analysis Q1","confidence":0.95}'::jsonb WHERE path = '/research/market-analysis';
+COMMIT WITH MESSAGE 'Agent: completed market analysis' ACTOR 'research-agent-v2';
+```
+
+### 3. Review, then merge or discard
+
+The orchestrator (or a human) reads the branch and asks what changed:
+
+```typescript
+await agentDb.executeSql("SELECT path, properties->>'confidence' AS confidence FROM 'findings' WHERE node_type = 'research:Finding'");
+await db.branches().diff('agent/research-task-42', 'main');
+// { common_ancestor: '...', added: [{ path: '/research/market-analysis', ... }, ...], modified: [], deleted: [] }
+```
+
+Merge it into `main`:
+
+```typescript
+await db.branches().merge('agent/research-task-42', 'main', { message: 'Merge research task 42' });
+// { success: true, revision: 1788720003593, conflicts: [], fast_forward: false, nodes_changed: 2 }
+```
+
+Or delete it if the results are not needed:
+
+```typescript
+await db.branches().delete('agent/research-task-42');
+```
+
+## Multi-agent coordination
+
+Run several agents in parallel, one branch each, and merge them in sequence:
 
 ```
 main ─────────────────────────────────────────► main (merged)
   │                                               ▲
-  ├── agent/researcher ──── findings ──── commit ──┤
-  │                                                │
-  ├── agent/fact-checker ── verifications ── commit─┤
-  │                                                │
-  └── agent/summarizer ──── summary ──── commit ───┘
+  ├── agent/researcher ──── findings ─────────────┤
+  ├── agent/fact-checker ── verifications ────────┤
+  └── agent/summarizer ──── summary ──────────────┘
 ```
-
-### Example: Research Pipeline
 
 ```sql
--- Step 1: Create branches for each agent
-INSERT INTO 'raisin:branches' (name, from_branch) VALUES ('agent/researcher', 'main');
-INSERT INTO 'raisin:branches' (name, from_branch) VALUES ('agent/fact-checker', 'main');
-INSERT INTO 'raisin:branches' (name, from_branch) VALUES ('agent/summarizer', 'main');
+CREATE BRANCH 'agent/researcher' FROM 'main';
+CREATE BRANCH 'agent/fact-checker' FROM 'main';
+CREATE BRANCH 'agent/summarizer' FROM 'main';
 
--- Step 2: Each agent works independently on its branch
--- (researcher stores raw findings)
--- (fact-checker validates claims against sources)
--- (summarizer produces executive summary)
+-- each agent works on its branch ...
 
--- Step 3: Merge sequentially or review before merging
--- The orchestrator can inspect each branch before merging
-SELECT id, name, properties->>'confidence'::String AS confidence
-FROM 'default'  -- queried against the agent/researcher branch
-WHERE node_type = 'research:Finding'
-ORDER BY properties->>'confidence'::String DESC;
+MERGE BRANCH 'agent/researcher' INTO 'main' MESSAGE 'Researcher';
+MERGE BRANCH 'agent/fact-checker' INTO 'main' MESSAGE 'Fact checker';
+MERGE BRANCH 'agent/summarizer' INTO 'main' MESSAGE 'Summarizer';
 ```
 
-### Merge Strategies
+Agents that write to different nodes merge without conflict. If two agents
+change the **same node**, the merge stops and reports the node with both
+versions; you complete it with a resolution. See
+[Merging Changes](/docs/guides/branching/merging-changes#conflicts).
 
-- **Sequential merge** — merge one agent at a time, resolving conflicts at each step
-- **Review-then-merge** — an orchestrator (or human) reviews each branch before merging
-- **Selective merge** — only merge high-confidence findings, discard low-quality branches
+Three ways to bring results in:
 
-## Revision History as Agent Memory
+- **Sequential merge**: merge one agent at a time, resolving anything that overlaps.
+- **Review then merge**: inspect the diff and the findings first; merge or delete.
+- **Selective promotion**: copy only the roots worth keeping with
+  `db.branches().copyNodes(agentBranch, 'main', { workspace, roots })` and drop the rest.
 
-Because every commit creates an immutable revision, you can **time-travel** to see what an agent knew at any point:
+## History as agent memory
+
+Every write is a revision. A node's history lists what the agent did to it:
+
+```typescript
+await agentDb.workspace('findings').nodes().historyByPath('/research/market-analysis');
+// [{ revision: '1788720366608-0', updated_at: '...', updated_by: 'system', deleted: false,
+//    message: 'Agent: completed market analysis', is_system: false },
+//  { revision: '1788720274636-0', ..., message: 'Created node: ...' }]
+```
+
+Read the workspace as it was at any of those revisions:
 
 ```sql
--- See the state of the agent's workspace at revision 42
-SELECT id, name, properties
-FROM 'default'
-WHERE __revision = 42
+SELECT path, properties FROM 'findings' WHERE __revision = '1788720274636-0';
 ```
 
-### Viewing Agent Commit History
+The repository-wide log (`GET /api/management/repositories/{tenant}/{repo}/revisions?branch=agent%2Fresearcher`)
+lists the branch's commits with actor, message and the nodes each one changed.
 
-```bash
-# List all commits on an agent branch
-GET /api/repository/myrepo/agent/researcher/revisions
+### Rolling back agent mistakes
+
+Move the branch head to a known-good revision. Later revisions stay in history
+for debugging.
+
+```typescript
+await db.branches().updateHead('agent/researcher', '1788720274636-0');
 ```
 
-Each revision records:
-- **Revision number** — sequential identifier
-- **Commit message** — what the agent did
-- **Actor** — which agent made the change
-- **Timestamp** — when it happened
-- **Parent revision** — enables history traversal
-
-### Rolling Back Agent Mistakes
-
-If an agent produces bad output, roll back to a known-good state:
-
 ```bash
-# Reset the agent's branch to revision 5 (before the bad output)
-PUT /api/management/repositories/default/myrepo/branches/agent/researcher/head
-{
-  "head": 5
+curl -X PUT http://localhost:8080/api/management/repositories/default/myrepo/branches/agent%2Fresearcher/head \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"revision": "1788720274636-0"}'
+```
+
+## Practical patterns
+
+### Conversational memory
+
+One branch per conversation lets an agent accumulate context in isolation:
+
+```sql
+CREATE BRANCH 'conversations/conv-abc123' FROM 'main';
+-- on that branch:
+INSERT INTO 'conversations' (path, node_type, name, properties)
+VALUES ('/conv-abc123/turn-1', 'chat:Turn', 'turn-1',
+        '{"role":"user","content":"What is our Q1 revenue?","timestamp":"2026-03-31T10:00:00Z"}'::jsonb);
+```
+
+### Scratchpad
+
+A branch the agent experiments in and that is deleted afterwards. Promote just
+the final output with `copyNodes` if it is worth keeping.
+
+### Reviewed knowledge-base updates
+
+A nightly agent enriches a knowledge base on a dated branch
+(`agent/nightly-2026-03-31`); a human reads the diff the next morning and
+merges or drops it.
+
+### A/B testing agent strategies
+
+Run two strategies on two branches from the same `main` and compare with the
+same query on each:
+
+```typescript
+for (const b of ['agent/strategy-a', 'agent/strategy-b']) {
+  const r = await db.onBranch(b).executeSql(
+    "SELECT COUNT(*) AS n, AVG(properties->>'confidence'::String) AS avg_confidence FROM 'findings' WHERE node_type = 'research:Finding'");
+  console.log(b, r.rows[0]);
 }
 ```
 
-The bad revisions still exist in history for debugging, but the branch HEAD now points to the clean state.
+## Branches and vector search
 
-## Practical Patterns
-
-### Pattern 1: Conversational Memory
-
-Give each conversation its own branch so the agent can accumulate context:
-
-```sql
--- New conversation starts
-INSERT INTO 'raisin:branches' (name, from_branch)
-VALUES ('conversations/conv-abc123', 'main');
-
--- Agent stores conversation turns
-INSERT INTO 'default' (name, path, node_type, properties) VALUES (
-  'turn-1',
-  '/conversations/conv-abc123',
-  'chat:Turn',
-  '{"role": "user", "content": "What is our Q1 revenue?", "timestamp": "2026-03-31T10:00:00Z"}'
-);
-
-INSERT INTO 'default' (name, path, node_type, properties) VALUES (
-  'turn-2',
-  '/conversations/conv-abc123',
-  'chat:Turn',
-  '{"role": "assistant", "content": "Q1 revenue was $2.4M...", "timestamp": "2026-03-31T10:00:05Z"}'
-);
-```
-
-### Pattern 2: Agent Scratchpad
-
-Use a branch as a temporary scratchpad that gets discarded:
+Embeddings are stored per branch, and forking a branch copies the source's
+embeddings along with its content. A `KNN` or `HYBRID_SEARCH` query issued on
+an agent's branch therefore searches what that agent can see, including the
+nodes it added there:
 
 ```sql
--- Agent creates a scratchpad branch
-INSERT INTO 'raisin:branches' (name, from_branch) VALUES ('scratch/task-789', 'main');
-
--- Agent experiments freely — tries different approaches
--- ...stores intermediate results, dead ends, explorations...
-
--- If the final result is good, cherry-pick just the output
--- If not, delete the branch entirely
+-- issued against the agent's branch
+SELECT path, name FROM KNN('what did I learn about caching', 10, workspaces => 'findings');
 ```
 
-### Pattern 3: Knowledge Base Updates
+See [Embeddings and Vector Search](./embeddings-and-vector-search.md).
 
-An agent periodically enriches a knowledge base on a branch, and a human reviews before merging:
+## Next steps
 
-```sql
--- Nightly enrichment agent
-INSERT INTO 'raisin:branches' (name, from_branch) VALUES ('agent/nightly-enrichment-2026-03-31', 'main');
-
--- Agent adds new knowledge nodes
-INSERT INTO 'default' (name, path, node_type, properties) VALUES (
-  'new-article-summary',
-  '/knowledge/summaries',
-  'kb:Summary',
-  '{"source_url": "https://...", "summary": "...", "extracted_entities": ["Entity A", "Entity B"]}'
-);
-
--- Commit with descriptive message
--- POST .../raisin:cmd/commit { "message": "Nightly enrichment: 47 new summaries", "actor": "enrichment-agent" }
-
--- Human reviews the branch contents before merging to main
-```
-
-### Pattern 4: A/B Testing Agent Strategies
-
-Run two agent strategies on separate branches and compare results:
-
-```sql
--- Strategy A branch
-INSERT INTO 'raisin:branches' (name, from_branch) VALUES ('agent/strategy-a', 'main');
--- Strategy B branch
-INSERT INTO 'raisin:branches' (name, from_branch) VALUES ('agent/strategy-b', 'main');
-
--- Both agents process the same input independently
--- Compare outputs by querying each branch
-SELECT COUNT(*), AVG(properties->>'confidence'::String)
-FROM 'default'  -- on agent/strategy-a
-WHERE node_type = 'research:Finding';
-
-SELECT COUNT(*), AVG(properties->>'confidence'::String)
-FROM 'default'  -- on agent/strategy-b
-WHERE node_type = 'research:Finding';
-```
-
-## Combining Branches with Vector Search
-
-Each branch has its own vector index. This means an agent's embeddings are isolated to its branch:
-
-```sql
--- Search for similar content within the agent's branch
--- (connected to agent/researcher branch)
-SELECT path, name, vector_distance
-FROM KNN('what did I learn about caching', 10, workspaces => 'default')
-```
-
-When branches merge, their vector indexes are reconciled. See [Embeddings and Vector Search](./embeddings-and-vector-search.md) for details.
-
-## Why This Matters
-
-Most AI infrastructure forces you to choose between:
-- **Simple but unsafe** — agents share a flat namespace, overwriting each other
-- **Safe but complex** — you build isolation yourself with namespaces, metadata tags, and manual cleanup
-
-RaisinDB gives you both: the simplicity of "just write to the database" with the safety of full isolation, history, and rollback. Branches are a first-class primitive, not a workaround.
-
-## Next Steps
-
-- [RAG Patterns](./rag-patterns.md) — combine branch isolation with retrieval-augmented generation
-- [Embeddings and Vector Search](./embeddings-and-vector-search.md) — vector search within branches
-- [Function-Based Tool Use](./function-based-tool-use.md) — give agents callable tools
+- [Branching for Agent Isolation](/docs/tutorials/ai-agent-memory/branching-isolation) - step-by-step tutorial
+- [Merging Agent Results](/docs/tutorials/ai-agent-memory/merge-results) - review, merge, conflicts, rollback
+- [RAG Patterns](./rag-patterns.md) - retrieval on top of branch isolation
+- [Function-Based Tool Use](./function-based-tool-use.md) - give agents callable tools

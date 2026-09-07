@@ -2,214 +2,188 @@
 sidebar_position: 7
 ---
 
-# Real-time sync with webhooks (Experimental)
+# Real-time sync with webhooks
 
-:::caution Experimental / Preview
-Push-based real-time sync is an **experimental / preview** feature. Validate it
-against your own account before relying on it in production. Like all virtual-node
-sync it is **read-only** — external items are brought *in* as nodes; nothing is
-written back to the provider.
+:::caution Preview
+Push-based sync is a preview feature. Validate it against your own account
+before relying on it in production.
 :::
 
-By default a mount **polls**: the sync engine wakes on its interval and asks the
-provider "what changed?". With **push**, the provider tells RaisinDB the moment
-something changes, and the mount re-syncs within seconds — "on new email", "on
-calendar change" — without a tight polling interval. This guide explains the model
-and the per-provider setup. For the concepts, see
-**[Virtual Nodes](../../concepts/virtual-nodes.md)**; for the adapter contract, see
-the **[Adapter reference](../../reference/virtual-node-adapters.md)**.
+By default a mount polls: the engine wakes on the mount's interval and asks
+the provider what changed. With push, the provider tells RaisinDB the moment
+something changes and the mount re-syncs within seconds. This guide explains
+the model and the per-provider setup. For the concepts see
+[Virtual Nodes](../../concepts/virtual-nodes.md).
 
-## Push vs poll — one mental model
+## A push is a signal, not a data feed
 
-**A push notification is only an _invalidation signal_.** RaisinDB never reads the
-provider's notification payload. A ping just means *"re-run this mount's normal delta
-sync"* — the same `get_changes` delta that polling would have run, only triggered by
-the provider instead of a timer. That single reframe is why push is fully generic:
-Microsoft Graph subscriptions, Google Calendar channels, and Gmail Pub/Sub all
-collapse to the same handful of steps, and nothing provider-specific lives in the
-RaisinDB engine.
+A notification only tells the engine to run the mount's normal delta sync
+now. The engine does not read the provider's payload; it enqueues the same
+`get_changes` run polling would have run. That is why one mechanism covers
+Microsoft Graph subscriptions, Google Calendar channels and Gmail Pub/Sub,
+and why a provider that pushes but has no changes feed cannot be driven this
+way.
 
 ```mermaid
 flowchart LR
-    P[Provider] -->|"change happens"| PING[POST notifications URL]
-    PING --> EP["RaisinDB notifications endpoint<br/>(validate token + secret)"]
-    EP -->|"enqueue delta sync"| SE[Sync engine]
+    P[Provider] -->|"change"| EP["POST /api/integrations/{repo}/notifications/{mount_token}"]
+    EP -->|"token + secret check"| SE[Sync engine]
     SE -->|"get_changes"| P
-    SE --> N[Nodes updated in workspace]
+    SE --> N[Nodes updated]
 ```
 
-:::tip It is generic — any connector can do it
-The shipped Gmail / Microsoft 365 / Google Calendar connectors are just examples. A
-**custom connector** gets push by implementing three optional adapter operations —
-`subscribe`, `renew`, `unsubscribe` — and reporting `supports_push: true`. See the
-**[Adapter reference §2.9](../../reference/virtual-node-adapters.md)** and
-**[Build a custom adapter](build-a-custom-adapter.md)**.
-:::
+## Sync modes
 
-## Sync modes: `poll`, `webhook`, `hybrid`
+| `sync_config.mode` | Behavior |
+|--------------------|----------|
+| `poll` (default) | Interval polling only. |
+| `webhook` | Push only. The mount subscribes and is never polled. If the provider goes quiet, so does the mount. |
+| `hybrid` | Push plus the interval poll as a safety net. Recommended. |
 
-A mount's `sync_config.mode` selects how it is driven:
-
-| `mode` | Behavior |
-|--------|----------|
-| `poll` (default) | Interval polling only. No push. Works with every connector. |
-| `webhook` | **Push only.** The mount is not polled; it registers a provider subscription and re-syncs on each ping. If the provider goes quiet, so does the mount. |
-| `hybrid` | **Push _and_ a slow poll.** Near-instant on pings, with the interval poll as a safety net for any missed notification. Recommended for anything you care about. |
-
-The setup below applies to `webhook` and `hybrid` mounts on a **push-capable**
-connector.
+The `sync-config` endpoint and the console refuse `webhook` on a connector
+whose cached capabilities do not declare `supports_push`.
 
 ## Prerequisites
 
-- **`RAISINDB_BASE_URL` must be set on the server** to your public HTTPS base URL
-  (e.g. `https://raisin.example.com`). The engine builds each mount's notification
-  URL from it and hands that URL to the provider. **Without it, push cannot be wired**
-  and the mount is marked `push_status: "failed"`.
-- The provider must be able to reach that URL over the public internet.
-- A push-capable connector already connected (see the per-provider guides).
+- A public HTTPS base URL for the server. The engine takes it from the
+  connector's stored OAuth `redirect_uri`, or from `RAISINDB_BASE_URL`. With
+  neither, a push mount records `push_status: "failed"` and
+  `push_last_error` names the missing setting.
+- A connector whose adapter declares `supports_push`.
 
-:::tip Where to find the URLs
-You never hand-assemble these. The per-mount **Notification URL** is shown
-read-only (with a copy button) on the **mount** in the admin console once the
-mount exists — this is the value you paste into a Gmail Pub/Sub push subscription
-below; for Graph and Google Calendar the engine registers it for you. The OAuth
-**Redirect URI** lives on the **connector page** (see the per-provider guides). If
-you are **authoring your own connector**, put the provider-side steps into the
-connector's `setup_instructions` (Markdown) and an optional `docs_url` — the admin
-console renders them alongside these URLs.
-:::
+## What the engine does
 
-## How the lifecycle works (what the engine does for you)
+1. **Subscribe.** On the first run of a `webhook` or `hybrid` mount the
+   engine mints a per-mount token, builds
+   `{base}/api/integrations/{repo}/notifications/{mount_token}`, and calls the
+   adapter's `subscribe` with that URL. The adapter returns the provider's
+   `subscription_id`, an optional `secret` and `expires_at`.
+2. **Receive.** The provider calls that URL. The endpoint answers validation
+   handshakes (`validationToken` or `challenge` in the query or body, and a
+   bare GET), checks the stored secret against every query parameter, header
+   and body string in constant time, records the delivery, and enqueues a
+   delta sync. It returns `{"status":"queued"}` or `already_running`. The
+   token is the mount's `push_mount_token`, so the URL from `setup-urls` is
+   valid as soon as it is shown. A token that matches no mount gets
+   `410 Gone`, which tells the provider to retire the subscription.
+3. **Renew.** A renewal job runs every 30 minutes and calls `renew` for any
+   subscription expiring within a day.
+4. **Tear down.** Disabling the mount calls `unsubscribe`. Delete a mount
+   through `DELETE /api/integrations/{repo}/mounts/{mount_id}` (the console's
+   delete button) so the subscription is removed first; a generic node delete
+   leaves it registered.
 
-You author a `webhook`/`hybrid` mount; the engine handles the rest:
-
-1. **Subscribe.** On first run the engine mints a stable, unguessable per-mount
-   notification URL (`{RAISINDB_BASE_URL}/api/integrations/{repo}/notifications/{token}`)
-   and asks the connector to register a provider subscription pointing at it.
-2. **Receive.** The provider POSTs that URL on every change. RaisinDB verifies the
-   token and a per-subscription secret, then enqueues a normal delta sync and
-   acknowledges immediately — it never blocks on the sync.
-3. **Renew.** Provider subscriptions are short-lived (Graph ~3 days, Google ~7 days).
-   A background job renews them with a day of headroom, so push keeps working.
-4. **Tear down.** Disabling the mount unsubscribes on a best-effort basis.
-
-The notification URL is **public** (providers cannot send a bearer token), so it is
-guarded by the unguessable token plus the per-subscription secret. No secret or token
-material is ever logged.
+The mount's `state` records `push_status` (`active`, `failed` or
+`unsupported`), `push_subscription_id`, `push_expires_at`,
+`push_notification_url`, `push_last_error`, and delivery counters
+(`push_deliveries_ok`, `push_deliveries_rejected`, `push_last_delivery_at`,
+`push_last_rejected_reason`). The console's mount page shows them under
+*Webhook health*, together with the notification URL and a copy button.
 
 ## Per-provider setup
 
-### Microsoft 365 (Graph) — automatic
+### Microsoft 365
 
-Nothing extra. Set `sync_config.mode: hybrid` (or `webhook`) on any Graph mount —
-mail, calendar, or OneDrive files. On the next run the connector creates a Graph
-subscription for the mount's resource and Graph validates the URL automatically. See
-**[Connect Microsoft 365](connect-microsoft-365.md)**.
+Nothing extra. Set `mode: hybrid` on a mail, calendar or files mount. The
+adapter creates a Graph subscription with a two-day expiry and a
+`clientState` secret; Graph validates the URL itself.
 
 ```yaml
 sync_config:
-  resource: mail          # or calendar / files
-  mode: hybrid            # push + safety-net poll
+  resource: mail
+  mode: hybrid
   interval_seconds: 300
 ```
 
-### Google Calendar — automatic
+### Google Calendar
 
-Nothing extra. Set `mode: hybrid` (or `webhook`) on a Google Calendar mount — the
-connector opens an `events.watch` channel pointed at the mount's notification URL and
-renews it before it expires. See **[Sync Google Calendar](sync-google-calendar.md)**.
+Nothing extra. Set `mode: hybrid` and the adapter opens an `events.watch`
+channel (seven-day lifetime) on the mount's calendar.
+
+### Gmail
+
+Gmail publishes to a Google Cloud Pub/Sub topic, and a Pub/Sub push
+subscription forwards each message to the mount's notification URL. The
+connector arms the mailbox with `users.watch`; the topic and the push
+subscription are yours to create.
+
+One-time setup in the Google Cloud project that holds your OAuth client:
+
+1. Enable the **Cloud Pub/Sub API**.
+2. Create a topic, for example `projects/<project>/topics/gmail-push`.
+3. Grant `gmail-api-push@system.gserviceaccount.com` the **Pub/Sub
+   Publisher** role on it.
+4. Set `pubsub_topic` and a `pubsub_verify_token` of your choosing on the
+   mount's `sync_config` and set `mode: hybrid`. Without a topic the connector
+   reports `supports_push: false` and the mount stays poll-only.
+5. Read the mount's **Notification URL** from the mount page (or
+   `GET /api/integrations/{repo}/mounts/{mount_id}/setup-urls`) and create a
+   **push subscription** on the topic with that URL as the endpoint. Add the
+   verify token to the endpoint URL as a query parameter, for example
+   `?token=<verify token>`; the endpoint matches the stored secret against any
+   query parameter.
 
 ```yaml
 sync_config:
   mode: hybrid
   interval_seconds: 300
-  window:
-    days_back: 7
-    days_ahead: 30
+  ephemeral: true
+  ttl_seconds: 86400
+  reconcile_deletes: false
+  pubsub_topic: projects/<project>/topics/gmail-push
+  pubsub_verify_token: <the same value as in the push endpoint URL>
 ```
 
-### Gmail — operator sets up Pub/Sub, then it's automatic
+On subscribe the adapter calls `users.watch` with the topic and the `INBOX`
+label and returns the verify token as the subscription secret; on teardown it
+calls `users.stop`. The Pub/Sub message body is ignored.
 
-Gmail push does **not** POST your server directly. It publishes to a Google Cloud
-**Pub/Sub** topic, and a Pub/Sub **push subscription** forwards each message to the
-mount's notification URL. The connector can only arm the mailbox (`users.watch`
-against your topic); it cannot create the topic or the subscription — that is an
-operator step in Google Cloud.
+If you configure the push subscription with OIDC authentication instead, a
+function can verify the signed token with
+`raisin.crypto.verifyJwt(token, { jwks_url, issuer, audience })`; the shipped
+path uses the shared token.
 
-**One-time Google Cloud setup:**
+## Custom connectors
 
-1. **Enable the Cloud Pub/Sub API** in the same Google Cloud project as your Gmail
-   OAuth client.
-2. **Create a topic**, e.g. `projects/<your-project>/topics/gmail-push`.
-3. **Grant Gmail permission to publish** to it: add the member
-   `gmail-api-push@system.gserviceaccount.com` with the **Pub/Sub Publisher** role on
-   the topic. (Gmail's `users.watch` fails without this.)
-4. **Create a push subscription** on that topic whose **delivery type is _Push_** and
-   whose **endpoint URL** is your mount's notification URL:
-   `https://<your-host>/api/integrations/<repo>/notifications/<mount_token>`.
-   (Enable the mount once first so the engine generates the token; read it from the
-   mount's `state.push_notification_url`.)
-5. **Add a shared secret** so RaisinDB can verify the pings: append a `token=<secret>`
-   query parameter to the push endpoint URL in Pub/Sub, and set the **same** value as
-   `sync_config.pubsub_verify_token` on the mount.
+Any adapter gets push by implementing three operations and declaring
+`supports_push: true`:
 
-**On the mount**, name the topic and (optionally) the verify token, and choose a push
-mode:
+| Operation | Params | Returns |
+|-----------|--------|---------|
+| `subscribe` | `{ notification_url }` | `{ subscription_id, secret?, expires_at?, resource? }` |
+| `renew` | `{ subscription_id, notification_url }` | `{ subscription_id, expires_at? }` |
+| `unsubscribe` | `{ subscription_id }` | ignored |
 
-```yaml
-node_type: raisin:VirtualMount
-properties:
-  # ... integration_ref, account_ref, mount_path, remote_root: INBOX ...
-  sync_config:
-    mode: hybrid
-    interval_seconds: 300
-    ephemeral: true
-    ttl_seconds: 86400
-    pubsub_topic: projects/<your-project>/topics/gmail-push
-    pubsub_verify_token: <the same secret you put on the push subscription>
-  enabled: true
-```
+`expires_at` is ISO 8601; a subscription without one is never renewed.
 
-With the topic present the Gmail connector arms `users.watch` on `subscribe` and calls
-`users.stop` on teardown. The Pub/Sub message body (its `historyId`) is **ignored** —
-the ping only triggers the mount's normal IMAP delta. See
-**[Connect Gmail](connect-gmail.md)**.
+## Refreshing from your own webhook
 
-:::note Signed (OIDC) Pub/Sub push
-If you configure the Pub/Sub push subscription with **OIDC authentication** instead of
-a shared-secret query token, the callback carries a signed JWT. A custom adapter or the
-notifications glue can verify it with `raisin.crypto.verifyJwt(token, { jwks_url, issuer, audience })`
-— the generic signed-push primitive. The shipped Gmail path uses the simpler shared-secret
-token above.
-:::
+For a provider whose webhook you receive yourself, call
+`raisin.integrations.syncNow(mountId)` from the handler. The built-in
+`raisin-integrations` package ships `/lib/raisin/integrations/webhook-refresh`,
+a function that reads `mount_id` (and an optional `mode`) from the request's
+query, body or route parameters and enqueues the sync; expose it through an
+`http` trigger to get a webhook URL.
 
 ## Verifying push is live
 
-- Check the mount's `state.push_status` — `"active"` means a subscription is
-  registered. `"failed"` (with `state.push_last_error`) usually means
-  `RAISINDB_BASE_URL` is unset or the provider rejected the URL; `"unsupported"` means
-  the connector can't push and the mount is `webhook` mode (switch it to `poll` or
-  `hybrid`).
-- Make a change on the provider side (send yourself an email, add a calendar event)
-  and watch the node appear within seconds rather than on the poll interval.
+- `push_status: "active"` means the subscription is registered. `"failed"`
+  with `push_last_error` usually means no public base URL or a URL the
+  provider could not reach. `"unsupported"` means the connector cannot push
+  and the mount is in `webhook` mode; switch it to `poll` or `hybrid`.
+- `push_deliveries_ok` should increase after a change on the provider side.
+  A rejected delivery records `push_last_rejected_reason`, typically a secret
+  mismatch.
 
-## Non-goals (honest limits)
+## Limits
 
-- **Push is an invalidation signal, not a data feed.** RaisinDB re-runs delta sync; it
-  never trusts the notification payload. A provider that only pushes (no delta/list
-  API) cannot drive real-time sync this way.
-- **Still read-only.** Push does not add write-back; the sync engine brings items *in*
-  only.
-- **`RAISINDB_BASE_URL` is mandatory** for push. Behind NAT or without a public URL,
-  stay on `poll` mode.
-- **Multi-node clusters need the Redis locks backend**, exactly as for polling sync.
-- **Gmail requires the operator Pub/Sub setup above** — there is no way for the
-  connector to bootstrap the topic for you.
+- Push re-runs the delta sync; it never applies the notification payload.
+- A public URL is mandatory. Behind NAT, stay on `poll`.
+- Replicated clusters need the `redis` locks backend, as for polling.
 
 ## Next steps
 
-- **[Connect Microsoft 365](connect-microsoft-365.md)** — mail, calendar, and OneDrive.
-- **[Sync Google Calendar](sync-google-calendar.md)** — event push.
-- **[Connect Gmail](connect-gmail.md)** — the inbox pattern the Pub/Sub topic feeds.
-- **[Build a custom adapter](build-a-custom-adapter.md)** — add push to your own
-  connector with `subscribe` / `renew` / `unsubscribe`.
+- [Connect Microsoft 365](connect-microsoft-365.md)
+- [Sync Google Calendar](sync-google-calendar.md)
+- [Connect Gmail](connect-gmail.md)
+- [Build a connector](build-a-custom-adapter.md)

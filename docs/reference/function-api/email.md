@@ -6,22 +6,21 @@ description: Send transactional email from a function through one of the tenant'
 
 # `raisin.email`
 
-Transactional email for server-side functions. Available identically in QuickJS
-and Starlark.
+Transactional email for server-side functions, available in every runtime.
 
-Configuration — which providers exist, which is default, what address they send
-as — is covered in the [Outbound Email guide](/docs/guides/auth/outbound-email).
+Which providers exist, which is the default and what address they send as is
+configured per tenant; see the [Outbound Email guide](/docs/guides/auth/outbound-email).
 
 ## `send(message)`
 
 Sends one message and returns the provider's receipt.
 
 ```js
-const receipt = await raisin.email.send({
+const receipt = raisin.email.send({
   to: ["user@example.com"],
   subject: "Your sign-in link",
-  text: "Click here: https://app.example.com/…",
-  html: "<a href='…'>Sign in</a>",
+  text: "Open this link to sign in: https://app.example.com/…",
+  html: "<a href='https://app.example.com/…'>Sign in</a>",
 });
 ```
 
@@ -29,19 +28,21 @@ const receipt = await raisin.email.send({
 
 | Field | Type | Notes |
 |---|---|---|
-| `to` | `string \| string[]` | One address or several. At most **20**. |
-| `subject` | `string` | Required. CR/LF is refused (header splitting). |
-| `text` | `string` | Required, even alongside `html`. An HTML-only message is a spam signal and unreadable in a text client. |
-| `html` | `string?` | Optional alternative body, sent *alongside* the text. |
-| `provider` | `string?` | Which configured sender to use. Omit for the default. |
+| `to` | `string \| string[]` | Required. `to`, `cc` and `bcc` together may name at most 20 recipients. |
+| `cc`, `bcc` | `string \| string[]` | Optional. |
+| `subject` | `string` | Required. A CR, LF or NUL character is refused. |
+| `text` | `string` | Required, even alongside `html`. |
+| `html` | `string` | Optional alternative body, sent alongside the text. |
+| `attachments` | `EmailAttachment[]` | Optional. At most 20, 10 MiB each and 10 MiB in total by default. |
+| `provider` | `string` | Which configured sender to use. Omit for the default. |
 
-There is **no `from`**. The sender identity comes from the configuration, so a
-function cannot send as an address the tenant never verified. A function chooses
-*which* configured account to use, never *who* it is.
+There is no `from` field. The sender identity comes from the tenant's email
+configuration, so a function chooses which configured account to use, not what
+address it sends as.
 
-`provider` names an entry from [`providers()`](#providers). An unknown name
-**throws**; it never falls back to the default. `null`, `""` and whitespace all
-mean "the default", so an unset template variable behaves as you would expect.
+`provider` names an entry from [`providers()`](#providers). An unknown name is
+an error; it does not fall back to the default. `null`, `""` and whitespace all
+mean "the default".
 
 ### Receipt
 
@@ -51,38 +52,46 @@ mean "the default", so an unset template variable behaves as you would expect.
 
 | Field | Notes |
 |---|---|
-| `message_id` | The provider's id — what a later bounce or webhook correlates against |
-| `provider` | The provider API: `resend`, `brevo` or `smtp` |
-| `sender` | The configured name it went through |
+| `message_id` | The provider's id, which a later bounce or webhook correlates against |
+| `provider` | The provider API: `resend` or `brevo` (`smtp` is configurable but not yet implemented) |
+| `sender` | The configured account it went through |
 
-Acceptance is not delivery.
+Acceptance by the provider is not delivery.
 
 ### Errors
 
-Every error carries a stable machine code in its message.
+Every error carries a stable code in its message.
 
 | Code | Means |
 |---|---|
-| `email:policy_denied` | The function's `email_policy` does not permit a recipient |
-| `email:config` | Not enabled, no provider, unknown provider name, ambiguous default, or an incomplete entry |
-| `email:invalid_message` | Missing/oversized/malformed message — refused before a socket opens |
-| `email:auth_failed` | The provider rejected the credential (401/403). Rotate the secret. |
+| `email:policy_denied` | The function has no `email_policy`, or it does not permit a recipient |
+| `email:config` | Email is not enabled for the tenant, no provider is configured, the provider name is unknown, or the entry is incomplete |
+| `email:invalid_message` | Missing, oversized or malformed message; refused before any connection is opened |
+| `email:auth_failed` | The provider rejected the credential (401 or 403) |
 | `email:rate_limited` | The provider is throttling (429) |
 | `email:provider_error` | Any other provider response |
 | `email:transport` | DNS, TCP or TLS failure |
 | `email:timeout` | The send exceeded 30 seconds |
+| `email:unsupported` | The configured provider type has no implementation yet (SMTP) |
 
-The `auth_failed` / `invalid_message` split is the one that matters
-operationally: the first is *your credential* failing (an operator problem), the
-second is *your message* failing (a caller problem).
+A function that never declared a policy sees, for example:
+
+```
+Permission denied: [email:policy_denied] cannot send to ["a@example.com"]: this function
+has no email_policy (sending is denied by default). Grant it by adding the recipient
+domain to the function's email_policy.allowed_recipients.
+```
+
+`auth_failed` means the credential is wrong (an operator problem);
+`invalid_message` means the message is wrong (a caller problem).
 
 ## `providers()`
 
 Lists what this tenant has configured, so a function can discover the names
-`send` accepts rather than hardcoding one it cannot verify.
+`send` accepts instead of hardcoding one.
 
 ```js
-const { enabled, providers } = await raisin.email.providers();
+const { enabled, providers } = raisin.email.providers();
 // {
 //   enabled: true,
 //   providers: [
@@ -94,25 +103,27 @@ const { enabled, providers } = await raisin.email.providers();
 // }
 ```
 
-`enabled` at the top level is the tenant master switch — off means no sender
+`enabled` at the top level is the tenant switch: when it is off no sender
 works, however many are listed. Disabled entries are included so you can tell
-"not configured" from "switched off"; they cannot be selected.
-
-Carries no credential and no `credential_ref`: a function that may send does not
-thereby get to enumerate the secret store.
+"not configured" from "switched off"; they cannot be selected. The listing
+carries no credentials.
 
 ## Permissions
 
-Both calls need the function's `email_policy`, which denies by default:
+Both calls require the function's `email_policy`, which denies by default.
+`allowed_recipients` is a list of domain patterns matched against the part
+after `@` in each recipient: `example.com`, `*.example.com`, or `*` for any
+domain. The provider's credential is read from the tenant's email
+configuration under the function's `secret_policy`, so declare that too:
 
 ```yaml
 email_policy:
   enabled: true
-  allowed_recipients: ["*@example.com"]   # or ["*"] for mail to your users
+  allowed_recipients: ["example.com", "*.example.com"]
 secret_policy:
   enabled: true
   allowed_names: ["email/*"]
 ```
 
-The policy runs **first** — before the configuration is read and before any
-credential is decrypted — so a denied send never causes a key to be decrypted.
+The recipient check runs first, before the configuration is read and before
+any credential is decrypted.

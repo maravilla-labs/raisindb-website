@@ -2,14 +2,14 @@
 sidebar_position: 5
 ---
 
-# Error Handling & Compensation
+# Error Handling and Compensation
 
-When a step fails, the engine works through a well-defined sequence: **retry → error edge → continue-on-fail → fail the flow and run saga compensations**.
+When a step fails, the engine works through a fixed sequence: retry, then error edge, then continue-on-fail, and finally fail the flow and run saga compensations.
 
 ```mermaid
 flowchart TD
     A[Step fails] --> B{Retries left?}
-    B -->|yes| C[Retry with backoff] --> A
+    B -->|yes| C[Wait for backoff, run again] --> A
     B -->|no| D{error_edge set?}
     D -->|yes| E[Jump to handler node<br/>error.* populated]
     D -->|no| F{continue_on_fail?}
@@ -17,6 +17,8 @@ flowchart TD
     F -->|no| H[Flow fails]
     H --> I[Compensations run in LIFO order<br/>status: rolled_back]
 ```
+
+A step fails when its function returns an error, when an agent call fails, when a child flow fails, or when a condition or template cannot be evaluated.
 
 ## Retries
 
@@ -26,28 +28,34 @@ properties:
     max_retries: 2          # retry budget for this step
     base_delay_ms: 1000
     max_delay_ms: 10000
-  # OR disable retries entirely:
-  retry_strategy: none      # max_retries = 0
+  # or pick a preset:
+  retry_strategy: llm       # none | quick | standard | aggressive | llm
 ```
 
-- The retry budget comes from `max_retries`; **the default is 3** when nothing is configured.
-- `retry_strategy: none` disables retries for the step. Other preset names (`quick`, `standard`, `aggressive`, `llm`) are designer/SDK conventions — the designer UI expands them into a `retry` block.
-- With a `retry` block, the delay between attempts is **exponential backoff**: `base_delay_ms` doubled per attempt, capped at `max_delay_ms`.
-- Without a configured `retry` block, the engine falls back to a default escalating schedule (10s, 30s, 60s, then 120s per attempt).
+The retry budget is resolved in this order: an explicit `retry.max_retries`, then the `retry_strategy` preset, then the step type's default. Function, agent, and human-task steps default to 3 retries. `parallel`, `sub_flow`, and `loop` default to 0, because running them again would fork the branches or restart the iteration and repeat side effects. Set `retry` explicitly on those when a repeat is safe.
 
-While a retry backoff is pending, the instance status is `waiting`.
+| Preset | Retries | Base delay | Max delay |
+|--------|---------|------------|-----------|
+| `none` | 0 | | |
+| `quick` | 3 | 1 s | 10 s |
+| `standard` | 5 | 2 s | 60 s |
+| `aggressive` | 10 | 5 s | 120 s |
+| `llm` | 5 | 10 s | 120 s |
 
-## `error_edge` — Jump to a Handler
+The delay between attempts is exponential: the base delay doubles per attempt, capped at the max delay. Without a `retry` block or preset, the engine waits 10 s, 30 s, 60 s, and then 120 s per attempt. An unknown `retry_strategy` name falls back to the defaults rather than disabling retries. While a retry backoff is pending, the instance status is `waiting`.
 
-Once retries are exhausted, the engine first checks for an `error_edge` (on the node or inside `properties`) and jumps to the named handler node:
+## `error_edge`: Jump to a Handler
+
+Once retries are exhausted, the engine checks for an `error_edge` (on the node or inside `properties`) and jumps to the named node:
 
 ```yaml
 - id: charge
   node_type: raisin:FlowStep
   properties:
+    action: Charge the card
     function_ref: /lib/charge-payment
     retry: { max_retries: 2, base_delay_ms: 1000, max_delay_ms: 10000 }
-    error_edge: record-failure
+    error_edge: record_failure
 ```
 
 On the handler path, the `error` namespace is populated:
@@ -61,10 +69,10 @@ On the handler path, the `error` namespace is populated:
 }
 ```
 
-Reference it in the handler's steps as `{{ error.message }}`, `{{ error.step_id }}`:
+Reference it in the handler's steps as `{{ error.message }}` and `{{ error.step_id }}`:
 
 ```yaml
-- id: record-failure
+- id: record_failure
   node_type: raisin:FlowStep
   properties:
     action: Record failure
@@ -75,12 +83,12 @@ Reference it in the handler's steps as `{{ error.message }}`, `{{ error.step_id 
 ```
 
 :::caution Handler placement
-In designer format, execution order is array order — a node that follows an `error_edge` target is also reached on the *normal* path. To keep a handler out of the happy path, make it the last node and have preceding branches route around it, or make the handler function idempotent / a no-op when `error` is absent.
+In the designer format execution order is array order, so a node that follows an `error_edge` target is also reached on the normal path. To keep a handler out of the happy path, make it the last node and have preceding branches route around it, or make the handler function a no-op when `error` is absent.
 :::
 
-## `continue_on_fail` — Best-Effort Steps
+## `continue_on_fail`: Best-Effort Steps
 
-Without an `error_edge`, the engine next checks `continue_on_fail: true` — the flow continues to the next step, and `error.*` is populated with `"continued": true`:
+Without an `error_edge`, the engine checks `continue_on_fail: true`. The flow then continues to the next step, and `error.*` is populated with `"continued": true`:
 
 ```yaml
 - id: notify
@@ -88,10 +96,10 @@ Without an `error_edge`, the engine next checks `continue_on_fail: true` — the
   properties:
     action: Notify customer
     function_ref: /lib/send-notification
-    continue_on_fail: true       # notification failure must not fail the flow
+    continue_on_fail: true       # a notification failure must not fail the flow
 ```
 
-`on_error: stop | skip | continue` (node level) is carried through to the runtime as a property for UI/auditing; the enforced mechanics are the `error_edge` / `continue_on_fail` paths.
+The node-level `on_error: continue` or `on_error: skip` (the designer's error-behaviour choice) has the same effect. `on_error: stop`, the default, lets the failure proceed to compensation and the failed status.
 
 ### Flow-Level `error_strategy`
 
@@ -100,43 +108,45 @@ workflow_data:
   error_strategy: continue      # fail_fast (default) | continue
 ```
 
-With `error_strategy: continue`, every step that has **no explicit error handling of its own** (no `continue_on_fail`, no `error_edge`) behaves as if `continue_on_fail: true` were set. Per-step settings always take precedence.
+With `error_strategy: continue`, every function, `ai_agent`, and `ai_sequence` step that has no error handling of its own (no `continue_on_fail`, no `error_edge`) behaves as if `continue_on_fail: true` were set. Per-step settings take precedence.
 
 ## Saga Compensation (`compensation_ref`)
 
-For multi-step transactions, attach a compensation function that rolls forward steps back when a later step fails unrecoverably:
+For multi-step transactions, attach a compensation function to a step. When a later step fails without recovery, the compensations of the steps that already succeeded are run in reverse order.
 
 ```yaml
 - id: reserve
   node_type: raisin:FlowStep
   properties:
+    action: Reserve seats
     function_ref: /lib/ticketing/reserve-seats
     arguments:
       event_id: "{{ input.event_id }}"
       quantity: "${input.quantity}"
     compensation_ref: /lib/ticketing/cancel-reservation
     compensation_input_mapping:
-      reservation_id: "${output.reservation_id}"   # output.* = this step's fresh output
+      reservation_id: "${output.reservation_id}"   # output.* is this step's fresh output
 ```
 
-Semantics:
+How it works:
 
-- Compensation is registered **only after the forward function succeeded**.
-- On a later unrecoverable failure, the flow status becomes **`rolled_back`** and compensations execute in **LIFO order** (most recently succeeded step is compensated first).
-- `compensation_input_mapping` resolves against the step's fresh output via the `output.*` namespace. **Without a mapping, the forward arguments are reused** as the compensation's input.
+- A compensation is registered only after the forward function succeeded. A function that never ran is not compensated.
+- On a later unrecoverable failure, compensations execute in LIFO order: the most recently succeeded step is compensated first. A compensation that fails is recorded and the remaining ones still run.
+- `compensation_input_mapping` resolves against the step's output through the `output.*` namespace. Without a mapping, the forward `arguments` are reused as the compensation's input.
+- The flow ends as `rolled_back` when at least one compensation ran, and as `failed` when there was nothing to compensate.
 
 ```mermaid
 sequenceDiagram
     participant F as Flow
-    participant A as book-flight
-    participant B as book-hotel
-    participant C as charge-card
-    F->>A: execute (ok) — register cancel-flight
-    F->>B: execute (ok) — register cancel-hotel
+    participant A as book_flight
+    participant B as book_hotel
+    participant C as charge_card
+    F->>A: execute (ok), register cancel_flight
+    F->>B: execute (ok), register cancel_hotel
     F->>C: execute (fails, retries exhausted)
     Note over F: no error_edge, no continue_on_fail
-    F->>B: cancel-hotel (LIFO 1st)
-    F->>A: cancel-flight (LIFO 2nd)
+    F->>B: cancel_hotel (LIFO 1st)
+    F->>A: cancel_flight (LIFO 2nd)
     Note over F: status = rolled_back
 ```
 
@@ -144,38 +154,42 @@ sequenceDiagram
 
 | Property | Effect |
 |----------|--------|
-| `timeout_ms` (step) | For function steps, the wait deadline of the queued execution — a stuck function doesn't hang the flow. For containers, carried on the lowered node. |
-| `due_in_seconds` (human task) | The task's due time **and** the flow's wait deadline. |
-| `timeout_edge` (step) | Where to route when a wait deadline expires. Any waiting inbox task is marked `expired`. **Without** a `timeout_edge`, an expired wait fails the flow (then the error-edge / continue-on-fail / compensation sequence applies). |
+| `timeout_ms` (function step) | The wait deadline of the queued execution, so a stuck function does not hang the flow. |
+| `due_in_seconds` (human task) | The task's due time and the flow's wait deadline. |
+| `timeout_edge` (any waiting step) | Where to continue when the wait deadline expires. A waiting inbox task is marked `expired`, and `error.*` is populated with `error_type: "timeout"`. Without a `timeout_edge`, an expired wait fails the flow (and compensations run). |
 
 ```yaml
 - id: approve
   node_type: raisin:FlowStep
   properties:
+    action: "Approve order {{ input.order_id }}"
     step_type: human_task
     task_type: approval
     assignee: /users/manager
-    action: "Approve order {{ input.order_id }}"
     due_in_seconds: 86400
-    timeout_edge: escalate-step    # continue here if nobody responds within 24h
+    timeout_edge: escalate_step    # continue here if nobody responds within 24h
     options:
       - { value: approve, label: Approve }
       - { value: reject,  label: Reject }
 ```
 
+The engine schedules a wake-up job at the deadline, so an expiry is acted on even if nothing else touches the instance.
+
 ## Test Runs with Mocked Functions
 
-To exercise error paths safely, start a flow with `POST /api/flows/{repo}/test` and mock specific functions:
+To exercise error paths safely, start a flow with `POST /api/flows/{repo}/test` and mock specific functions or agents:
 
 ```json
 {
   "flow_path": "/flows/order-fulfillment",
   "input": { "order_id": "ORD-1" },
   "test_config": {
-    "is_test_run": true,
     "mock_functions": {
       "/lib/charge-payment": { "behavior": "mock_output", "mock_output": { "charge_id": "test" } },
       "/lib/audit-log":      { "behavior": "passthrough", "mock_delay_ms": 100 }
+    },
+    "mock_agents": {
+      "/agents/summarizer":  { "behavior": "mock_output", "mock_output": { "response": "stub" } }
     },
     "isolated_branch": true,
     "auto_discard": true
@@ -183,4 +197,4 @@ To exercise error paths safely, start a flow with `POST /api/flows/{repo}/test` 
 }
 ```
 
-Behaviors: `real` (default), `passthrough` (input echoed as output), `mock_output`. AI agents always run real and cannot be mocked. The admin console's Run dialog exposes the same mock editor in test-run mode.
+Behaviors: `real` (default), `passthrough` (the step's `arguments`, or the flow input when there are none, echoed as the output), `mock_output` (the given value). `mock_functions` is keyed by function path and applies to function steps; `mock_agents` is keyed by agent path and applies to `ai_agent` steps, `ai_sequence` containers, and chat steps. The response has the same shape as a normal run. The admin console's Run dialog exposes the same mock editor in test-run mode.

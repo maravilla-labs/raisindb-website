@@ -4,193 +4,218 @@ sidebar_position: 7
 
 # Graph DML Statements
 
-Statements for manipulating graph relationships, node positions, and content in RaisinDB.
+Statements that create and remove relations between nodes, and that move,
+copy, reorder, restore and translate nodes. Node endpoints are always written
+as `path='…'` or `id='…'`.
 
 ## RELATE
 
-Create a relationship between two nodes.
+Create a directed relation from a source node to a target node.
 
 ### Syntax
 
 ```sql
-RELATE source_node TO target_node
-    [ TYPE relationship_type ]
-    [ WEIGHT weight_value ]
-    [ IN BRANCH branch_name ]
-    [ IN WORKSPACE workspace_name ]
+RELATE [IN BRANCH 'branch']
+    FROM path|id='value' [IN WORKSPACE 'workspace']
+    TO   path|id='value' [IN WORKSPACE 'workspace']
+    [TYPE 'relation_type']
+    [WEIGHT number]
 ```
+
+- `IN WORKSPACE` names the workspace of each endpoint. Omit it only when the
+  node lives in the repository's default workspace; otherwise the statement
+  fails with `Node at path '…' not found`.
+- `TYPE` defaults to `references`. Types are free-form strings and are matched
+  case-sensitively by `GRAPH_TABLE`.
+- `WEIGHT` stores a number on the edge (read back as `r.weight`).
+- `IN BRANCH` writes the relation on another branch instead of the one the
+  connection is using.
+
+The statement returns `{"affected_rows": 1}`. Relating the same pair with the
+same type again replaces the edge rather than adding a second one.
 
 ### Examples
 
 ```sql
--- Create a basic relationship
-RELATE '/content/page1' TO '/content/page2';
+-- typed relation
+RELATE FROM path='/bob' IN WORKSPACE 'social'
+       TO   path='/alice' IN WORKSPACE 'social'
+       TYPE 'follows';
 
--- Create a typed relationship
-RELATE '/users/alice' TO '/projects/alpha'
-    TYPE 'member';
+-- weighted
+RELATE FROM path='/dave' IN WORKSPACE 'social'
+       TO   path='/bob' IN WORKSPACE 'social'
+       TYPE 'follows' WEIGHT 2.5;
 
--- Create a weighted relationship
-RELATE '/products/widget' TO '/categories/electronics'
-    TYPE 'belongs_to'
-    WEIGHT 1.0;
+-- by id
+RELATE FROM id='ad2f8f08-2704-41f6-bec0-876c6d53a41b' IN WORKSPACE 'social'
+       TO   id='6637869b-390e-4599-80a9-726c95ff6f54' IN WORKSPACE 'social'
+       TYPE 'follows';
 
--- Create relationship in a specific branch
-RELATE '/content/page1' TO '/content/page2'
-    TYPE 'links_to'
-    IN BRANCH feature_branch;
+-- across workspaces
+RELATE FROM path='/alice' IN WORKSPACE 'social'
+       TO   path='/zurich-hb' IN WORKSPACE 'places'
+       TYPE 'lives_near';
 
--- Create relationship in a specific workspace
-RELATE '/docs/intro' TO '/docs/guide'
-    TYPE 'see_also'
-    IN WORKSPACE documentation;
+-- on a branch
+RELATE IN BRANCH 'feature'
+       FROM path='/alice' IN WORKSPACE 'social'
+       TO   path='/advanced-graphs' IN WORKSPACE 'social'
+       TYPE 'authored';
 ```
 
 ---
 
 ## UNRELATE
 
-Remove a relationship between two nodes.
+Remove a relation.
 
 ### Syntax
 
 ```sql
-UNRELATE source_node FROM target_node
-    [ TYPE relationship_type ]
-    [ IN BRANCH branch_name ]
-    [ IN WORKSPACE workspace_name ]
+UNRELATE [IN BRANCH 'branch']
+    FROM path|id='value' [IN WORKSPACE 'workspace']
+    TO   path|id='value' [IN WORKSPACE 'workspace']
+    [TYPE 'relation_type']
 ```
 
 ### Examples
 
 ```sql
--- Remove all relationships between two nodes
-UNRELATE '/content/page1' FROM '/content/page2';
-
--- Remove a specific relationship type
-UNRELATE '/users/alice' FROM '/projects/alpha'
-    TYPE 'member';
-
--- Remove relationship in a specific branch
-UNRELATE '/content/page1' FROM '/content/page2'
-    TYPE 'links_to'
-    IN BRANCH feature_branch;
+UNRELATE FROM path='/bob' IN WORKSPACE 'social'
+         TO   path='/alice' IN WORKSPACE 'social'
+         TYPE 'follows';
 ```
+
+Returns `{"affected_rows": 1}` when an edge was removed.
 
 ---
 
 ## MOVE
 
-Move a node to a new position in the hierarchy.
+Move a node, with its descendants, under a new parent. The node keeps its id
+and name.
 
 ### Syntax
 
 ```sql
-MOVE source_path TO destination_path
+MOVE workspace [IN BRANCH 'branch']
+    SET path|id='source'
+    TO  path|id='new_parent'
 ```
 
 ### Examples
 
 ```sql
--- Move a node to a new parent
-MOVE '/content/drafts/post1' TO '/content/published/post1';
+-- /erin becomes /team/erin
+MOVE social SET path='/erin' TO path='/team';
 
--- Move a section
-MOVE '/docs/old-section' TO '/archive/old-section';
+MOVE social IN BRANCH 'feature' SET id='abc123' TO path='/archive';
 ```
 
 ---
 
 ## COPY
 
-Copy a node, optionally with all its descendants.
+Copy a node under a new parent. `COPY` copies one node, `COPY TREE` copies the
+node and all its descendants. Copies get new ids and their publish state is
+cleared.
 
 ### Syntax
 
 ```sql
-COPY source_path TO destination_path
-    [ RECURSIVE ]
+COPY [TREE] workspace [IN BRANCH 'branch']
+    SET path|id='source'
+    TO  path|id='new_parent'
+    [AS 'new_name']
 ```
 
 ### Examples
 
 ```sql
--- Copy a single node
-COPY '/templates/page-template' TO '/content/new-page';
+COPY social SET path='/team/erin' TO path='/archive' AS 'erin-copy';
+-- {"affected_rows": 1, "copied_root_path": "/archive/erin-copy"}
 
--- Copy a node and all descendants recursively
-COPY '/content/blog/2024' TO '/archive/blog/2024'
-    RECURSIVE;
+COPY TREE social SET path='/team' TO path='/archive';
+-- {"affected_rows": 2, "copied_root_path": "/archive/team"}
 ```
 
 ---
 
 ## ORDER
 
-Set the order of nodes within a parent.
+Change a node's position among its siblings. Editorial order is what
+`ORDER BY __order` returns.
 
 ### Syntax
 
 ```sql
-ORDER node_path position
+ORDER workspace [IN BRANCH 'branch']
+    SET path|id='node'
+    ABOVE|BELOW path|id='sibling'
 ```
 
 ### Examples
 
 ```sql
--- Set node order position
-ORDER '/content/menu/item1' 1;
-ORDER '/content/menu/item2' 2;
-ORDER '/content/menu/item3' 3;
+ORDER social SET path='/carol' ABOVE path='/alice';
+
+SELECT name, __order FROM 'social' WHERE CHILD_OF('/') ORDER BY __order;
+-- carol, alice, bob, dave, …
 ```
 
 ---
 
 ## RESTORE
 
-Restore a node from a previous revision.
+Restore a node to the state it had at an earlier revision. The node stays at
+its current path; `RESTORE TREE` also restores its descendants.
 
 ### Syntax
 
 ```sql
-RESTORE node_path [ AT REVISION revision_number ]
+RESTORE [TREE] NODE path|id='node'
+    TO REVISION HEAD~n | branch~n | <hlc>
+    [TRANSLATIONS ('locale', ...)]
 ```
 
 ### Examples
 
 ```sql
--- Restore a node to its previous state
-RESTORE '/content/page1';
+RESTORE NODE path='/dave' TO REVISION HEAD~1;
+-- {"result": "Node '/dave' restored to revision 1788719664571-0", "affected_rows": 1, ...}
 
--- Restore a node at a specific revision
-RESTORE '/content/page1' AT REVISION 5;
+RESTORE TREE NODE path='/products/category' TO REVISION HEAD~5;
+
+RESTORE NODE path='/articles/my-article' TO REVISION HEAD~2 TRANSLATIONS ('en', 'de');
+
+RESTORE NODE path='/articles/my-article' TO REVISION 1734567890123_42;
 ```
+
+A node with fewer revisions than requested fails with
+`Node '/team' only has 1 revisions, cannot go back 1 revisions (HEAD~1)`.
 
 ---
 
-## TRANSLATE
+## UPDATE … FOR LOCALE (translations)
 
-Create or update translations for node content, per locale. Translations are
-stored as an overlay on the base node — only the fields you set are translated;
-everything else falls back to the base content.
+Create or update the translation of a node's fields for one locale.
+Translations are an overlay on the base node: only the fields you set are
+translated, everything else falls back to the base content.
 
 ### Syntax
 
 ```sql
-UPDATE <workspace> FOR LOCALE '<locale>' [IN BRANCH '<branch>']
+UPDATE workspace FOR LOCALE 'locale' [IN BRANCH 'branch']
     SET <path> = <value> [, ...]
-    WHERE <path = '...' | id = '...'> [AND node_type = '...']
+    WHERE path = '…' | id = '…' [AND node_type = '…']
 ```
 
-- **`<workspace>` is the workspace name — NOT a node type.** It is the same
-  table identifier you use in `SELECT … FROM <workspace>`; RaisinDB SQL tables
-  *are* workspaces. So `UPDATE Page …` means "translate in the workspace named
-  `Page`", not "translate nodes of type Page". To restrict by node type, add
-  `AND node_type = '...'` to the `WHERE` clause.
-- `FOR LOCALE` takes a locale code such as `'de'`, `'fr'`, `'en-US'`.
-- `IN BRANCH` is optional; without it the current branch is used.
-- A `WHERE` clause is **required** to identify the target node (by `path` or
-  `id`).
+- `workspace` is the table name, the same identifier used in
+  `SELECT … FROM workspace`. To restrict by node type add
+  `AND node_type = '…'` to the `WHERE` clause.
+- `FOR LOCALE` takes a locale code such as `'de'`, `'fr'` or `'en-US'`.
+- The `WHERE` clause is required and identifies the node by `path` or `id`.
 
 ### Paths
 
@@ -200,117 +225,38 @@ A `SET` target is a path into the node's content:
 |-----------|---------|
 | `title` | a top-level field |
 | `metadata.author` | a nested object field |
-| `blocks[uuid='b1'].text` | a field on a repeatable item, addressed by `uuid` |
+| `blocks[uuid='b1'].text` | a field on a repeatable item, addressed by its `uuid` |
 | `sections[uuid='s1'].features[uuid='f1'].title` | a field nested inside two array levels |
 
-`array[uuid='…']` addressing works to **any depth** — a composite inside a
-multivalue element field, a composite inside a composite, and so on. Each array
-item along the path must carry a `uuid` (see the
+`array[uuid='…']` addressing works to any depth; each array item along the
+path must carry a `uuid`. See the
 [Translations guide](/docs/guides/data-modeling/translations) for how to model
-translatable composites). The path
-flattens to a JSON pointer (`/sections/s1/features/f1/title`) that the resolver
-walks by matching each `uuid` against array items, so nested fields round-trip
-without replacing the surrounding array.
+translatable composites.
 
 ### Examples
 
-In the examples below, `Page` is a **workspace name** (as in `SELECT … FROM Page`), not a node type.
-
 ```sql
--- Translate top-level fields to Spanish
-UPDATE Page FOR LOCALE 'es'
+UPDATE pages FOR LOCALE 'es'
     SET title = 'Bienvenidos',
         description = 'Pagina principal'
     WHERE path = '/content/homepage';
 
--- Translate a field inside a repeatable composite item
-UPDATE Page FOR LOCALE 'fr'
+UPDATE pages FOR LOCALE 'fr'
     SET blocks[uuid='hero-1'].heading = 'Bonjour'
     WHERE path = '/content/homepage';
 
--- Translate a field nested two array levels deep
--- (a composite inside a multivalue element field)
-UPDATE Page FOR LOCALE 'de'
+UPDATE pages FOR LOCALE 'de'
     SET sections[uuid='s1'].features[uuid='f1'].title = 'Schnelle Entwicklung'
     WHERE path = '/home';
 ```
 
 ---
 
-## Examples
-
-### Building a Navigation Structure
-
-```sql
--- Create pages and establish relationships
-INSERT INTO pages (title, status) VALUES ('Home', 'published');
-INSERT INTO pages (title, status) VALUES ('About', 'published');
-INSERT INTO pages (title, status) VALUES ('Contact', 'published');
-
--- Create navigation relationships
-RELATE '/pages/home' TO '/pages/about' TYPE 'nav_link' WEIGHT 1.0;
-RELATE '/pages/home' TO '/pages/contact' TYPE 'nav_link' WEIGHT 2.0;
-
--- Order the navigation items
-ORDER '/pages/about' 1;
-ORDER '/pages/contact' 2;
-```
-
-### Content Reorganization
-
-```sql
--- Move old content to archive
-MOVE '/content/2023' TO '/archive/2023';
-
--- Copy template for new year
-COPY '/templates/year-template' TO '/content/2025' RECURSIVE;
-```
-
-### Multi-Language Content
-
-```sql
--- Create base content
-INSERT INTO products (name, description)
-VALUES ('Premium Widget', 'High-quality widget for professionals');
-
--- Add translations
-UPDATE Product FOR LOCALE 'es'
-    SET name = 'Widget Premium',
-        description = 'Widget de alta calidad para profesionales'
-    WHERE path = '/products/premium-widget';
-
-UPDATE Product FOR LOCALE 'de'
-    SET name = 'Premium Widget',
-        description = 'Hochwertiges Widget fuer Profis'
-    WHERE path = '/products/premium-widget';
-```
-
-### Version-Controlled Relationships
-
-```sql
--- Create relationships on a feature branch
-USE BRANCH feature_new_links;
-
-RELATE '/docs/quickstart' TO '/docs/advanced-guide'
-    TYPE 'next_step';
-
-RELATE '/docs/advanced-guide' TO '/docs/reference'
-    TYPE 'next_step';
-
-COMMIT MESSAGE 'Add documentation navigation flow';
-
--- Merge to main
-MERGE BRANCH feature_new_links INTO main;
-```
-
----
-
 ## Notes
 
-- `RELATE` and `UNRELATE` manage graph edges between nodes
-- `MOVE` changes the hierarchical position; the node's `__path` is updated
-- `COPY` with `RECURSIVE` duplicates the entire subtree
-- `ORDER` sets explicit ordering for sibling nodes
-- `RESTORE` uses the version control system to revert node state
-- `TRANSLATE` stores localized field values associated with a language code
-- All graph DML operations are version-controlled and can be part of transactions
+- Relations live in a relation index, not in the node record; `RELATE` and
+  `UNRELATE` do not create a node revision.
+- `MOVE` updates the paths of the node and its descendants; relations keep
+  pointing at the same ids.
+- All of these statements are branch-scoped and take an `IN BRANCH` override
+  except `RESTORE`, which uses the connection's branch.

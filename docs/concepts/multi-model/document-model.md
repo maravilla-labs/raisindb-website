@@ -4,143 +4,159 @@ sidebar_position: 1
 
 # Document Model
 
-RaisinDB stores all content as **nodes** — flexible, schema-validated documents organized in a hierarchical path tree. Every node is simultaneously a document, a graph vertex, and a searchable entity.
+RaisinDB stores content as **nodes**: schema-validated JSON documents arranged
+in a path tree. The same node is also a vertex in the graph, a document in the
+full-text index and, with embeddings configured, a point in the vector index.
 
-## Nodes as Documents
+## Nodes as documents
 
-A node is a self-contained document with an identity, a type, properties, and a position in a path hierarchy:
+A node has an identity, a type, a position in the tree, and a `properties`
+object:
 
 ```sql
-INSERT INTO 'default' (path, node_type, properties) VALUES (
-  '/content/blog/hello-world',
-  'blog:Article',
-  '{"title": "Hello World", "body": "Welcome!", "status": "published"}'
+INSERT INTO 'blog' (path, node_type, properties) VALUES (
+  '/posts/hello-world',
+  'raisin:Page',
+  '{"title": "Hello World", "content": "Welcome!", "status": "published"}'::jsonb
 );
 ```
 
-Every node has these built-in fields:
+Every node carries these fields:
 
 | Field | Description |
-|-------|-------------|
-| `id` | Unique identifier (ULID, auto-generated) |
-| `path` | Hierarchical location (e.g., `/content/blog/hello-world`) |
-| `node_type` | Schema type (e.g., `blog:Article`) |
-| `properties` | JSON object with typed fields |
-| `workspace` | Logical container (maps to a SQL table) |
-| `created_at` | Creation timestamp |
-| `updated_at` | Last modification timestamp |
+|---|---|
+| `id` | Unique identifier, generated on create |
+| `path` | Location in the tree, for example `/posts/hello-world` |
+| `name` | Last path segment |
+| `node_type` | Schema type, for example `raisin:Page` |
+| `archetype` | Optional archetype that adds fields to the type |
+| `properties` | JSON object holding the content |
+| `created_at`, `updated_at`, `created_by`, `updated_by` | Write metadata |
+| `published_at`, `published_by` | Set when the node is published |
 | `version` | Revision counter |
+
+The workspace a node lives in is the SQL table you query it from.
 
 ## Properties
 
-Properties are the primary data store for each node. They are stored as JSON but validated against the NodeType schema:
+Properties are the content. They are stored as JSON and validated against the
+NodeType on every write. Read them with `->>` and cast the key to filter by a
+type:
 
 ```sql
--- Query properties with the ->> operator
 SELECT
-  properties->>'title'::String AS title,
-  properties->>'status'::String AS status
-FROM 'default'
-WHERE node_type = 'blog:Article';
+  properties->>'title'  AS title,
+  properties->>'status' AS status
+FROM 'blog'
+WHERE node_type = 'raisin:Page'
+  AND properties->>'status'::String = 'published';
 ```
 
-Properties support rich types: strings, numbers, booleans, dates, arrays, objects, references to other nodes, URLs, and more. When a NodeType defines a property as `required`, RaisinDB enforces it on every write.
+Property types include strings, numbers, booleans, dates, URLs, arrays,
+nested objects, references to other nodes, geometry and embedded element
+blocks. A property declared `required` must be present on every write.
 
-## Path Hierarchy
+## Path hierarchy
 
-Every node lives at a **path** — a slash-separated location that defines its position in a tree:
+Every node lives at a slash-separated path:
 
 ```
-/                           (root)
-/content/                   (folder)
-/content/blog/              (folder)
-/content/blog/hello-world   (article)
-/content/blog/second-post   (article)
-/content/pages/             (folder)
-/content/pages/about        (page)
+/                        root
+/posts                   folder
+/posts/hello-world       page
+/posts/second-post       page
+/pages
+/pages/about
 ```
 
-Paths enable powerful hierarchical queries:
+The tree is queryable directly:
 
 ```sql
--- All nodes under /content/blog/
-SELECT * FROM 'default'
-WHERE PATH_STARTS_WITH(path, '/content/blog/');
+-- direct children of /posts
+SELECT path FROM 'blog' WHERE CHILD_OF('/posts');
 
--- Direct children of /content/
-SELECT * FROM 'default'
-WHERE PARENT(path) = '/content';
+-- everything under /posts
+SELECT path FROM 'blog' WHERE DESCENDANT_OF('/posts');
 
--- Nodes at depth 2
-SELECT * FROM 'default'
-WHERE DEPTH(path) = 2;
+-- top-level nodes
+SELECT path FROM 'blog' WHERE depth = 1;
 ```
 
-`PATH_STARTS_WITH` is optimized into a RocksDB prefix scan — it reads only matching keys, not the full workspace.
+Hierarchy predicates become prefix scans over the path index, so they read
+only the subtree they name. Children also carry an editorial order, the one
+editors set by drag and drop, exposed as the `__order` column.
 
 ## Workspaces
 
-Workspaces are logical containers that map to SQL tables. Each workspace can have its own allowed NodeTypes and configuration:
+A workspace is a named container with its own tree and its own list of
+allowed NodeTypes. Each workspace is a table:
 
 ```sql
--- Query the default workspace
-SELECT * FROM 'default' WHERE node_type = 'blog:Article';
-
--- Query a media workspace
-SELECT * FROM 'media' WHERE node_type = 'Asset';
+SELECT * FROM 'blog'   WHERE node_type = 'raisin:Page';
+SELECT * FROM 'assets' WHERE node_type = 'raisin:Asset';
 ```
 
-Workspaces provide query isolation without physical separation. Nodes in different workspaces are independent — they have separate path trees and can be searched independently.
+Workspaces are created over the management API, not with SQL. Cross-workspace
+queries join two tables or search several workspaces at once with
+`workspaces => 'blog, docs'`.
 
-## Schema Validation
+## Schema validation
 
-NodeTypes define the expected structure for nodes. When strict mode is enabled, only declared properties are accepted:
+A NodeType defines which properties a node may have, their types and
+constraints:
 
 ```yaml
 name: blog:Article
 strict: true
+versionable: true
 properties:
   - name: title
     type: String
     required: true
+    index: [Fulltext]
   - name: body
     type: String
+    index: [Fulltext]
   - name: status
     type: String
-versionable: true
 ```
 
-RaisinDB validates every write against the schema, catching missing required fields, type mismatches, and constraint violations before data is stored.
+A write that misses a required field, has the wrong type or breaks a
+constraint is rejected before anything is stored. With `strict: true` only
+declared properties are accepted. The `index` list on a property decides
+which indexes it enters; see [Indexing](/docs/concepts/indexing).
 
 ## Versioning
 
-Nodes support git-like versioning. Draft writes update the working state instantly. Commits create immutable revisions:
+Every write creates a new revision of the branch, and earlier revisions stay
+readable:
 
 ```sql
--- Query the current state
-SELECT * FROM 'default' WHERE path = '/content/blog/hello-world';
+-- current state
+SELECT * FROM 'blog' WHERE path = '/posts/hello-world';
 
--- Time-travel to a past revision
-SET __revision = 42;
-SELECT * FROM 'default' WHERE path = '/content/blog/hello-world';
+-- as of an earlier revision
+SELECT * FROM 'blog'
+WHERE path = '/posts/hello-world' AND __revision = '1788720151444-0';
 ```
 
-See [Time-Travel Queries](/docs/guides/querying/time-travel-queries) for more details.
+See [Time-Travel Queries](/docs/guides/querying/time-travel-queries).
 
-## How It Connects to Other Models
+## How it connects to the other models
 
-The document model is the foundation. Every node you create is also:
+The node is the unit everything else is built on:
 
-- A **graph vertex** — connect nodes with typed edges using `RELATE` and query with `GRAPH_TABLE`
-- A **searchable document** — full-text indexed via Tantivy for `FULLTEXT_SEARCH` queries
-- A **vector point** — embeddings stored per-node for `KNN` / `HYBRID_SEARCH` similarity queries
-
-You don't choose one model — you use all of them on the same data.
+- **Graph**: connect nodes with typed edges using `RELATE` and match patterns
+  with `GRAPH_TABLE`.
+- **Full-text**: properties marked `Fulltext` are indexed by Tantivy and
+  queried with `FULLTEXT_SEARCH`.
+- **Vector**: properties marked `Vector` are embedded and queried with `KNN`
+  and `HYBRID_SEARCH`.
 
 ## Next Steps
 
-- [Nodes](/docs/concepts/data-model/nodes) — Detailed node reference
-- [Paths and Hierarchy](/docs/concepts/data-model/paths-and-hierarchy) — Path design
-- [NodeTypes](/docs/concepts/data-model/nodetypes) — Schema definitions
-- [Full-Text Search](./full-text-search) — Search your documents
-- [Vector Search](./vector-search) — Similarity queries
+- [Nodes](/docs/concepts/data-model/nodes)
+- [Paths and Hierarchy](/docs/concepts/data-model/paths-and-hierarchy)
+- [NodeTypes](/docs/concepts/data-model/nodetypes)
+- [Full-Text Search](./full-text-search)
+- [Vector Search](./vector-search)

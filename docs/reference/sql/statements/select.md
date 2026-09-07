@@ -4,572 +4,295 @@ sidebar_position: 1
 
 # SELECT Statement
 
-The SELECT statement retrieves data from RaisinDB.
-
-:::info Workspace = Table Name
-In the FROM clause, the table name refers to the **workspace name**. For example, `SELECT * FROM products` queries the `products` workspace. You can also query `FROM nodes` to access all nodes across workspaces.
-:::
+`SELECT` reads nodes from a workspace. Examples on this page run against a `blog` workspace holding a `/hello` page, a `/news` folder and two pages under it.
 
 ## Syntax
 
 ```sql
-[ EXPLAIN ] [ WITH cte_name AS ( query ) [, ...] ]
-SELECT [ DISTINCT ] select_list
-FROM workspace_name
+[ EXPLAIN ]
+[ WITH name AS ( query ) [, ...] ]
+SELECT [ DISTINCT ] expression [ AS alias ] [, ...]
+FROM 'workspace' [ alias ] | ( subquery ) alias | table_function(...) alias
+[ JOIN 'workspace' alias ON condition ] [ ... ]
 [ WHERE condition ]
-[ GROUP BY grouping_element [, ...] ]
-[ HAVING condition ]
-[ WINDOW window_name AS ( window_definition ) [, ...] ]
+[ GROUP BY expression [, ...] ]
 [ ORDER BY expression [ ASC | DESC ] [, ...] ]
-[ LIMIT count ]
-[ OFFSET start ]
+[ LIMIT count ] [ OFFSET start ]
 ```
 
-## SELECT Clause
+`IN (SELECT ...)` subqueries and subqueries in `FROM` are supported; `HAVING`, `UNION`, `EXISTS` and scalar subqueries are not part of the current build.
 
-Specify columns and expressions to retrieve:
+<!-- TODO(sql-ext): fill from engine report (HAVING, UNION/INTERSECT/EXCEPT, EXISTS, scalar subqueries, regex operators, ANY/ALL) -->
 
-```sql
--- Select all columns
-SELECT * FROM nodes;
+## Select list
 
--- Select node columns
-SELECT id, path, node_type, properties FROM default;
-
--- Select properties using JSONB operators
-SELECT
-    properties->>'title' AS title,
-    properties->>'status' AS status
-FROM default;
-
--- Select with expressions
-SELECT
-    properties->>'title' AS title,
-    UPPER(properties->>'status') AS status,
-    DEPTH(path) AS depth
-FROM default;
-```
-
-## Working with Properties
-
-All node data is stored in the `properties` JSONB column. Use JSONB operators to access fields:
-
-### Extract as Text (`->>`)
+Node columns, JSON accesses, expressions and functions, each with an optional alias:
 
 ```sql
-SELECT properties->>'title' AS title FROM default;
-```
-
-### Extract as JSONB (`->`)
-
-```sql
-SELECT properties->'tags' AS tags FROM default;
-```
-
-### Nested Access
-
-```sql
-SELECT properties->'author'->>'name' AS author_name FROM default;
-```
-
-### Cast for Comparisons
-
-```sql
-SELECT * FROM default
-WHERE (properties->>'price')::numeric > 100;
-```
-
-### Containment Check
-
-```sql
-SELECT * FROM default
-WHERE properties @> '{"featured": true}';
-```
-
-## FROM Clause
-
-Specify data sources:
-
-```sql
--- Query a specific workspace
-SELECT * FROM default;
-
--- Query all nodes
-SELECT * FROM nodes;
-
--- Query with alias
-SELECT p.properties->>'title' AS title
-FROM default p;
-
--- Cross-workspace query
-SELECT * FROM content.nodes;
-```
-
-## WHERE Clause
-
-Filter rows:
-
-```sql
--- Filter by property
-SELECT * FROM default
-WHERE properties->>'status' = 'published';
-
--- Multiple conditions
-SELECT * FROM default
-WHERE properties->>'status' = 'published'
-  AND created_at > '2024-01-01';
-
--- Pattern matching on property
-SELECT * FROM default
-WHERE properties->>'title' LIKE '%guide%';
-
--- NULL checks
-SELECT * FROM default
-WHERE properties->>'description' IS NOT NULL;
-
--- IN lists
-SELECT * FROM default
-WHERE properties->>'status' IN ('published', 'draft');
-
--- Hierarchical filtering
-SELECT * FROM default
-WHERE CHILD_OF(path, '/content');
-```
-
-## Operators
-
-### Comparison Operators
-
-- `=` - Equal
-- `!=` or `<>` - Not equal
-- `<` - Less than
-- `<=` - Less than or equal
-- `>` - Greater than
-- `>=` - Greater than or equal
-
-### Logical Operators
-
-- `AND` - Logical and
-- `OR` - Logical or
-- `NOT` - Logical negation
-
-### String Operators
-
-- `LIKE` - Pattern matching with `%` and `_` wildcards
-- `||` - String concatenation
-
-### JSON Operators
-
-- `->` - Extract JSON field as JSONB
-- `->>` - Extract JSON field as text
-- `@>` - JSONB contains
-- `||` - JSONB merge
-
-### Full-Text Operators
-
-- `@@` - Full-text match
-
-## Joins
-
-### INNER JOIN
-
-Returns only matching rows:
-
-```sql
-SELECT
-    a.properties->>'title' AS article,
-    u.properties->>'name' AS author
-FROM default a
-INNER JOIN default u ON a.properties->>'author_id' = u.id;
-```
-
-### LEFT JOIN
-
-Returns all rows from left table:
-
-```sql
-SELECT
-    a.properties->>'title' AS article,
-    u.properties->>'name' AS author
-FROM default a
-LEFT JOIN default u ON a.properties->>'author_id' = u.id;
-```
-
-### RIGHT JOIN
-
-Returns all rows from right table:
-
-```sql
-SELECT
-    a.properties->>'title' AS article,
-    u.properties->>'name' AS author
-FROM default a
-RIGHT JOIN default u ON a.properties->>'author_id' = u.id;
-```
-
-### FULL JOIN
-
-Returns all rows from both tables:
-
-```sql
-SELECT
-    a.properties->>'title' AS article,
-    u.properties->>'name' AS author
-FROM default a
-FULL JOIN default u ON a.properties->>'author_id' = u.id;
-```
-
-### CROSS JOIN
-
-Cartesian product of tables:
-
-```sql
-SELECT *
-FROM default
-CROSS JOIN nodes;
-```
-
-## GROUP BY
-
-Aggregate rows:
-
-```sql
--- Count by property
-SELECT properties->>'status' AS status, COUNT(*) AS count
-FROM default
-GROUP BY properties->>'status';
-
--- Multiple grouping columns
-SELECT node_type, properties->>'status' AS status, COUNT(*)
-FROM nodes
-GROUP BY node_type, properties->>'status';
-
--- With aggregates
-SELECT
-    PARENT(path, 1) AS parent,
-    COUNT(*) AS child_count,
-    AVG((properties->>'view_count')::int) AS avg_views
-FROM default
-GROUP BY PARENT(path, 1);
-```
-
-## HAVING
-
-Filter aggregated results:
-
-```sql
-SELECT properties->>'status' AS status, COUNT(*) AS count
-FROM default
-GROUP BY properties->>'status'
-HAVING COUNT(*) > 10;
-```
-
-## ORDER BY
-
-Sort results:
-
-```sql
--- Sort by property
-SELECT * FROM default ORDER BY properties->>'title';
-
--- Descending order
-SELECT * FROM default ORDER BY created_at DESC;
-
--- Multiple columns
-SELECT * FROM default
-ORDER BY properties->>'status' ASC, created_at DESC;
-
--- Sort by numeric property
-SELECT * FROM default
-ORDER BY (properties->>'price')::numeric DESC;
-
--- By expression
-SELECT * FROM default
-ORDER BY DEPTH(path), properties->>'title';
-```
-
-## LIMIT and OFFSET
-
-For paging large result sets, prefer a keyset cursor over a growing `OFFSET` —
-see [Pagination](/docs/guides/querying/pagination).
-
-Paginate results:
-
-```sql
--- First 10 rows
-SELECT * FROM default LIMIT 10;
-
--- Skip first 20, return next 10
-SELECT * FROM default LIMIT 10 OFFSET 20;
-
--- Pagination example
-SELECT * FROM default
-ORDER BY created_at DESC
-LIMIT 25 OFFSET 0;  -- Page 1
-```
-
-## DISTINCT
-
-Remove duplicate rows:
-
-```sql
--- Distinct values
-SELECT DISTINCT properties->>'status' AS status FROM default;
-
--- Distinct on multiple columns
-SELECT DISTINCT node_type, properties->>'status' AS status FROM nodes;
-```
-
-## Subqueries
-
-### Scalar Subqueries
-
-Return single value:
-
-```sql
-SELECT
-    properties->>'title' AS title,
-    (properties->>'view_count')::int AS views,
-    (SELECT AVG((properties->>'view_count')::int) FROM default) AS avg_views
-FROM default;
-```
-
-### IN Subqueries
-
-Check membership:
-
-```sql
-SELECT * FROM nodes
-WHERE node_type = 'Comment'
-  AND properties->>'article_id' IN (
-    SELECT id FROM nodes
-    WHERE node_type = 'Article'
-      AND properties->>'status' = 'published'
-  );
-```
-
-### EXISTS Subqueries
-
-Check existence:
-
-```sql
-SELECT * FROM nodes a
-WHERE a.node_type = 'Article'
-  AND EXISTS (
-    SELECT 1 FROM nodes c
-    WHERE c.node_type = 'Comment'
-      AND c.properties->>'article_id' = a.id
-  );
-```
-
-## Common Table Expressions (WITH)
-
-Define temporary named result sets:
-
-```sql
-WITH published AS (
-    SELECT * FROM default
-    WHERE properties->>'status' = 'published'
-)
-SELECT
-    properties->>'author' AS author,
-    COUNT(*) AS article_count
-FROM published
-GROUP BY properties->>'author'
-ORDER BY article_count DESC;
-```
-
-Multiple CTEs:
-
-```sql
-WITH
-    recent AS (
-        SELECT * FROM default
-        WHERE created_at > NOW() - INTERVAL '30 days'
-    ),
-    stats AS (
-        SELECT node_type, COUNT(*) AS count
-        FROM recent
-        GROUP BY node_type
-    )
-SELECT * FROM stats ORDER BY count DESC;
-```
-
-## Window Functions
-
-Analytical functions with OVER clause:
-
-```sql
--- Row number within partition
-SELECT
-    properties->>'title' AS title,
-    properties->>'status' AS status,
-    ROW_NUMBER() OVER (
-        PARTITION BY properties->>'status'
-        ORDER BY created_at
-    ) AS row_num
-FROM default;
-
--- Rank by numeric property
-SELECT
-    properties->>'title' AS title,
-    (properties->>'view_count')::int AS views,
-    RANK() OVER (ORDER BY (properties->>'view_count')::int DESC) AS rank
-FROM default;
-
--- Aggregate over window
-SELECT
-    properties->>'title' AS title,
-    (properties->>'view_count')::int AS views,
-    AVG((properties->>'view_count')::int) OVER (
-        PARTITION BY properties->>'status'
-    ) AS avg_by_status
-FROM default;
-```
-
-See [Window Functions](../functions/window-functions.md) for details.
-
-## EXPLAIN
-
-Prefix a SELECT with `EXPLAIN` to see the query execution plan without running the query:
-
-```sql
-EXPLAIN SELECT * FROM default
-WHERE (properties->>'price')::numeric > 100;
-
-EXPLAIN SELECT
-    a.properties->>'title' AS title,
-    u.properties->>'name' AS author
-FROM default a
-JOIN default u ON a.properties->>'author_id' = u.id;
-```
-
-## Node Columns
-
-Access node columns:
-
-```sql
-SELECT
-    id,              -- ULID
-    path,            -- Hierarchical path
-    node_type,       -- Node type name
-    workspace,       -- Workspace name
-    properties,      -- All node properties (JSONB)
-    created_at,      -- Creation timestamp
-    updated_at,      -- Last modification
-    version          -- Version number
-FROM default;
-```
-
-System aliases are also available: `__id`, `__path`, `__node_type`, `__created_at`, `__updated_at`, `__revision`, `__branch`.
-
-### Editorial order columns
-
-Two further columns expose the **manual (drag-and-drop) order** a parent's
-children are kept in:
-
-| Column | Orders a node | Use for |
-| --- | --- | --- |
-| `__order` | among its **siblings** | listing / paging one parent's children |
-| `__tree_order` | within a **subtree** (document order) | listing / paging a whole tree |
-
-Both are opaque, lexicographically sortable text. Sort by them, and pass the last
-row's value back as a keyset cursor — but treat the value as a token: don't parse
-or construct one.
-
-```sql
-SELECT name, __order
-FROM 'default'
-WHERE CHILD_OF('/menu')
-ORDER BY __order;
-```
-
-`__tree_order` is populated only by tree traversals (`DESCENDANT_OF`, full table
-scans); on other scans it is `NULL` rather than guessed.
-
-:::warning `__order` is not `path`
-Both order parents before children, so they look interchangeable — but they order
-*siblings* differently. `path` sorts siblings **alphabetically**; `__order` sorts
-them **editorially**. They agree only when the manual order happens to be
-alphabetical, which is why using `path` by mistake looks correct until someone
-reorders something.
-
-Never mix them: a cursor on one with an `ORDER BY` on the other drops and
-duplicates rows. Keyset pagination requires the cursor column and the `ORDER BY`
-column to be the same.
-:::
-
-## Examples
-
-### Basic Query
-
-```sql
-SELECT
-    properties->>'title' AS title,
-    properties->>'status' AS status,
-    created_at
-FROM default
-WHERE properties->>'status' = 'published'
-ORDER BY created_at DESC
-LIMIT 10;
-```
-
-### Hierarchical Query
-
-```sql
-SELECT
-    path,
-    properties->>'title' AS title,
-    DEPTH(path) AS depth
-FROM nodes
-WHERE DESCENDANT_OF(path, '/content/blog')
+SELECT path, name, node_type, depth,
+       properties->>'title' AS title,
+       (properties->>'views')::INT AS views,
+       UPPER(name) AS upper_name,
+       DEPTH(path) AS d
+FROM 'blog'
 ORDER BY path;
 ```
 
-### Aggregation with Join
-
-```sql
-SELECT
-    u.properties->>'name' AS author,
-    COUNT(a.id) AS article_count,
-    MAX(a.updated_at) AS latest_update
-FROM default a
-JOIN default u ON a.properties->>'author_id' = u.id
-GROUP BY u.properties->>'name'
-HAVING COUNT(a.id) > 0
-ORDER BY article_count DESC;
+```json
+{"columns":["path","name","node_type","depth","title","views","upper_name","d"],
+ "rows":[
+  {"path":"/hello","name":"hello","node_type":"raisin:Page","depth":1,"title":"Hello","views":12,"upper_name":"HELLO","d":1},
+  {"path":"/news","name":"news","node_type":"raisin:Folder","depth":1,"title":"News","views":null,"upper_name":"NEWS","d":1},
+  {"path":"/news/first","name":"first","node_type":"raisin:Page","depth":2,"title":"First post","views":42,"upper_name":"FIRST","d":2},
+  {"path":"/news/second","name":"second","node_type":"raisin:Page","depth":2,"title":"Second","views":7,"upper_name":"SECOND","d":2}],
+ "row_count":4,"execution_time_ms":2}
 ```
 
-### Full-Text Search
+`SELECT *` returns every node column, listed in the [overview](../overview.md#node-columns). An unaliased expression gets a generated name such as `column1`, so alias anything you will read by name.
+
+`TO_JSON(alias)` turns a whole row into one JSON object:
 
 ```sql
-SELECT * FROM fulltext_search('default', 'database query');
-
--- Or using tsvector/tsquery
-SELECT
-    properties->>'title' AS title,
-    TS_RANK(search_vector, TO_TSQUERY('database & query')) AS rank
-FROM default
-WHERE search_vector @@ TO_TSQUERY('database & query')
-ORDER BY rank DESC
-LIMIT 20;
+SELECT TO_JSON(b) AS node FROM 'blog' b WHERE path = '/hello';
 ```
 
-### Geospatial Query
+## FROM
+
+The table is a workspace. Quote the name; an alias is optional.
 
 ```sql
-SELECT
-    properties->>'name' AS name,
-    ST_DISTANCE(
-        location,
-        ST_POINT(-122.4194, 37.7749)
-    ) AS distance_meters
-FROM default
-WHERE ST_DWITHIN(
-    location,
-    ST_POINT(-122.4194, 37.7749),
-    5000
+SELECT p.name FROM 'blog' p;
+SELECT name FROM 'raisin:access_control' WHERE node_type = 'raisin:Role';
+```
+
+Other things that can appear in `FROM`:
+
+- The schema tables `NodeTypes`, `Archetypes`, `ElementTypes`, `Workspaces` ([Schema Tables](../schema-tables.md)).
+- A subquery with an alias: `FROM (SELECT name, depth FROM 'blog') sub WHERE depth = 1`.
+- A CTE name from a `WITH` clause.
+- The table functions `NEIGHBORS(...)` ([Path functions](../functions/path-functions.md#neighbors)) and `GRAPH_TABLE(...)` ([Graph algorithms](../functions/graph-algorithms.md)).
+
+## WHERE
+
+Any BOOLEAN expression built from the [operators](../operators.md) and functions. The predicates below are the ones used most; each returns the rows shown for the example workspace.
+
+```sql
+-- property equality (text)
+SELECT name FROM 'blog' WHERE properties->>'title' = 'Hello';                -- hello
+
+-- numeric comparison needs a cast
+SELECT name FROM 'blog' WHERE (properties->>'views')::INT > 20;              -- first
+
+-- JSON containment and key test
+SELECT name FROM 'blog' WHERE properties @> '{"published": true}';           -- hello, second
+SELECT name FROM 'blog' WHERE properties ? 'author';                          -- second
+
+-- pattern, list, range
+SELECT name FROM 'blog' WHERE name LIKE 'h%';                                 -- hello
+SELECT name FROM 'blog' WHERE name IN ('news', 'first');                      -- news, first
+SELECT name FROM 'blog' WHERE depth BETWEEN 1 AND 2;                          -- all four
+
+-- missing property
+SELECT name FROM 'blog' WHERE properties->>'summary' IS NULL;                 -- all four
+
+-- hierarchy
+SELECT name FROM 'blog' WHERE CHILD_OF('/news');                              -- first, second
+SELECT name FROM 'blog' WHERE DESCENDANT_OF('/news');                         -- first, second
+SELECT name FROM 'blog' WHERE PATH_STARTS_WITH(path, '/news');                -- news, first, second
+SELECT name FROM 'blog' WHERE DEPTH(path) = 1;                                -- hello, news
+
+-- timestamps: compare against a cast literal or NOW()
+SELECT name FROM 'blog'
+WHERE created_at > '2020-01-01T00:00:00Z'::TIMESTAMPTZ AND created_at < NOW();
+
+-- references (workspace prefix required)
+SELECT name FROM 'blog' WHERE REFERENCES('blog:/news/second');                -- first
+
+-- subquery membership
+SELECT name FROM 'blog' WHERE path IN (SELECT PARENT(path) FROM 'blog');      -- news
+```
+
+Bound parameters replace literals anywhere in the statement:
+
+```json
+{"sql": "SELECT name FROM 'blog' WHERE properties->>'title' = $1 AND depth = $2", "params": ["Hello", 1]}
+```
+
+`created_at > NOW() - INTERVAL '1 hour'` is currently rejected (`Range scan not supported for this predicate`); compute the boundary on the client and pass it as a cast literal or parameter.
+
+## JOIN
+
+`INNER JOIN`, `LEFT JOIN` and `CROSS JOIN` are accepted between workspaces, schema tables and subqueries. Join on plain column equality; the executor evaluates that form correctly.
+
+```sql
+SELECT p.path, f.path AS folder
+FROM 'blog' p
+INNER JOIN 'blog' f ON p.parent_name = f.name
+ORDER BY p.path;
+```
+
+```json
+{"columns":["path","folder"],"rows":[{"path":"/news/first","folder":"/news"},{"path":"/news/second","folder":"/news"}],"row_count":2,"execution_time_ms":2}
+```
+
+```sql
+SELECT b.name, w.name AS ws
+FROM 'blog' b JOIN Workspaces w ON w.name = b.__workspace
+LIMIT 1;
+-- {"name":"hello","ws":"blog"}
+
+SELECT COUNT(*) AS pairs FROM 'blog' a CROSS JOIN 'blog' b;
+-- {"pairs":16}
+```
+
+A join condition that wraps a column in a function, such as `ON PARENT(p.path) = f.path`, does not evaluate correctly today (an inner join returns no rows and a left join pairs each row with itself). Keep join keys to columns, or join on the `parent_name` and `id` columns as above.
+
+## GROUP BY and aggregates
+
+```sql
+SELECT node_type, COUNT(*) AS n, SUM((properties->>'views')::INT) AS views
+FROM 'blog'
+GROUP BY node_type
+ORDER BY node_type;
+```
+
+```json
+{"columns":["node_type","n","views"],"rows":[{"node_type":"raisin:Folder","n":1,"views":0.0},{"node_type":"raisin:Page","n":3,"views":61.0}],"row_count":2,"execution_time_ms":2}
+```
+
+Group by any expression, including a JSON access or a path function:
+
+```sql
+SELECT PARENT(path) AS parent, COUNT(*) AS children FROM 'blog' GROUP BY PARENT(path) ORDER BY parent;
+-- {"parent":"/","children":2}, {"parent":"/news","children":2}
+
+SELECT properties->>'published' AS published, COUNT(*) AS n
+FROM 'blog' GROUP BY properties->>'published' ORDER BY published;
+-- {"published":"false","n":1}, {"published":"true","n":2}, {"published":null,"n":1}
+```
+
+`HAVING` is not supported; wrap the grouped query in a subquery and filter there:
+
+```sql
+SELECT * FROM (
+  SELECT node_type, COUNT(*) AS n FROM 'blog' GROUP BY node_type
+) g WHERE n > 1;
+```
+
+Aggregate functions and `FILTER (WHERE ...)` are described under [Aggregate functions](../functions/aggregate-functions.md).
+
+## DISTINCT
+
+```sql
+SELECT DISTINCT node_type FROM 'blog' ORDER BY node_type;
+-- raisin:Folder, raisin:Page
+```
+
+## ORDER BY, LIMIT, OFFSET
+
+Sort by columns or expressions, ascending by default.
+
+```sql
+SELECT name, (properties->>'views')::INT AS views
+FROM 'blog'
+WHERE properties ? 'views'
+ORDER BY (properties->>'views')::INT DESC
+LIMIT 2 OFFSET 0;
+```
+
+```json
+{"columns":["name","views"],"rows":[{"name":"first","views":42},{"name":"hello","views":12}],"row_count":2,"execution_time_ms":1}
+```
+
+Two things to know:
+
+- Sorting by a JSON access (`ORDER BY properties->>'title'`) adds the `properties` column to the result even when it is not selected. Sorting by a cast expression or a named column does not.
+- `NULLS FIRST` / `NULLS LAST` is accepted, but `NULLS FIRST` adds the sort column to the output.
+
+For paging large result sets, prefer a keyset cursor over a growing `OFFSET`; see [Pagination](/docs/guides/querying/pagination).
+
+## Common table expressions
+
+```sql
+WITH pages AS (
+  SELECT name, depth FROM 'blog' WHERE node_type = 'raisin:Page'
 )
-ORDER BY distance_meters
-LIMIT 10;
+SELECT name FROM pages WHERE depth = 2;
+-- first, second
 ```
+
+A CTE can be reused in `FROM` like a workspace. Aggregating over a CTE works the same way as over a workspace.
+
+## Window functions
+
+`ROW_NUMBER()` and the aggregates `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` accept an `OVER (...)` clause with `PARTITION BY`, `ORDER BY` and a `ROWS BETWEEN` frame:
+
+```sql
+SELECT name, node_type,
+       ROW_NUMBER() OVER (PARTITION BY node_type ORDER BY name) AS rn,
+       COUNT(*) OVER (PARTITION BY node_type) AS per_type
+FROM 'blog'
+ORDER BY node_type, name;
+```
+
+```json
+{"rows":[{"name":"news","node_type":"raisin:Folder","rn":1,"per_type":1},{"name":"first","node_type":"raisin:Page","rn":1,"per_type":3},{"name":"hello","node_type":"raisin:Page","rn":2,"per_type":3},{"name":"second","node_type":"raisin:Page","rn":3,"per_type":3}]}
+```
+
+Top-N per group is a subquery over `ROW_NUMBER()`:
+
+```sql
+SELECT * FROM (
+  SELECT name, node_type, ROW_NUMBER() OVER (PARTITION BY node_type ORDER BY name) AS rn FROM 'blog'
+) ranked WHERE rn <= 1;
+```
+
+See [Window functions](../functions/window-functions.md) for frames and the current limits (`RANK`, `LAG`, `LEAD` and friends are not available).
+
+## EXPLAIN
+
+Prefix any `SELECT`, `UPDATE` or `DELETE` with `EXPLAIN` to see the plan without running it:
+
+```sql
+EXPLAIN SELECT name FROM 'blog' WHERE properties->>'title' = 'Hello' ORDER BY created_at DESC LIMIT 5;
+```
+
+```
+=== Physical Execution Plan ===
+Limit: limit=5, offset=0
+  Project: 2 expressions
+    PropertyOrderScan: __created_at DESC limit_hint=5
+```
+
+The scan node tells you which index served the query: `PathIndexScan` for `path = ...`, `PropertyOrderScan` for an `ORDER BY` on an indexed column, `ReferenceIndexScan` for `REFERENCES(...)`, `TableScan` when nothing applied.
+
+## Reading another branch
+
+`WHERE __branch = 'staging'` reads the same workspace on another branch; the predicate selects the branch and is dropped from the filter. The request URL form `POST /api/sql/{repo}/{branch}` does the same for a whole request.
+
+```sql
+SELECT properties->>'title' AS title FROM 'blog' WHERE __branch = 'staging' AND path = '/hello';
+```
+
+## Editorial order columns
+
+Two columns expose the manual (drag-and-drop) order a parent's children are kept in:
+
+| Column | Orders a node | Use for |
+| --- | --- | --- |
+| `__order` | among its siblings | listing or paging one parent's children |
+| `__tree_order` | within a subtree (document order) | listing or paging a whole tree |
+
+Both are opaque, lexicographically sortable text. Sort by them, and pass the last row's value back as a keyset cursor; treat the value as a token rather than parsing it.
+
+```sql
+SELECT name, __order FROM 'blog' WHERE CHILD_OF('/news') ORDER BY __order;
+-- {"name":"first","__order":"80::1a078051ec00000000000000000"}, {"name":"second","__order":"8180::1a078051ec00000000000000000"}
+
+SELECT name, __tree_order FROM 'blog' WHERE DESCENDANT_OF('/news') AND __tree_order > $1
+ORDER BY __tree_order LIMIT 20;
+```
+
+`__tree_order` is populated by tree traversals (`DESCENDANT_OF`, full scans) and is NULL on other scans.
+
+`path` and `__order` both put parents before children, but they order siblings differently: `path` alphabetically, `__order` editorially. Keep the cursor column and the `ORDER BY` column the same, otherwise paging drops and duplicates rows.

@@ -4,33 +4,15 @@ sidebar_position: 6
 
 # Data-Centric Application Design (DCAD)
 
-Data-Centric Application Design (DCAD) is a paradigm where **your schema IS your application**. Instead of hard-coding UI layouts, navigation, and routing into application logic, DCAD treats the data structure as the single source of truth that drives every aspect of the user experience.
+Data-Centric Application Design (DCAD) is the way RaisinDB expects applications to be built: the description of how content is structured and presented lives in the database next to the content, and the frontend reads that description instead of hard-coding it. Change the definition, and every client that renders from it changes with it.
 
-## What is DCAD?
+## The idea
 
-In traditional development, the UI dictates what data is fetched and how it's displayed. DCAD inverts this: the **data structure dictates the view**. Your application becomes a rendering engine that interprets schemas to produce the experience — dynamically flexible for humans and natively readable for AI agents.
+In a conventional application the UI decides which fields exist and how they are laid out; the database just stores values. RaisinDB inverts this. A node points at an archetype, the archetype declares the node's fields and which content blocks it may contain, and the blocks are described by element types. A frontend becomes an interpreter of these definitions: it fetches a node, looks up its archetype, and renders each field and block with the component registered for it.
 
-## The Core Pillars
+Because the definitions are data, they are also readable by tools and AI agents. An agent that can read an archetype knows exactly which fields a page has and which element types it may add, so it can produce valid content without guessing at a UI.
 
-### 1. Data as the Single Source of Truth
-
-In traditional MVC, the view often dictates what data is fetched. In DCAD, the **data schema dictates the view**. The application shell (layout, navigation, routing) is subservient to the data schema. If the schema changes, the application adapts automatically.
-
-### 2. Unified Graph Structure
-
-You define the "what" (content) and the "how" (flow) in the same structure. Graph relationships between data nodes naturally define navigation paths and UI hierarchy.
-
-### 3. Schema-Driven Dynamic UX
-
-The UI is not hard-coded — it is interpreted. Switch a node's archetype from "Landing Page" to "Kanban Board," and the UX pattern shifts instantly without a frontend deployment.
-
-### 4. Agent-Native Readability
-
-Because the application is built on strict, self-describing schemas rather than opaque UI logic, AI agents can easily read, navigate, and interact with it. The schema acts as a universal API for both your frontend and your AI tools.
-
-## The Four Layers
-
-DCAD separates content (the **instance**) from structure (the **definition**) using a four-part hierarchy:
+## The four layers
 
 ```mermaid
 classDiagram
@@ -39,91 +21,131 @@ classDiagram
   class Archetype
   class ElementType
 
-  note for Node "The Data Instance
-  (Content & Values)"
-  note for NodeType "The Base Classification
-  (System Behavior)"
-  note for Archetype "The Structural Template
-  (UX Pattern & Constraints)"
-  note for ElementType "The UI Building Blocks
-  (Atomic Components)"
+  note for Node "The content instance
+  (values)"
+  note for NodeType "The storage schema
+  (properties, behaviour flags)"
+  note for Archetype "The presentation schema
+  (fields, allowed elements, layout)"
+  note for ElementType "Reusable content blocks
+  (fields)"
 
-  Node --> Archetype : defined by
-  Archetype --|> NodeType : extends
-  Archetype --> ElementType : contains
+  Node --> NodeType : node_type
+  Node --> Archetype : archetype
+  Archetype --> NodeType : base_node_type
+  Archetype --> ElementType : allowed_element_types
 ```
 
-### Node (the data instance)
+### Node: the content instance
 
-The actual content stored in your database — a specific entity like "The Home Page" or "Q3 Marketing Board." A node is purely a data vessel that points to an **Archetype** to know how to behave.
+A node is the stored content. It names its NodeType in `node_type` and, optionally, its archetype in `archetype`. Its `properties` hold the values.
 
-### NodeType (the base classification)
+```json
+{
+  "path": "/home",
+  "node_type": "dcad:Page",
+  "archetype": "dcad:LandingPage",
+  "properties": {
+    "title": "Home",
+    "slug": "home",
+    "content": [
+      { "element_type": "dcad:Hero", "headline": "Welcome", "subheadline": "Build on data" },
+      { "element_type": "dcad:TextBlock", "body": "<p>Hello</p>" }
+    ]
+  }
+}
+```
 
-The high-level abstract category. It defines system-level capabilities: Is this versionable? Indexable? Think of it as the "laws of physics" for that data object.
+### NodeType: the storage schema
 
-### Archetype (the structural template)
+The NodeType defines the properties the server validates and indexes, which children a node may have, and behaviour flags such as `versionable`, `publishable` and `auditable`. It answers "what is this thing and how does the system treat it".
 
-The bridge between raw data and user experience. An archetype extends a NodeType to define a specific UX pattern — what fields exist and which ElementTypes are allowed in its content areas.
+### Archetype: the presentation schema
 
-### ElementType (the UI building blocks)
+An archetype is built on a NodeType (`base_node_type`) and adds editor-facing fields. A field has a `$type` such as `TextField`, `RichTextField`, `MediaField`, `OptionsField` or `CompositeField`, plus a title, `required` and other hints. A `SectionField` is a content area: it lists the element types allowed inside it. An archetype can also carry a `layout` that groups fields into containers, groups and tabs.
 
-Atomic, reusable schema definitions that map directly to UI components: Hero Section, Feature Grid, Kanban Card, Pricing Table.
+```yaml
+name: dcad:LandingPage
+title: Landing Page
+base_node_type: dcad:Page
+fields:
+  - $type: TextField
+    name: title
+    title: Page Title
+    required: true
+  - $type: TextField
+    name: slug
+    required: true
+  - $type: SectionField
+    name: content
+    title: Page Content
+    allowed_element_types: [dcad:Hero, dcad:TextBlock]
+```
+
+### ElementType: the building blocks
+
+An element type is a reusable block with its own fields. A value of that type in a node is an object whose `element_type` names the type and whose other keys are the field values.
+
+```yaml
+name: dcad:Hero
+title: Hero Section
+fields:
+  - $type: TextField
+    name: headline
+    required: true
+  - $type: TextField
+    name: subheadline
+```
 
 Learn more about each layer: [Nodes](/docs/concepts/data-model/nodes) | [NodeTypes](/docs/concepts/data-model/nodetypes) | [Archetypes](/docs/concepts/data-model/archetypes) | [Elements](/docs/concepts/data-model/elements)
 
-## Concrete Example: Same Data, Different UX
+## What the server checks
 
-Consider a single `page` node at `/content/home`. The data stays the same — but the archetype determines the experience.
+When a node carries an archetype, the server validates its properties against the resolved archetype on every write that goes through the node API. Required fields must be present, and an element placed in a section must be one of the section's allowed types:
 
-**With a "Landing Page" archetype:**
-- Structure: A vertical stack of content blocks
-- Allowed elements: Hero, Features, Text, CTA
-- Result: A marketing page with sequential sections
+```json
+{"code":"VALIDATION_FAILED",
+ "message":"Element type 'dcad:KanbanCard' is not allowed in field 'archetype 'dcad:LandingPage'.content'"}
+```
 
-**With a "Kanban Board" archetype:**
-- Structure: Horizontal columns containing draggable cards
-- Allowed elements: Column, Card
-- Result: A project management board with drag-and-drop
+```json
+{"code":"VALIDATION_FAILED",
+ "message":"Missing required field 'headline' at archetype 'dcad:LandingPage'.content[0]"}
+```
 
-Switching the archetype in the database instantly changes the entire UX on the next load — no frontend deployment required.
+This is what lets a frontend or an agent trust the shape of what it reads.
 
-## The Rendering Engine
+## Same data, different experience
 
-In DCAD, your frontend acts as a rendering engine. It doesn't hard-code routes like `/home` or `/dashboard`. Instead, it interprets your schema:
+Two archetypes can share one NodeType. `dcad:LandingPage` above renders a vertical stack of blocks. A `dcad:KanbanBoard` archetype on the same `dcad:Page` type could declare a `CompositeField` of columns, each with a `SectionField` of `dcad:KanbanCard` elements. Pointing a node at the other archetype changes what the editor shows and what the frontend renders, with no code deployed. The archetype is a column in SQL:
+
+```sql
+UPDATE 'site' SET archetype = 'dcad:KanbanBoard' WHERE path = '/home';
+```
+
+## The rendering engine
 
 ```mermaid
 graph LR
-    A[Incoming Request] --> B{Fetch Node Data}
-    B --> C[Read Archetype]
-    C --> D{Lookup Component}
-    D -->|Landing Page| E[Render Vertical Layout]
-    D -->|Kanban Board| F[Render Board Layout]
-    E --> G[User Interface]
+    A[Request for /home] --> B[Fetch node]
+    B --> C[Read node.archetype]
+    C --> D{Component registry}
+    D -->|dcad:LandingPage| E[Landing page renderer]
+    D -->|dcad:KanbanBoard| F[Board renderer]
+    E --> G[Render each element by element_type]
     F --> G
 ```
 
-1. **Receive data:** Load the node based on the URL
-2. **Identify archetype:** Read the `archetype` property
-3. **Resolve component:** Look up the matching renderer in a registry
-4. **Render:** Pass the data into that component
+1. Fetch the node for the requested path.
+2. Read its `archetype`.
+3. Look up the matching renderer in a registry keyed by archetype name.
+4. Inside a section, look up a renderer for each element's `element_type`.
 
-## Why DCAD for AI
+An application that needs the field definitions themselves, for example to build an editor, reads the resolved archetype from `GET /api/management/{repo}/{branch}/archetypes/{name}/resolved`, which returns the merged `resolved_fields`, `resolved_layout` and `inheritance_chain`.
 
-### Context Window Efficiency
+## Getting started
 
-Because UI is separated from data, you can feed an AI agent the raw data structure. The agent understands the exact page structure without parsing HTML or CSS.
-
-### Hallucination Prevention
-
-The archetype definition acts as a strict constraint. When an AI generates content, it must choose from the `allowed_element_types` — it can't invent UI elements that don't exist in your schema.
-
-### Self-Healing
-
-Update an archetype definition, and AI agents immediately understand the new rules of engagement without retraining. The schema is the universal contract for humans, code, and AI agents alike.
-
-## Getting Started with DCAD
-
-- **[Understanding DCAD](/docs/tutorials/dcad/understanding-dcad)** — How DCAD inverts the UI-data relationship
-- **[Building Dynamic UI](/docs/tutorials/dcad/building-dynamic-ui)** — Build a dynamic UI with archetype switching
-- **[Archetypes in Practice](/docs/tutorials/dcad/archetypes-in-practice)** — Compose archetypes and ElementTypes
-- **[Archetypes Concept](/docs/concepts/data-model/archetypes)** — Deep dive into archetype structure and inheritance
+- [Understanding DCAD](/docs/tutorials/dcad/understanding-dcad) walks through creating the four layers on a running server.
+- [Building Dynamic UI](/docs/tutorials/dcad/building-dynamic-ui) builds a renderer that switches on the archetype.
+- [Archetypes in Practice](/docs/tutorials/dcad/archetypes-in-practice) covers inheritance and nested content areas.
+- [Archetypes](/docs/concepts/data-model/archetypes) is the reference for archetype structure.

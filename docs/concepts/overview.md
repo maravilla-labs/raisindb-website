@@ -4,251 +4,161 @@ sidebar_position: 1
 
 # What is RaisinDB?
 
-RaisinDB is a **multi-model database** that brings Git-like version control to structured content. It combines the flexibility of document databases with the rigor of schema-driven development, making it ideal for content management systems, collaborative platforms, and applications that need complete audit trails.
+RaisinDB is a multi-model content database with Git-style version control. Content is stored as typed, hierarchical nodes; every write lands in a revision on a branch; and the same data can be read as documents, as a graph, or through SQL. It is built for content management systems, collaborative platforms, and any application whose data needs schemas, history and branching.
 
-## The Core Idea
+## The core idea
 
-Think of RaisinDB as **"Git for your database"**. Every change to your data is tracked as a revision, stored with hybrid logical clock (HLC) timestamps. You can branch, merge, and time-travel through your content just like you do with code.
+Think of a RaisinDB repository the way you think of a Git repository. It has branches (`main` by default), every change is recorded as a revision with a hybrid logical clock (HLC) timestamp, and you can read the repository as it was at any earlier revision.
 
 ```sql
--- Query data as it existed yesterday
-SET __revision = '2024-01-14T10:00:00Z';
-SELECT * FROM articles WHERE author = 'Jane';
-
--- Create a feature branch
-CREATE BRANCH new-feature FROM main;
-
--- Merge changes back
-MERGE BRANCH new-feature INTO main;
+-- Create a branch from main and merge it back later
+CREATE BRANCH 'feature/x' FROM 'main';
+MERGE BRANCH 'feature/x' INTO 'main';
 ```
 
-## Multi-Model Architecture
-
-RaisinDB supports multiple data models within a single system:
-
-### 1. Document Model (Nodes)
-
-Content is stored as **nodes** with hierarchical paths:
-
-```sql
-/content/blog/2024/my-first-post
-/media/images/header.jpg
-/config/site-settings
+```bash
+# Read a node as it was at an earlier revision
+curl http://localhost:8080/api/repository/myrepo/main/rev/1788719962117-0/site/home
 ```
 
-Each node has:
-- A unique **path** (like a file in a directory)
-- A **node_type** (schema definition)
-- **properties** (JSON document with typed fields)
-- **metadata** (created, updated, version flags)
+## One store, three data models
 
-### 2. Graph Model (Edges)
+### Documents (nodes)
 
-Nodes can have relationships using the RELATE statement:
+Content lives in nodes. A node has a path, a NodeType, a JSON `properties` document, and metadata such as timestamps and authorship. Nodes are grouped into workspaces, and workspaces are grouped into a repository.
+
+```json
+{
+  "id": "stDiLdkWBo80p57nft8_V",
+  "name": "home",
+  "path": "/home",
+  "node_type": "dcad:Page",
+  "archetype": "dcad:LandingPage",
+  "properties": { "title": "Home", "slug": "home" },
+  "version": 1,
+  "created_at": "2026-09-06T18:39:02.665997Z",
+  "updated_at": "2026-09-06T18:39:02.665997Z",
+  "workspace": "site"
+}
+```
+
+### Graph (relations)
+
+Any two nodes can be linked with a typed relation, and relations are queried with the SQL/PGQ `GRAPH_TABLE` syntax.
 
 ```sql
--- Create a relationship using RELATE
-RELATE FROM path='/content/blog/post1' TO path='/content/blog/post2' TYPE 'RELATED_TO';
+RELATE FROM path='/home' IN WORKSPACE 'site'
+    TO path='/about' IN WORKSPACE 'site'
+  TYPE 'LINKS_TO';
 
--- Query relationships with GRAPH_TABLE (SQL/PGQ)
-SELECT * FROM GRAPH_TABLE (
-  default
-  MATCH (a:Article)-[r:RELATED_TO]->(b:Article)
+SELECT * FROM GRAPH_TABLE(
+  MATCH (a:`dcad:Page`)-[r:LINKS_TO]->(b)
   COLUMNS (a.path AS source, b.path AS target)
 );
 ```
 
-### 3. Relational Model (SQL)
-
-Every workspace is queryable as a SQL table:
-
-```sql
--- Standard SQL queries work
-SELECT properties->>'title' AS title,
-       properties->>'author' AS author
-FROM default
-WHERE node_type = 'blog:Article'
-  AND (properties->>'published')::boolean = true;
+```json
+{"columns":["source","target"],"rows":[{"source":"/home","target":"/about"}],"row_count":1}
 ```
 
-## Key Concepts
+### Relational (SQL)
+
+Every workspace is a table. The workspace name is quoted, and JSON properties are read with `->>`.
+
+```sql
+SELECT path, node_type, archetype, properties->>'title' AS title
+FROM 'site'
+WHERE node_type = 'dcad:Page';
+```
+
+## Key concepts
 
 ### Nodes
 
-**Nodes** are the fundamental content units in RaisinDB. They're hierarchical documents with paths, types, and properties.
-
-- **Path**: Unique identifier like `/content/blog/post1`
-- **NodeType**: Schema definition (e.g., `blog:Article`)
-- **Properties**: JSON document validated against the schema
-- **Revisions**: Every change creates a new revision with HLC timestamp
+A node is the unit of content. It is addressed by path within a workspace, validated against its NodeType, and versioned as part of the repository's revision history.
 
 Learn more: [Nodes](/docs/concepts/data-model/nodes)
 
 ### NodeTypes
 
-**NodeTypes** define the schema for your content. They're like classes in object-oriented programming:
+A NodeType is the schema for a family of nodes. It lists typed properties, which children are allowed, and behaviour flags such as `versionable`, `publishable` and `auditable`. NodeTypes can extend one parent and include mixins.
 
 ```yaml
 name: blog:Article
+description: A blog article
 properties:
-  title:
-    type: string
+  - name: title
+    type: String
     required: true
-  body:
-    type: richtext
-  published:
-    type: boolean
+    index: [Fulltext]
+  - name: published_on
+    type: Date
+versionable: true
+publishable: true
 ```
-
-NodeTypes support:
-- **Inheritance** via `extend` (object-oriented style)
-- **Composition** via `mixins` (trait-based)
-- **Validation** (required fields, types, constraints)
 
 Learn more: [NodeTypes](/docs/concepts/data-model/nodetypes)
 
 ### Workspaces
 
-**Workspaces** provide logical isolation within a repository. They're like namespaces:
+A workspace is a named container of nodes inside a repository. It declares which NodeTypes it accepts, and it is the table name in SQL.
 
 ```sql
--- Query the 'default' workspace
-SELECT * FROM default WHERE node_type = 'blog:Article';
-
--- Query the 'drafts' workspace
-SELECT * FROM drafts WHERE author = 'Jane';
+SELECT path FROM 'site' WHERE node_type = 'dcad:Page';
+SELECT path FROM 'raisin:access_control' WHERE node_type = 'raisin:User';
 ```
-
-System workspaces:
-- `default` - Primary content
-- `raisin:system` - NodeType definitions, configuration
-- `raisin:access_control` - Users, roles, permissions
-- `functions` - Serverless JavaScript functions
-- `packages` - Installed RAP packages
 
 Learn more: [Workspaces](/docs/concepts/workspaces)
 
-### Branches and Tags
+### Branches, tags and revisions
 
-Create isolated development branches:
-
-```sql
--- Create a feature branch
-CREATE BRANCH feature/redesign FROM main;
-
--- Work on the branch
-SET BRANCH = 'feature/redesign';
-UPDATE default SET properties = '{"status": "draft"}';
-
--- Tag important milestones
-CREATE TAG v1.0 ON main AT HEAD;
-```
-
-Learn more: [Branches and Tags](/docs/concepts/versioning/branches-and-tags)
-
-### Revisions
-
-Every modification creates a revision with an HLC timestamp:
+Branches are created and merged with SQL or the management API. Each write on a branch produces a revision; the revision list records who changed which nodes, and any node can be read at any revision.
 
 ```sql
--- See revision history
-SELECT __revision, __timestamp, properties->>'title'
-FROM default
-WHERE path = '/content/blog/post1'
-ORDER BY __revision DESC;
-
--- Time-travel query
-SET __revision = '2024-01-01T00:00:00Z';
+SHOW BRANCHES;
 ```
 
-Revisions enable:
-- Complete audit trails
-- Time-travel queries
-- Conflict-free merges
-- Event sourcing patterns
+```json
+{"columns":["name","head","protected","upstream","created_at","created_by"],
+ "rows":[{"name":"main","head":"1788719820700-0","protected":false,"upstream":null,
+          "created_at":"2026-09-06T18:32:41.493910+00:00","created_by":"system"}]}
+```
 
-Learn more: [Revisions](/docs/concepts/versioning/revisions)
+Learn more: [Branches and Tags](/docs/concepts/versioning/branches-and-tags), [Revisions](/docs/concepts/versioning/revisions)
 
-## PostgreSQL Compatibility
+## Ways to connect
 
-RaisinDB speaks the **PostgreSQL wire protocol**, so you can connect with any PostgreSQL client:
+| Interface | Default port | Notes |
+|---|---|---|
+| HTTP REST + SQL | 8080 | `POST /api/sql/{repo}` runs SQL; `/api/repository/...` reads and writes nodes |
+| WebSocket | 8080 (same server) | Real-time events and the JavaScript client |
+| PostgreSQL wire protocol | 5432 | Connect with `psql` or any PostgreSQL client. The username is the tenant id, the database is the repository, and the password is an API key |
 
 ```bash
-# psql
-psql -h localhost -p 5432 -U admin -d myrepo
+# Run SQL over HTTP
+curl -X POST http://localhost:8080/api/sql/myrepo \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"sql":"SELECT path FROM '"'"'site'"'"' LIMIT 5"}'
 
-# TablePlus, DBeaver, pgAdmin, etc.
-# Just use the standard PostgreSQL connection settings
+# Read a node by path
+curl http://localhost:8080/api/repository/myrepo/main/head/site/home \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-Standard SQL works with extensions for:
-- Graph queries (SQL/PGQ via GRAPH_TABLE)
-- Full-text search (FTS)
-- Vector similarity search
-- Geospatial queries (PostGIS-compatible)
+SQL includes extensions for graph queries (`GRAPH_TABLE`), full-text and vector search, and geospatial predicates.
 
-## REST API
-
-Everything is accessible via HTTP:
-
-```bash
-# Get a node
-curl http://localhost:8080/api/repository/blog/main/head/default/content/blog/post1
-
-# Query with SQL
-curl -X POST http://localhost:8080/api/repository/blog/query \
-  -H "Content-Type: application/json" \
-  -d '{"sql": "SELECT * FROM default WHERE node_type = '\''blog:Article'\''"}'
-
-# Create a branch
-curl -X POST http://localhost:8080/api/repository/blog/branches \
-  -d '{"name": "feature", "from": "main"}'
-```
-
-## Use Cases
-
-RaisinDB excels at:
-
-### Content Management Systems
-
-- **Versioned content** with full audit trails
-- **Editorial workflows** using branches (draft, review, publish)
-- **Multi-site management** via workspaces
-- **Rich media support** with typed properties
-
-### Collaborative Platforms
-
-- **Conflict-free collaboration** with merge capabilities
-- **Per-user branches** for isolated workspaces
-- **Role-based access control** built-in
-- **Real-time sync** via WebSocket subscriptions
-
-### Configuration Management
-
-- **Infrastructure as data** with schema validation
-- **Environment branching** (dev, staging, prod)
-- **Rollback capabilities** via time-travel
-- **Change auditing** with full revision history
-
-### Knowledge Graphs
-
-- **Hierarchical documents** with graph relationships
-- **Schema-driven ontologies** via NodeTypes
-- **GRAPH_TABLE queries** for relationship traversal
-- **Graph algorithms** (PageRank, shortest path)
-
-## Architecture Overview
+## Architecture
 
 ```
 ┌─────────────────────────────────────────┐
 │          Client Applications            │
-│  (psql, REST, JavaScript SDK)           │
+│  (psql, REST, JavaScript client)        │
 └─────────────────────────────────────────┘
                   │
     ┌─────────────┴─────────────┐
     ▼                           ▼
 ┌─────────┐              ┌─────────────┐
-│ pgwire  │              │  HTTP API   │
+│ pgwire  │              │  HTTP / WS  │
 │ (5432)  │              │   (8080)    │
 └─────────┘              └─────────────┘
                   │
@@ -260,44 +170,36 @@ RaisinDB excels at:
     ┌─────────────┼─────────────┐
     ▼             ▼             ▼
 ┌────────┐  ┌──────────┐  ┌──────────┐
-│ Nodes  │  │  Graph   │  │ Indexes  │
-│(Docs)  │  │ (Edges)  │  │ (FTS/Vec)│
+│ Nodes  │  │Relations │  │ Indexes  │
+│(Docs)  │  │ (Graph)  │  │ (FTS/Vec)│
 └────────┘  └──────────┘  └──────────┘
                   │
          ┌────────┴────────┐
-         │ Version Storage │
-         │ (HLC Revisions) │
+         │ Versioned store │
+         │ (HLC revisions) │
          └─────────────────┘
 ```
 
-## Data-Centric Application Design (DCAD)
+## Data-Centric Application Design
 
-RaisinDB is built around **Data-Centric Application Design (DCAD)** — a paradigm where your schema drives the entire application experience. Instead of hard-coding UI layouts and navigation, you define the structure in data and let your application interpret it dynamically.
-
-The key insight: a single node can switch between archetypes (e.g., "Landing Page" to "Kanban Board") and the UI adapts instantly — no frontend deployment needed. This makes applications dynamically flexible for humans and natively readable for AI agents.
+RaisinDB separates a node's content from the description of how that content is structured and presented. A NodeType says what a node is; an archetype says which fields and which content elements a node of that type carries; element types describe the reusable blocks inside it. A frontend that reads these definitions can render any node without a code change when the definitions change.
 
 Learn more: [DCAD](/docs/concepts/dcad)
 
-## What Makes RaisinDB Different?
+## What makes RaisinDB different
 
-| Feature | Traditional DB | RaisinDB |
-|---------|---------------|----------|
-| **Versioning** | Append-only logs | Git-like branching & merging |
-| **Schema** | Fixed tables | Flexible NodeTypes with inheritance |
-| **Queries** | SQL only | SQL + GRAPH_TABLE + REST |
-| **History** | Manual audit tables | Built-in time-travel |
-| **Collaboration** | Row locking | Branch-based workflows |
-| **Structure** | Flat tables | Hierarchical paths + graph |
+| Feature | Traditional database | RaisinDB |
+|---|---|---|
+| Versioning | Append-only logs or audit tables | Branches, merges and per-revision reads |
+| Schema | Fixed tables | NodeTypes with inheritance and mixins |
+| Queries | SQL | SQL, `GRAPH_TABLE`, REST and WebSocket |
+| Structure | Flat rows | Hierarchical paths plus typed relations |
+| Presentation | Application code | Archetypes and element types stored with the data |
 
-## Getting Started
+## Getting started
 
-Ready to dive in?
+1. [Quick Start](/docs/tutorials/quickstart) builds a first application.
+2. [Nodes](/docs/concepts/data-model/nodes) and [NodeTypes](/docs/concepts/data-model/nodetypes) explain the data model.
+3. [Git-like workflows](/docs/concepts/versioning/git-like-workflows) covers branching strategies.
 
-1. **[Quick Start Tutorial](/docs/tutorials/quickstart)** - Build your first app in 5 minutes
-2. **[Data Model Concepts](/docs/concepts/data-model/nodes)** - Understand nodes and NodeTypes
-3. **[Versioning Workflows](/docs/concepts/versioning/git-like-workflows)** - Master branching strategies
-
-Or explore specific features:
-- [Graph Model](/docs/concepts/graph-model)
-- [Access Control](/docs/concepts/access-control)
-- [SQL Reference](/docs/reference/sql/overview)
+Or explore a specific area: [Graph Model](/docs/concepts/graph-model), [Access Control](/docs/concepts/access-control), [SQL Reference](/docs/reference/sql/overview).

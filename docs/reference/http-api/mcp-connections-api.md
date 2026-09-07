@@ -4,16 +4,16 @@ sidebar_position: 10
 
 # MCP Connections API
 
-Managing **outbound** MCP connections — remote servers whose tools your agents call. See the [Connecting to External Servers guide](../../guides/mcp/connecting-to-servers.md) for concepts.
+Managing **outbound** MCP connections: remote servers whose tools your agents call. See the [Connecting to External Servers guide](../../guides/mcp/connecting-to-servers.md) for concepts.
 
 Not to be confused with the [MCP API](./mcp-api.md), which is the inbound direction: RaisinDB serving its own tools.
 
-All endpoints require an **admin** principal, except the OAuth callback — a browser redirect that cannot carry a bearer token, authenticated instead by its single-use `state`.
+All endpoints require an **admin** principal (the `admin` or `system_admin` role, or a system token); anything else answers `403`. The exception is the OAuth callback, a browser redirect authenticated by its single-use `state`.
 
-A connection is a `raisin:McpConnection` node in the `raisin:system` workspace at `/mcp-connections/{slug}`.
+A connection is a `raisin:McpConnection` node in the `raisin:system` workspace of the `main` branch at `/mcp-connections/{slug}`. Discovered proxies are `raisin:Function` nodes at `/mcp/{slug}/{tool}` in the `functions` workspace.
 
 :::info Credentials are write-only
-No endpoint ever returns a credential or a token. Reads carry `credential_set` and `oauth_connected` booleans so a UI can show "is set" without holding the secret.
+No endpoint returns a credential or a token. Reads carry `credential_set` and `oauth_connected` booleans so a UI can show "is set" without holding the secret.
 :::
 
 ## List connections
@@ -32,8 +32,11 @@ GET /api/mcp-connections/{repo}
       "enabled": true,
       "protocol_version": "2025-06-18",
       "auth_kind": "oauth",
+      "static_auth": "Bearer",
       "credential_set": false,
       "oauth_connected": true,
+      "oauth_client": { "issuer": "https://auth.linear.app", "client_id": "…", "scopes": ["mcp"] },
+      "expires_at": 1788723465,
       "tool_filter": { "allow": [], "deny": [] },
       "refresh_policy": { "mode": "interval", "interval_secs": 3600, "on_save": true, "notifications": false, "call_timeout_ms": 30000 },
       "tool_count": 12
@@ -42,7 +45,9 @@ GET /api/mcp-connections/{repo}
 }
 ```
 
-A connection whose node cannot be parsed is reported as `{ "slug": ..., "invalid": true, "error": ... }` rather than omitted — hiding it would leave you staring at a console that does not show the thing you just broke.
+`static_auth` reads back as `"Bearer"` or `{ "Header": { "name": "X-Api-Key" } }`. `protocol_version` is the revision agreed on the last handshake and is `null` until discovery has run.
+
+A connection whose node cannot be parsed is reported as `{ "slug", "path", "invalid": true, "error" }` rather than omitted, so a broken node stays visible in the console.
 
 ## Create a connection
 
@@ -62,15 +67,20 @@ POST /api/mcp-connections/{repo}
 
 | Field | Required | Notes |
 |-------|----------|-------|
-| `slug` | yes | Lowercase, digits and hyphens, 1–48 chars. **Immutable** — it is part of every generated tool path. |
-| `url` | yes | Streamable HTTP endpoint. Validated against the egress policy. |
+| `slug` | yes | Lowercase letters, digits and hyphens, 1–48 characters. Cannot be changed; it is part of every generated tool path. |
+| `url` | yes | Streamable HTTP endpoint. Must be `https` and pass the egress policy unless `allow_private_addresses` is on. |
 | `title` | no | Defaults to the slug. |
 | `enabled` | no | Defaults to `false`. |
-| `auth_kind` | no | `none` \| `static` \| `oauth`. Defaults to `none`. |
+| `auth_kind` | no | `none`, `static` or `oauth`. Defaults to `none`. |
+| `static_auth` | no | `{ "scheme": "bearer" }` (default) or `{ "scheme": "header", "header_name": "X-Api-Key" }`. |
 | `tool_filter` | no | `{ "allow": [], "deny": [] }` by remote tool name. Deny wins. |
-| `refresh_policy` | no | `{ mode, interval_secs, on_save, notifications, call_timeout_ms }`. |
+| `refresh_policy` | no | `{ mode, interval_secs, on_save, notifications, call_timeout_ms }`. Defaults: `manual`, 3600, `true`, `false`, 30000. |
 
-**Errors:** `409` if the slug exists. `400` for an invalid slug or a URL the egress policy refuses.
+The response is the connection as returned by `GET`. Errors: `409 CONNECTION_EXISTS` if the slug exists; `400 VALIDATION_FAILED` for an invalid slug or a URL the egress policy refuses, for example:
+
+```json
+{"code":"VALIDATION_FAILED","message":"mcp configuration error: endpoint URL must use https (http is allowed only when [mcp_client] allow_private_addresses is enabled)"}
+```
 
 ## Read, update, delete
 
@@ -80,9 +90,9 @@ PATCH  /api/mcp-connections/{repo}/{slug}
 DELETE /api/mcp-connections/{repo}/{slug}[?force=true]
 ```
 
-`PATCH` accepts any create field except `slug`; omitted fields are untouched.
+`PATCH` accepts any create field except `slug`; omitted fields are untouched, and the response is the updated connection.
 
-`DELETE` returns **409** while discovered tools still exist, listing how many — agents may reference their proxies, and a silent cascade would break those agents with no indication why. Pass `?force=true` to delete anyway.
+`DELETE` returns `409` while discovered tools still exist, because agents may reference their proxies. Pass `?force=true` to delete anyway. On success: `{ "ok": true, "slug": "linear" }`.
 
 ## Credential (write-only)
 
@@ -98,9 +108,9 @@ DELETE /api/mcp-connections/{repo}/{slug}/credential
 }
 ```
 
-Omit `static_auth` for `Authorization: Bearer <value>`. Setting a credential on a connection whose `auth_kind` is `none` promotes it to `static` — a stored credential the auth mode never applies would be a silent no-op.
+Omit `static_auth` for `Authorization: Bearer <value>`. Setting a credential on a connection whose `auth_kind` is `none` switches it to `static`; clearing the credential switches it back to `none`.
 
-There is deliberately **no GET**. The response carries `{ ok, credential_set, auth_kind }` and never the value.
+There is no `GET`. Both calls answer `{ "ok": true, "credential_set": true, "auth_kind": "static" }` (with `false` and `none` after a delete).
 
 ## Test
 
@@ -115,17 +125,21 @@ Performs a real handshake and `tools/list`. It never calls a tool.
   "reachable": true,
   "protocol_version": "2025-06-18",
   "server_info": { "name": "linear", "version": "1.2.0" },
+  "capabilities": { "tools": { "listChanged": true } },
+  "instructions": "…",
   "tool_count": 12,
   "tools": ["search_issues", "create_issue"],
   "permitted_tool_count": 2
 }
 ```
 
-:::note Always 200
-A broken connection still answers `200` with `{ "reachable": false, "error_code": "auth_expired", "error": "..." }`. A `5xx` would give a client only a generic failure; a structured report lets it say what is actually wrong. The status is non-2xx only for faults on *this* side, such as a missing master key.
-:::
+A broken connection still answers `200` with a structured report:
 
-`error_code` is one of `auth_expired`, `rate_limited`, `config_error`, `protocol_error`, `transient_error`.
+```json
+{"reachable":false,"tool_count":0,"tools":[],"permitted_tool_count":0,"error_code":"transient_error","error":"mcp transient error: could not resolve `mcp.example.com`: …"}
+```
+
+`error_code` is one of `auth_expired`, `rate_limited`, `config_error`, `protocol_error`, `session_expired`, `transient_error`. The status is non-2xx only for faults on this side, such as a missing master key.
 
 ## Tools
 
@@ -135,28 +149,32 @@ PATCH /api/mcp-connections/{repo}/{slug}/tools/{remote_name}
 POST  /api/mcp-connections/{repo}/{slug}/refresh-tools
 ```
 
-`GET` returns the discovered tools, the active filter, and the last health record:
+`GET` returns the discovered tools, the active filter, the last health record and the last sync time:
 
 ```json
 {
+  "slug": "linear",
   "tools": [
     {
       "remote_name": "search_issues",
       "function_name": "linear__search-issues",
       "function_path": "/mcp/linear/search-issues",
-      "schema_hash": "sha256:...",
+      "schema_hash": "sha256:…",
       "enabled": true,
       "state": "active"
     }
-  ]
+  ],
+  "tool_filter": { "allow": [], "deny": [] },
+  "health": null,
+  "last_synced_at": "2026-09-06T18:40:12Z"
 }
 ```
 
-`function_path` is what you put in an agent's `tools:` array. `state` is `active`, `missing` (gone upstream — the proxy is disabled, never deleted) or `conflict` (its generated name collides with an existing function).
+`function_path` is what goes in an agent's `tools` array. `state` is `active`, `missing` (gone upstream; the proxy is disabled but kept) or `conflict` (its generated name collides with an existing function).
 
-`PATCH` takes `{ "enabled": bool }`. It records the decision on `tool_filter` and enqueues a discovery run; the proxy nodes are only ever written by that job, so there is exactly one writer.
+`PATCH` takes `{ "enabled": bool }`, records the decision on `tool_filter` and enqueues a discovery run. It answers `{ "ok", "remote_name", "enabled", "tool_filter", "refresh_job_id" }`. The proxy nodes are only written by the discovery job.
 
-`refresh-tools` enqueues discovery and returns `{ "ok": true, "job_id": "..." }`. It is refused with `400` when the connection is disabled.
+`refresh-tools` enqueues discovery and returns `{ "ok": true, "job_id": "…" }`. It answers `400` when the connection is disabled.
 
 ## Prune
 
@@ -165,43 +183,52 @@ DELETE /api/mcp-connections/{repo}/{slug}/tools/{remote_name}[?force=true]
 POST   /api/mcp-connections/{repo}/{slug}/prune-tools[?force=true]
 ```
 
-Delete one proxy, or every proxy whose state is `missing`. Both return **409** listing the agent paths that still reference the tools; `?force=true` proceeds anyway.
+Delete one proxy, or every proxy whose state is `missing`. Both answer `{ "ok": true, "pruned": 2, "tools": ["/mcp/linear/old-tool", …] }`. Without `force`, a proxy an agent still references makes the call fail with `409 TOOLS_IN_USE` naming the agents. `DELETE` on an unknown remote name is `404 TOOL_NOT_FOUND`.
 
-Discovery itself never deletes a proxy — it disables one that vanished upstream, because a deleted proxy disappears from an agent with no error anywhere. Pruning is the deliberate counterpart, and there is no automatic age-based version of it.
+Discovery never deletes a proxy on its own; pruning is the explicit counterpart.
 
 ## OAuth 2.1
 
 ```bash
-POST /api/mcp-connections/{repo}/{slug}/oauth/discover
-POST /api/mcp-connections/{repo}/{slug}/oauth/start
-POST /api/mcp-connections/{repo}/{slug}/oauth/disconnect
-GET  /api/mcp-connections/{repo}/oauth/callback          # public
+POST   /api/mcp-connections/{repo}/{slug}/oauth/discover
+POST   /api/mcp-connections/{repo}/{slug}/oauth/start
+PUT    /api/mcp-connections/{repo}/{slug}/oauth/client
+DELETE /api/mcp-connections/{repo}/{slug}/oauth/client
+POST   /api/mcp-connections/{repo}/{slug}/oauth/disconnect
+GET    /api/mcp-connections/{repo}/oauth/callback          # public
 ```
 
-**`discover`** probes the server unauthenticated, parses the `WWW-Authenticate` challenge from its `401`, follows [RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728) protected-resource metadata → [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) authorization-server metadata, and registers a client via [RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591) when the server supports it.
+**`discover`** probes the server unauthenticated, parses the `WWW-Authenticate` challenge from its `401`, follows [RFC 9728](https://datatracker.ietf.org/doc/html/rfc9728) protected-resource metadata to [RFC 8414](https://datatracker.ietf.org/doc/html/rfc8414) authorization-server metadata, and registers a client through [RFC 7591](https://datatracker.ietf.org/doc/html/rfc7591) when the server supports it. On success it sets `auth_kind` to `oauth` and answers:
 
 ```json
 {
+  "ok": true,
   "requires_auth": true,
   "discovered": true,
+  "auth_method": "none",
+  "client_secret_required": false,
+  "client_secret_set": false,
+  "needs_manual_client_secret": false,
   "issuer": "https://auth.linear.app",
+  "authorization_endpoint": "https://auth.linear.app/authorize",
+  "token_endpoint": "https://auth.linear.app/token",
   "supports_dynamic_registration": true,
   "registered": true,
-  "client_id": "...",
+  "client_id": "…",
   "scopes": ["mcp"],
   "redirect_uri": "https://your-raisindb/api/mcp-connections/prod/oauth/callback"
 }
 ```
 
-A server that does not need authorization answers `{ "requires_auth": false }`. One that returns `401` without an RFC 9728 pointer answers `{ "discovered": false }` with a message — its endpoints must be configured by hand.
+A server that does not need authorization answers `{ "ok": true, "requires_auth": false, "discovered": false, "status": 200 }`. One that returns `401` without an RFC 9728 pointer answers `{ "ok": true, "requires_auth": true, "discovered": false, "message": "…" }`; configure its endpoints by hand with `oauth/client`. An unreachable server answers `{ "ok": false, "discovered": false, "error_code", "error" }`.
 
-**`start`** returns `{ "auth_url", "state" }`. Open `auth_url` in a popup; the callback posts a `raisin-oauth-result` message to the opener and closes itself.
+**`oauth/client`** (`PUT`) stores a client registration you obtained yourself: `{ "client_id", "client_secret", "issuer", "authorization_endpoint", "token_endpoint", "scopes" }`. Only `client_id` is required; endpoints already found by `discover` are kept when omitted. The response is `{ "ok": true, "client_id_set": true, "client_secret_set": bool }`. `DELETE` clears the registration and the stored tokens.
 
-The authorize request carries PKCE `S256` and, per [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707), a `resource` parameter pinning the issued token to this MCP endpoint so it cannot be replayed at another server.
+**`start`** returns `{ "auth_url", "state" }`. Open `auth_url` in a popup. The authorize request carries PKCE `S256` and, per [RFC 8707](https://datatracker.ietf.org/doc/html/rfc8707), a `resource` parameter binding the issued token to this MCP endpoint. After consent the callback stores the tokens, posts a `{ "type": "raisin-oauth-result", "connected": "<slug>" }` message (or `{ "type": "raisin-oauth-result", "error": "…" }`) to the opener window and closes itself.
 
-**`disconnect`** clears the stored tokens. The client registration is kept, so reconnecting needs no second round of dynamic registration.
+**`disconnect`** clears the stored tokens and answers `{ "ok": true, "oauth_connected": false }`. The client registration is kept, so reconnecting needs no second registration.
 
-Access tokens are refreshed automatically before expiry by the same periodic sweep that refreshes connector tokens.
+Access tokens are refreshed before expiry by the same periodic sweep that refreshes connector tokens.
 
 ## Configuration
 
@@ -210,11 +237,11 @@ The optional `[mcp_client]` TOML section bounds every connection in the process:
 ```toml
 [mcp_client]
 allowed_hosts = []              # empty = any PUBLIC host
-allow_private_addresses = false # loopback/private + plain http
+allow_private_addresses = false # loopback/private and plain http
 max_response_bytes = 8388608
 default_timeout_ms = 30000
 ```
 
-`refresh_policy.notifications` opts the connection into a held-open notification stream so tool changes arrive live instead of at the next interval. It defaults to `false`, and additionally requires the server to speak 2026-07-28 or advertise `tools.listChanged`. On a replicated cluster it requires `[locks]` with the `redis` backend — without it, listeners are refused rather than duplicated across nodes.
+`refresh_policy.notifications` opts the connection into a held-open notification stream so tool changes arrive live instead of at the next interval. It defaults to `false` and requires the server to speak `2026-07-28` or advertise `tools.listChanged`. On a replicated cluster it requires `[locks]` with the `redis` backend; otherwise no listener is started.
 
-Egress is checked when a connection is saved **and** before every dial, against the addresses the hostname actually resolves to. It also covers every URL in the OAuth discovery chain, all of which the remote side chooses — so an `allowed_hosts` list must include the authorization server's host as well as the MCP endpoint's.
+Egress is checked when a connection is saved and before every dial, against the addresses the hostname resolves to. It also covers every URL in the OAuth discovery chain, so an `allowed_hosts` list must include the authorization server's host as well as the MCP endpoint's.

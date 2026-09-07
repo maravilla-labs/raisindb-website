@@ -4,477 +4,143 @@ sidebar_position: 5
 
 # Aggregate Functions
 
-Functions for aggregating multiple rows into a single result.
+Aggregates fold the rows of a query, or of each `GROUP BY` group, into one value. Six are implemented: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` and `ARRAY_AGG`. All of them also work as [window functions](./window-functions.md) with an `OVER` clause.
+
+<!-- TODO(sql-ext): fill from engine report (HAVING; any further aggregates) -->
+
+The example workspace `blog` holds a folder `/news` (no `views`) and three pages with `views` 101, 42 and 8.
 
 ## COUNT
-
-Count the number of rows or non-NULL values.
-
-### Syntax
 
 ```sql
 COUNT(*) → BIGINT
 COUNT(expression) → BIGINT
+COUNT(*) FILTER (WHERE condition) → BIGINT
 ```
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| * | - | Count all rows including NULLs |
-| expression | ANY | Count non-NULL values |
-
-### Return Value
-
-BIGINT - Number of rows or non-NULL values.
-
-### Examples
 
 ```sql
--- Count all rows
-SELECT COUNT(*) FROM pages;
+SELECT COUNT(*) AS nodes,
+       COUNT(*) FILTER (WHERE depth = 1) AS roots,
+       COUNT(*) FILTER (WHERE properties->>'published' = 'true') AS published
+FROM 'blog';
+-- {"nodes":4,"roots":2,"published":2}
 
--- Count non-NULL values
-SELECT COUNT(properties->>'description') FROM default;
-
--- Count distinct values
-SELECT COUNT(DISTINCT properties->>'status') FROM default;
-
--- Count by group
-SELECT properties->>'status' AS status, COUNT(*) AS count
-FROM default
-GROUP BY properties->>'status';
-
--- Count with condition
-SELECT COUNT(*) FROM default
-WHERE properties->>'status' = 'published';
+SELECT node_type, COUNT(*) AS n FROM 'blog' GROUP BY node_type ORDER BY n DESC;
+-- {"node_type":"raisin:Page","n":3}, {"node_type":"raisin:Folder","n":1}
 ```
 
-### Notes
+`FILTER (WHERE ...)` is the way to count a subset in the same pass. The `COUNT(CASE WHEN ... THEN 1 END)` idiom is accepted by the parser but returns a wrong number in the current build; use `FILTER`.
 
-- `COUNT(*)` counts all rows including NULLs
-- `COUNT(column)` counts only non-NULL values
-- Use `COUNT(DISTINCT expr)` for unique values
-- Returns 0 if no rows match
-
----
+In the current build `COUNT(expression)` counts every row, including rows where the expression is NULL, and `COUNT(DISTINCT expression)` counts every row rather than distinct values. Use `FILTER (WHERE expression IS NOT NULL)` and `SELECT DISTINCT` in a subquery for those two questions.
 
 ## SUM
 
-Calculate the sum of numeric values.
-
-### Syntax
-
 ```sql
-SUM(expression) → BIGINT | DOUBLE
+SUM(expression) → DOUBLE
 ```
 
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| expression | INT \| BIGINT \| DOUBLE | Numeric expression |
-
-### Return Value
-
-- BIGINT if input is INT or BIGINT
-- DOUBLE if input is DOUBLE
-- NULL if no rows
-
-### Examples
-
 ```sql
--- Sum all values
-SELECT SUM((properties->>'view_count')::int) FROM default;
+SELECT SUM((properties->>'views')::INT) AS views FROM 'blog';
+-- {"views":151.0}
 
--- Sum by group
-SELECT properties->>'category' AS category,
-       SUM((properties->>'price')::numeric) AS total_price
-FROM default
-GROUP BY properties->>'category';
-
--- Sum with filter
-SELECT SUM((properties->>'price')::numeric) FROM default
-WHERE properties->>'active' = 'true';
-
--- Sum with expression
-SELECT SUM((properties->>'price')::numeric * (properties->>'quantity')::int) AS total_value
-FROM default;
+SELECT node_type, SUM((properties->>'views')::INT) AS views FROM 'blog' GROUP BY node_type ORDER BY node_type;
+-- {"node_type":"raisin:Folder","views":0.0}, {"node_type":"raisin:Page","views":151.0}
 ```
 
-### Notes
-
-- NULL values are ignored
-- Returns NULL if no rows (not 0)
-- Use COALESCE for default: `COALESCE(SUM(col), 0)`
-- Overflow may occur with very large sums
-
----
+NULL inputs are skipped; a group with no numeric values sums to `0.0`. The result is DOUBLE even for integer input.
 
 ## AVG
-
-Calculate the average (mean) of numeric values.
-
-### Syntax
 
 ```sql
 AVG(expression) → DOUBLE
 ```
 
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| expression | INT \| BIGINT \| DOUBLE | Numeric expression |
-
-### Return Value
-
-DOUBLE - Average value, or NULL if no rows.
-
-### Examples
-
 ```sql
--- Average of all values
-SELECT AVG((properties->>'view_count')::int) FROM default;
-
--- Average by group
-SELECT properties->>'status' AS status,
-       AVG((properties->>'view_count')::int) AS avg_views
-FROM default
-GROUP BY properties->>'status';
-
--- Average with filter
-SELECT AVG((properties->>'price')::numeric) FROM default
-WHERE properties->>'category' = 'electronics';
-
--- Round average
-SELECT ROUND(AVG((properties->>'score')::numeric), 2) AS avg_score
-FROM default;
+SELECT ROUND(AVG((properties->>'views')::INT), 1) AS avg_views FROM 'blog';
+-- {"avg_views":50.3}
 ```
 
-### Notes
+NULL inputs are skipped (the folder without `views` does not pull the average down).
 
-- NULL values are ignored
-- Returns NULL if no non-NULL rows
-- Result is always DOUBLE
-- Division by zero does not occur
-
----
-
-## MIN
-
-Find the minimum value.
-
-### Syntax
+## MIN and MAX
 
 ```sql
-MIN(expression) → same as input type
+MIN(expression) → type of the expression
+MAX(expression) → type of the expression
 ```
 
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| expression | ANY | Any comparable type |
-
-### Return Value
-
-Same type as input - Minimum value, or NULL if no rows.
-
-### Examples
+They work on numbers, text (code-point order) and timestamps:
 
 ```sql
--- Minimum numeric value
-SELECT MIN((properties->>'price')::numeric) FROM default;
-
--- Minimum date
-SELECT MIN(created_at) FROM default;
-
--- Minimum text (alphabetical)
-SELECT MIN(properties->>'title') FROM default;
-
--- Minimum by group
-SELECT properties->>'category' AS category,
-       MIN((properties->>'price')::numeric) AS cheapest
-FROM default
-GROUP BY properties->>'category';
-
--- Find oldest record
-SELECT * FROM default
-WHERE created_at = (SELECT MIN(created_at) FROM default);
+SELECT MIN(depth) AS shallowest, MAX(depth) AS deepest,
+       MIN(name) AS first_name, MAX(name) AS last_name,
+       MIN(created_at) AS first_created, MAX(updated_at) AS last_change
+FROM 'blog';
 ```
 
-### Notes
+```json
+{"shallowest":1,"deepest":2,"first_name":"first","last_name":"second","first_created":"2026-09-06T18:32:15.143528+00:00","last_change":"2026-09-07T00:47:57.721929+00:00"}
+```
 
-- Works with numeric, text, date types
-- NULL values are ignored
-- Returns NULL if no rows
-- Text comparison is case-sensitive
-
----
-
-## MAX
-
-Find the maximum value.
-
-### Syntax
+Over an expression that is NULL for some rows, `MIN` and `MAX` do not skip the NULLs in the current build and the answer is unreliable (`MAX` came back NULL and `MIN` came back the first value seen). Restrict the rows first:
 
 ```sql
-MAX(expression) → same as input type
+SELECT MIN((properties->>'views')::INT) AS mn, MAX((properties->>'views')::INT) AS mx
+FROM 'blog' WHERE properties ? 'views';
 ```
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| expression | ANY | Any comparable type |
-
-### Return Value
-
-Same type as input - Maximum value, or NULL if no rows.
-
-### Examples
-
-```sql
--- Maximum numeric value
-SELECT MAX((properties->>'view_count')::int) FROM default;
-
--- Maximum date
-SELECT MAX(updated_at) FROM default;
-
--- Maximum text (alphabetical)
-SELECT MAX(properties->>'title') FROM default;
-
--- Maximum by group
-SELECT properties->>'status' AS status,
-       MAX((properties->>'view_count')::int) AS max_views
-FROM default
-GROUP BY properties->>'status';
-
--- Find most recent record
-SELECT * FROM default
-WHERE created_at = (SELECT MAX(created_at) FROM default);
-```
-
-### Notes
-
-- Works with numeric, text, date types
-- NULL values are ignored
-- Returns NULL if no rows
-- Text comparison is case-sensitive
-
----
 
 ## ARRAY_AGG
 
-Aggregate values into an array.
-
-### Syntax
+Collect values into an array, in scan order. NULLs are included.
 
 ```sql
-ARRAY_AGG(expression) → ARRAY[T]
+ARRAY_AGG(expression) → ARRAY
 ```
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| expression | ANY | Values to aggregate |
-
-### Return Value
-
-ARRAY - Array containing all values, or NULL if no rows.
-
-### Examples
 
 ```sql
--- Collect all titles
-SELECT ARRAY_AGG(properties->>'title') FROM default;
+SELECT ARRAY_AGG(name) AS names FROM 'blog';
+-- {"names":["hello","news","first","second"]}
 
--- Collect by group
-SELECT properties->>'category' AS category,
-       ARRAY_AGG(properties->>'name') AS product_names
-FROM default
-GROUP BY properties->>'category';
-
--- Collect with ordering
-SELECT ARRAY_AGG(properties->>'title' ORDER BY created_at DESC)
-FROM default;
-
--- Collect distinct values
-SELECT ARRAY_AGG(DISTINCT properties->>'status') FROM default;
+SELECT node_type, ARRAY_AGG(name) AS names FROM 'blog' GROUP BY node_type ORDER BY node_type;
+-- {"node_type":"raisin:Folder","names":["news"]}, {"node_type":"raisin:Page","names":["hello","first","second"]}
 ```
 
-### Notes
+`ARRAY_AGG(DISTINCT x)` and `ARRAY_AGG(x ORDER BY ...)` parse but the modifiers are ignored: duplicates stay and the order is the scan order. Sort or deduplicate in a subquery before aggregating.
 
-- NULL values are included in the array
-- Result is NULL if no rows
-- Order is undefined unless ORDER BY specified
-- Can aggregate any type
+## GROUP BY
 
----
-
-## Examples
-
-### Count Statistics
+Group by any expression: a column, a JSON access, a path function.
 
 ```sql
--- Count by multiple dimensions
-SELECT
-    node_type,
-    properties->>'status' AS status,
-    COUNT(*) AS count
-FROM nodes
-GROUP BY node_type, properties->>'status'
-ORDER BY count DESC;
+SELECT properties->>'published' AS published, COUNT(*) AS n
+FROM 'blog' GROUP BY properties->>'published' ORDER BY published;
+-- {"published":"false","n":1}, {"published":"true","n":2}, {"published":null,"n":1}
+
+SELECT PARENT(path) AS parent, COUNT(*) AS children FROM 'blog' GROUP BY PARENT(path);
 ```
 
-### Revenue Analysis
+`HAVING` is not available yet. Filter an aggregate by wrapping the grouped query:
 
 ```sql
--- Total and average revenue by category
-SELECT
-    properties->>'category' AS category,
-    COUNT(*) AS product_count,
-    SUM((properties->>'price')::numeric * (properties->>'stock')::int) AS total_value,
-    AVG((properties->>'price')::numeric) AS avg_price,
-    MIN((properties->>'price')::numeric) AS min_price,
-    MAX((properties->>'price')::numeric) AS max_price
-FROM default
-GROUP BY properties->>'category';
+SELECT * FROM (
+  SELECT node_type, COUNT(*) AS n FROM 'blog' GROUP BY node_type
+) g WHERE n > 1;
+-- {"node_type":"raisin:Page","n":3}
 ```
 
-### Group with HAVING
+A query whose `WHERE` matches no rows returns no row at all, not a row of NULLs or zeros:
 
 ```sql
--- Categories with more than 10 products
-SELECT
-    properties->>'category' AS category,
-    COUNT(*) AS product_count
-FROM default
-GROUP BY properties->>'category'
-HAVING COUNT(*) > 10
-ORDER BY product_count DESC;
+SELECT COUNT(*) AS n FROM 'blog' WHERE path = '/none';
+-- {"columns":[],"rows":[],"row_count":0}
 ```
 
-### Aggregates with Conditions
+## Aggregates over a CTE or subquery
 
 ```sql
--- Conditional aggregation
-SELECT
-    COUNT(*) AS total,
-    COUNT(CASE WHEN properties->>'status' = 'published' THEN 1 END) AS published,
-    COUNT(CASE WHEN properties->>'status' = 'draft' THEN 1 END) AS draft,
-    SUM(CASE WHEN properties->>'status' = 'published'
-        THEN (properties->>'view_count')::int ELSE 0 END) AS total_views
-FROM default;
+WITH pages AS (SELECT name, depth, node_type FROM 'blog')
+SELECT node_type, COUNT(*) AS n FROM pages GROUP BY node_type ORDER BY node_type;
+-- {"node_type":"raisin:Folder","n":1}, {"node_type":"raisin:Page","n":3}
 ```
 
-### Array Aggregation
-
-```sql
--- Collect related items
-SELECT
-    c.properties->>'name' AS category,
-    ARRAY_AGG(p.properties->>'title' ORDER BY (p.properties->>'view_count')::int DESC) AS top_products
-FROM default c
-LEFT JOIN default p ON p.properties->>'category_id' = c.id
-GROUP BY c.properties->>'name';
-```
-
-### Nested Aggregates
-
-```sql
--- Average of group sums
-SELECT AVG(category_total) AS avg_category_total
-FROM (
-    SELECT properties->>'category' AS category,
-           SUM((properties->>'price')::numeric) AS category_total
-    FROM default
-    GROUP BY properties->>'category'
-) AS category_sums;
-```
-
-### Time-Based Aggregation
-
-```sql
--- Daily statistics
-SELECT
-    DATE(created_at) AS date,
-    COUNT(*) AS daily_count,
-    AVG((properties->>'view_count')::int) AS avg_views,
-    MAX((properties->>'view_count')::int) AS max_views
-FROM default
-WHERE created_at > NOW() - INTERVAL '30 days'
-GROUP BY date
-ORDER BY date;
-```
-
-### Percentage Calculations
-
-```sql
--- Calculate percentages
-SELECT
-    properties->>'status' AS status,
-    COUNT(*) AS count,
-    COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () AS percentage
-FROM default
-GROUP BY properties->>'status';
-```
-
-### Multiple Metrics
-
-```sql
--- Comprehensive statistics
-SELECT
-    properties->>'category' AS category,
-    COUNT(*) AS total_products,
-    COUNT(DISTINCT properties->>'brand') AS brand_count,
-    SUM((properties->>'stock')::int) AS total_stock,
-    AVG((properties->>'price')::numeric) AS avg_price,
-    MIN((properties->>'price')::numeric) AS min_price,
-    MAX((properties->>'price')::numeric) AS max_price,
-    ARRAY_AGG(properties->>'name' ORDER BY (properties->>'price')::numeric DESC LIMIT 5) AS top_products
-FROM default
-GROUP BY properties->>'category'
-HAVING COUNT(*) > 5
-ORDER BY total_stock DESC;
-```
-
-### Hierarchical Aggregation
-
-```sql
--- Count nodes by depth
-SELECT
-    DEPTH(path) AS depth,
-    COUNT(*) AS node_count,
-    AVG(CHAR_LENGTH(properties->>'title')) AS avg_title_length
-FROM nodes
-GROUP BY DEPTH(path)
-ORDER BY depth;
-```
-
-### Filtering After Aggregation
-
-```sql
--- High-value categories
-SELECT
-    properties->>'category' AS category,
-    SUM((properties->>'price')::numeric * (properties->>'stock')::int) AS total_value,
-    COUNT(*) AS product_count
-FROM default
-GROUP BY properties->>'category'
-HAVING SUM((properties->>'price')::numeric * (properties->>'stock')::int) > 10000
-ORDER BY total_value DESC;
-```
-
----
-
-## Notes
-
-- Aggregate functions ignore NULL values (except COUNT(*))
-- Used with GROUP BY to aggregate by groups
-- Can be used with HAVING to filter aggregated results
-- Return NULL for empty result sets (except COUNT(*) returns 0)
-- Cannot be nested (e.g., `SUM(MAX(col))` is invalid)
-- Can be combined with window functions using OVER clause
+Aggregates cannot be nested (`SUM(MAX(x))`); compute the inner aggregate in a subquery and aggregate over it.

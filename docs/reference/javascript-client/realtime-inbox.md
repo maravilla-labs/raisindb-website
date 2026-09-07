@@ -4,7 +4,7 @@ sidebar_position: 6
 
 # Realtime Subscriptions & Inbox
 
-Node subscriptions are the realtime backbone of RaisinDB apps: live queries, inbox bells, presence — all without polling or extra APIs. This page covers the path filter semantics (the most common source of "my subscription never fires" bugs) and the inbox-bell pattern.
+Node subscriptions are the real-time backbone of RaisinDB apps: live lists, inbox bells and presence without polling. This page covers the path filter semantics (the most common cause of "my subscription never fires") and the inbox-bell pattern.
 
 ## Subscribing
 
@@ -30,7 +30,7 @@ All filters are optional and combined with AND:
 interface SubscriptionFilters {
   workspace?: string;       // usually set via ws.events()
   event_types?: string[];   // e.g. ['node:created', 'node:updated']
-  path?: string;            // glob pattern, see semantics below
+  path?: string;            // glob pattern, see below
   node_type?: string;       // e.g. 'raisin:Message'
   include_node?: boolean;   // deliver the full node in the payload
 }
@@ -38,20 +38,20 @@ interface SubscriptionFilters {
 
 ## Path filter semantics
 
-The server matches subscription paths **literally with glob semantics**. There is **no implicit prefix matching** — a plain path only matches that exact node.
+The server matches subscription paths as literal globs. A plain path matches only that exact node; there is no implicit prefix matching.
 
 | Pattern | Matches |
 |---------|---------|
-| `/users/alice/inbox` | exactly that node — nothing below it |
-| `/users/alice/inbox/*` | direct children only (`*` = exactly one path segment) |
-| `/users/alice/inbox/**` | the whole subtree, any depth (`**` = recursive) |
-| `/users/*/outbox/*` | one segment wildcards can appear mid-path |
+| `/users/alice/inbox` | exactly that node, nothing below it |
+| `/users/alice/inbox/*` | direct children only (`*` is exactly one path segment) |
+| `/users/alice/inbox/**` | the whole subtree, any depth |
+| `/users/*/outbox/*` | one-segment wildcards can appear mid-path |
 
-Inbox items nest (chat messages live at `inbox/chats/<conversation>/<message>`), so inbox-style subscriptions almost always need the recursive `/**` suffix.
+Inbox items nest (chat messages live at `inbox/chats/<conversation>/<message>`), so inbox subscriptions almost always need the recursive `/**` suffix.
 
 ## Event payload
 
-Node events (`node:created`, `node:updated`, `node:deleted`, ...) arrive as `EventMessage` with a `NodeEventPayload`:
+Node events arrive as `EventMessage` with a `NodeEventPayload`:
 
 ```typescript
 interface EventMessage<TPayload = NodeEventPayload> {
@@ -69,25 +69,23 @@ interface NodeEventPayload {
   node_type?: string | null;
   path?: string | null;
   revision?: string;
-  /** Full node — only present with include_node: true */
-  node?: Node;
+  node?: Node;               // only present with include_node: true
   metadata?: Record<string, unknown> | null;
-  // relation / property-change events add relation_type,
-  // target_node_id, property, ...
+  // relation / property-change events add relation_type, target_node_id, property, ...
   [key: string]: unknown;
 }
 ```
 
-Pass `include_node: true` when you want to render something from the event (title, properties) without an extra round-trip.
+Pass `include_node: true` to render from the event (title, properties) without another round-trip. Fall back to a fetch by `node_id` when `payload.node` is absent.
 
 ## The inbox-bell pattern
 
-Server-side messaging (chat replies, workflow tasks, notifications) delivers nodes into the logged-in user's home inbox in the `raisin:access_control` workspace. One subscription on `${home}/inbox/**` powers a notification bell — no polling, no extra API.
+Server-side messaging (chat replies, workflow tasks, notifications) delivers nodes into the signed-in user's home inbox in the `raisin:access_control` workspace. One subscription on `${home}/inbox/**` powers a notification bell.
 
-Two gotchas, both handled below:
+Two details to handle:
 
-1. **Home path normalization.** Depending on the auth path, `user.home` may be workspace-prefixed (`/raisin:access_control/users/internal/alice`) or workspace-relative (`/users/internal/alice`). Subscription paths must be workspace-relative — use `normalizeHomePath()` from the SDK.
-2. **Your own messages.** The user's outgoing chat messages are persisted under their inbox too (`role: 'user'`) — skip them.
+1. **Home path normalization.** Depending on how the user signed in, `user.home` may be workspace-prefixed (`/raisin:access_control/users/internal/alice`) or workspace-relative (`/users/internal/alice`). Subscription paths must be workspace-relative; `normalizeHomePath()` from the SDK strips the prefix.
+2. **Your own messages.** The user's outgoing chat messages are stored under their inbox too (`role: 'user'`); skip them.
 
 From the [shiftboard example](https://github.com/maravilla-labs/raisindb/tree/main/examples/shiftboard):
 
@@ -121,9 +119,9 @@ await db.workspace('raisin:access_control').events().subscribe(
 );
 ```
 
-For a full conversation list with unread counts (rather than a raw bell), use `ConversationListStore` with `realtime: true` — it implements exactly this subscription on `${home}/inbox/chats/**` internally. See [Chat & Conversations](./chat.md#conversationliststore).
+For a full conversation list with unread counts, use `ConversationListStore` with `realtime: true`; it makes this subscription on `${home}/inbox/chats/**` internally. See [Chat & Conversations](./chat.md#conversationliststore).
 
-Workflow human tasks land in the same home inbox; to list and complete them programmatically use `db.inbox` (`InboxApi`) — see [Inbox tasks](./flows.md#inbox-tasks-dbinbox).
+Workflow human tasks land in the same home inbox. To list and complete them programmatically use `db.inbox` (`listTasks`, `getTask`, `completeTask`); see [Inbox tasks](./flows.md#inbox-tasks-dbinbox).
 
 ## Reconnection
 
@@ -135,7 +133,7 @@ client.on('subscription_restore_failed', (error) => {
 });
 
 client.onReconnected(() => {
-  // Fired only after connection + auth + successful subscription restore —
+  // Fires only after connection, auth and subscription restore all succeeded;
   // a good place to refetch query data.
 });
 ```

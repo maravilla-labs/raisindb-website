@@ -4,135 +4,166 @@ sidebar_position: 1
 
 # Using the Admin Console
 
-The Admin Console provides a web interface for managing RaisinDB.
+The admin console is a web interface served by the RaisinDB server itself. It
+covers content, schema, access control, branches, functions, packages,
+integrations and server operations.
 
-## Accessing the Console
+## Accessing the console
 
-Navigate to:
+The console is served at `/admin` on the server's HTTP port:
 
 ```
 http://localhost:8080/admin
 ```
 
-Login with your credentials.
+Sign in with an admin user. On a fresh dev-mode server, `raisindb server start`
+prints the generated `admin` password once on first start. After signing in you
+land on the repository list; pick a repository to open its sidebar.
 
-## Main Features
+## Repository sections
 
-### Workspace Selector
+### Content
 
-When you access the Content section, you'll see a workspace selector showing all available workspaces:
+The Content section starts with a workspace selector listing every workspace in
+the repository.
 
 ![Workspace Selector](/img/admin-console/workspace-selector.png)
 
-### Content Browser
-
-Browse and manage content within workspaces:
+Inside a workspace, the content explorer shows the node tree for the selected
+branch, with search, a node editor driven by the node's type, create, move,
+copy and delete actions, a language switcher for translations, a revision
+browser to view and compare earlier revisions of a node, and a commit dialog.
 
 ![Content Browser](/img/admin-console/content-browser.png)
 
-- Navigate workspace hierarchies
-- Create, edit, delete nodes
-- Preview content
-- Search across workspaces
+### Workspaces
 
-### Schema Designer
+Create workspaces, choosing their allowed node types, and open a workspace's
+detail view to browse and manage the nodes in it.
 
-Manage NodeTypes and schemas:
+### Models
+
+Node Types, Mixins, Archetypes and Elements each have a list page and an
+editor.
 
 ![NodeTypes List](/img/admin-console/nodetypes-list.png)
 
-#### Visual NodeType Editor
-
-The visual editor provides a drag-and-drop interface for building schemas:
+The editor has two tabs. The visual tab is a builder with a type palette,
+drag-and-drop ordering of properties, a settings panel for the type's metadata
+and flags, and undo/redo. The YAML tab shows the same definition as text for
+direct editing; switching tabs converts between the two, and a parse error is
+shown instead of switching.
 
 ![NodeType Visual Editor](/img/admin-console/nodetype-visual-editor.png)
 
-- **Types Palette**: Drag element types (String, Number, Boolean, Date, Array, Object, Reference, etc.) onto your schema
-- **Properties List**: View and reorder all defined properties
-- **Settings Panel**: Configure NodeType metadata, versioning, and indexing options
-
-#### YAML Editor
-
-Switch to the YAML tab for direct schema editing:
-
 ![NodeType YAML Editor](/img/admin-console/nodetype-yaml-editor.png)
-
-- Full syntax highlighting
-- Direct access to all schema options
-- Copy/paste schema definitions
-
-### SQL Query Console
-
-Execute SQL queries directly:
-
-![SQL Query Console](/img/admin-console/sql-query-console.png)
-
-- Syntax highlighting
-- Query history
-- Export results
-- Visual explain plans
-
-### Branch Management
-
-Manage Git-like branches and tags:
-
-![Branch Management](/img/admin-console/branches.png)
-
-- Create/delete branches
-- Compare branches
-- Merge with conflict resolution. The merge dialog previews the per-node changes
-  a merge will bring across, grouped as **Added**, **Modified**, **Reordered**,
-  and **Deleted** — so [reordered siblings](/docs/concepts/data-model/paths-and-hierarchy#child-ordering)
-  are visible before you merge.
-- View commit history
-
-### Functions
-
-Serverless JavaScript functions:
-
-![Functions](/img/admin-console/functions.png)
-
-#### JavaScript Code Editor
-
-Open any function file to edit it in the built-in code editor:
-
-![Function JS Editor](/img/admin-console/function-js-editor.png)
-
-- **File Explorer**: Navigate the functions directory structure
-- **Code Editor**: Syntax-highlighted JavaScript editing
-- **Run Button**: Test functions with JSON or Node input
-- **Output Panel**: View execution results, problems, and logs
-- **Node Info**: View function metadata and path
-
-### Packages
-
-Browse and manage RAP packages:
-
-![Packages](/img/admin-console/packages.png)
-
-- Browse installed packages
-- Upload new packages
-- Install/uninstall packages
-- View package contents
 
 ### Access Control
 
-Manage users and permissions:
-- Create users and groups
-- Assign roles
-- Configure workspace access
-- API key management
+Users, Roles, Groups, Relation Types and a settings page for the repository's
+access-control configuration. Users and roles are nodes in the
+`raisin:access_control` workspace, so the pages are tree views with type-aware
+editors. Personal API keys are managed under your profile in the Management
+area (see below).
 
-## Keyboard Shortcuts
+### Branches
 
-- `Cmd+K` / `Ctrl+K`: Command palette
-- `Cmd+S` / `Ctrl+S`: Save
-- `Cmd+Enter` / `Ctrl+Enter`: Execute query
-- `Esc`: Close dialog
+The Branches page lists branches and tags, shows how far each branch has
+diverged from its base, and offers create, delete, merge and tag actions.
 
-## Next Steps
+![Branch Management](/img/admin-console/branches.png)
 
-- [Workspaces](/docs/concepts/workspaces) - Learn about workspace organization
-- [NodeTypes](/docs/concepts/data-model/nodetypes) - Understand schema definitions
-- [SQL Reference](/docs/reference/sql/overview) - SQL query syntax
-- [Branching Workflows](/docs/concepts/versioning/git-like-workflows) - Git-like version control
+The merge dialog previews the changes a merge brings across, grouped as
+**Added**, **Modified**, **Reordered** and **Deleted**, so
+[reordered siblings](/docs/concepts/data-model/paths-and-hierarchy#child-ordering)
+are visible before you merge. When a merge reports conflicts, a resolution panel
+lets you choose a side per node (and per translation locale) and commit the
+result.
+
+### Functions
+
+The Functions page is an IDE for the `functions` workspace: a file explorer on
+the left, editors for functions, triggers, flows and agents, and an output area
+with **Output** and **Problems** tabs.
+
+![Functions](/img/admin-console/functions.png)
+
+Open a function to edit its code, set its input in the run bar and execute it;
+the result and any problems appear below. WebAssembly functions show their
+artifact's size and hash instead of source.
+
+![Function JS Editor](/img/admin-console/function-js-editor.png)
+
+### Agents
+
+List, create and edit AI agents, open a test chat against an agent, and inspect
+conversation traces.
+
+### Packages
+
+The package list shows every uploaded and built-in package with its version,
+install status and, for packages that ship a `.raisin-sync.yaml`, a sync-policy
+badge.
+
+![Packages](/img/admin-console/packages.png)
+
+From here you can upload a `.rap`, create a new package from selected content,
+and open a package to:
+
+- Install, or reinstall in `sync`, `skip` or `overwrite` mode (a split button)
+- Preview an install as a dry run before committing to it
+- Browse the archive's files
+- View sync status against the installed content, and export the package
+
+See [Installing Packages](/docs/guides/packages/installing-packages).
+
+### Integrations, MCP Connections, Mounts
+
+Integrations lists the installed adapter packages (category `integrations`)
+and the connections configured for them. MCP Connections manages outbound Model Context
+Protocol servers. Mounts creates and monitors virtual mounts that sync external
+data into a workspace path.
+
+### Secrets and Email
+
+Secrets lists the branch's encrypted secrets and lets you add, rotate and
+delete them; values are never displayed. Email configures the repository's
+outgoing mail provider.
+
+### SQL Query
+
+Run SQL against the repository, with query history kept in the browser and a
+visual plan view for `EXPLAIN` statements.
+
+![SQL Query Console](/img/admin-console/sql-query-console.png)
+
+### Logs, Flows, Inbox, Settings
+
+Execution logs of functions and triggers, running workflow instances, the
+repository inbox of human tasks, and repository settings (general, AI, and
+system-definition updates).
+
+## Management
+
+The Management area, reachable from the top-level navigation, holds
+tenant-wide pages: execution logs, flow monitor, database maintenance
+(fulltext and vector index health and rebuilds), background jobs, AI
+and auth settings, admin users, identity users and your own profile with
+personal API keys. In dev mode on the `default` tenant it also shows a server
+dashboard and a RocksDB page.
+
+## Keyboard shortcuts
+
+| Shortcut | Where | Action |
+|----------|-------|--------|
+| `Cmd+K` / `Ctrl+K` | Everywhere | Focus the global search bar |
+| `Cmd+Enter` / `Ctrl+Enter` | SQL Query | Run the query |
+| `Cmd+Z` / `Ctrl+Z` | Model editors | Undo |
+| `Cmd+S` / `Ctrl+S` | Function, trigger, flow and agent editors | Save |
+
+## Next steps
+
+- [Workspaces](/docs/concepts/workspaces)
+- [NodeTypes](/docs/concepts/data-model/nodetypes)
+- [SQL Reference](/docs/reference/sql/overview)
+- [Branching Workflows](/docs/concepts/versioning/git-like-workflows)

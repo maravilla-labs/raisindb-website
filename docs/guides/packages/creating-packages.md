@@ -4,213 +4,224 @@ sidebar_position: 1
 
 # Creating RAP Packages
 
-RAP (Raisin Archive Package) is RaisinDB's packaging system for bundling, distributing, and installing content. A `.rap` file is a ZIP archive containing node type definitions, workspace configurations, content nodes, and associated files — like npm for your content.
+A RAP (Raisin Archive Package) bundles schema, workspaces, content and functions
+into one installable unit. A `.rap` file is a ZIP archive with a `manifest.yaml`
+at its root. You author it as a plain folder, build it with the CLI, upload it to
+a repository and install it there.
 
-## Package Structure
-
-```
-my-package-1.0.0.rap
-  manifest.yaml              # Package metadata (required)
-  mixins/                    # Mixin definitions (installed before node types)
-    myapp_SEO.yaml
-    myapp_Timestamps.yaml
-  nodetypes/                 # Node type definitions
-    blog_Article.yaml
-    blog_Category.yaml
-  workspaces/                # Workspace configuration files
-    blog.yaml
-  processing-rules/          # Asset-processing rules (optional)
-    assets.yaml
-  content/                   # Content organized by workspace
-    blog/                    # Workspace name
-      posts/                 # Directory structure
-        welcome-post/        # Each node is a directory
-          node.yaml          # Node metadata (node_type, properties)
-          index.md           # Associated files
-        getting-started/
-          node.yaml
-          index.md
-          hero.png           # Binary assets
-```
-
-Every package must contain a `manifest.yaml` at the root. The other directories are optional — a package can provide only node types, only content, or any combination.
-
-## Initialize a Package
-
-```bash
-raisindb init --pack my-package
-```
-
-This creates the scaffolding:
+## Package layout
 
 ```
 my-package/
-  manifest.yaml
-  nodetypes/
-  mixins/
-  workspaces/
-  content/
+  manifest.yaml              # required: name, version, metadata
+  .raisin-sync.yaml          # optional: per-path install policy (see below)
+  mixins/                    # mixin definitions, installed before node types
+    blog_SEO.yaml
+  nodetypes/                 # node type definitions
+    blog_Article.yaml
+  archetypes/                # archetype definitions
+  elementtypes/              # element type definitions
+  workspaces/                # workspace definitions, one file per workspace
+    blog.yaml
+  processing-rules/          # asset-processing rules (optional)
+    assets.yaml
+  content/                   # content, grouped by workspace
+    blog/                    # workspace name
+      posts/
+        .node.yaml           # the "posts" folder node
+        getting-started.yaml # a node named "getting-started"
+        welcome/
+          .node.yaml         # the "welcome" node
+          hero.png           # a raisin:Asset child of "welcome"
+    functions/
+      lib/my-package/hello/
+        .node.yaml           # a raisin:Function node
+        index.js             # its code, stored as an asset child
+  static/                    # package assets shown in the console
+  README.md                  # shown on the package detail page
 ```
 
-## The Manifest
+Only `manifest.yaml` is required. A package can ship schema only, content only,
+or any combination.
 
-The `manifest.yaml` is the heart of every package. Here is the complete schema:
+## Scaffold a project
+
+```bash
+raisindb package init my-app --workspace blog
+```
+
+This creates a project folder with the package under `package/`, a `frontend/`
+placeholder and agent instruction files. The default template pack is
+`content-modeling`; `--pack minimal` produces a smaller tree and a root
+`package.json` with `validate`, `build`, `deploy` and `sync` scripts. Add
+`--skip-install` to skip `npm install` and the agent-skills installation.
+
+## The manifest
 
 ```yaml
-# Required fields
-name: my-package                       # Unique identifier (alphanumeric, hyphens, underscores)
-version: 1.0.0                         # Semantic version string
+name: blog-starter                     # required, [A-Za-z0-9_-]
+version: 1.0.0                         # required
+title: Blog Starter Kit
+description: Articles, categories and seed content
+author: Your Name
+license: MIT
+icon: newspaper                        # Lucide icon name, default "package"
+color: "#3B82F6"                       # default "#6366F1"
+keywords: [blog, cms]
+category: examples
 
-# Metadata (all optional)
-title: My Package                      # Human-readable display name
-description: A great package           # Brief description
-author: Your Name                      # Author or team
-license: MIT                           # License identifier
-icon: package                          # Lucide icon name for UI (default: "package")
-color: "#6366F1"                       # Hex color for UI display (default: "#6366F1")
-keywords:                              # Search keywords
-  - content
-  - starter
-category: starter                      # Package category
-builtin: false                         # If true, auto-installed on repo creation
-
-# Dependencies
-dependencies:
-  - name: base-types
-    version: ">=1.0.0"
-  - name: core-functions
-    version: ">=2.0.0"
-
-# What this package provides
 provides:
   mixins:
-    - myapp:SEO
-    - myapp:Timestamps
+    - blog:SEO
   nodetypes:
     - blog:Article
-    - blog:Category
   workspaces:
     - blog
   content:
-    - blog/welcome-post
-    - blog/getting-started
+    - blog/posts/welcome
 
-# Workspace patches (applied during install)
 workspace_patches:
-  blog:
+  functions:
+    default_folder_type: raisin:Folder
     allowed_node_types:
       add:
         - blog:Article
-        - blog:Category
-    default_folder_type: "raisin:Folder"
-
-# Sync configuration (optional)
-sync:
-  remote:
-    url: "https://raisindb.example.com"
-    repo_id: "my-project"
-    branch: "main"
-    tenant_id: "default"
-  defaults:
-    mode: replace
-    on_conflict: ask
-    sync_deletions: true
-    property_merge: shallow
 ```
 
-### Manifest Field Reference
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Package identifier. Letters, digits, hyphens and underscores. Becomes the node path under the `packages` workspace. |
+| `version` | yes | Version string, shown in listings and used for the `.rap` file name. |
+| `title`, `description`, `author`, `license`, `keywords`, `category` | no | Display metadata for the admin console. |
+| `icon`, `color` | no | Lucide icon name and hex color for the console. |
+| `builtin`, `auto_install` | no | Used by the packages embedded in the server binary. `auto_install: false` registers a built-in package without installing it into every repository. |
+| `dependencies` | no | List of `{name, version}` entries. Informational today; see [Dependencies](#dependencies). |
+| `provides` | no | Declares what the package contributes. The server reads `nodetypes`, `mixins`, `workspaces`, `content` and `mcp_servers`; other keys such as `functions` or `triggers` are accepted and ignored. |
+| `workspace_patches` | no | Changes applied to existing workspaces at install time. |
+| `sync` | no | Configuration for the export tooling. The install job does not read it; the install policy lives in `.raisin-sync.yaml`. |
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | String | Yes | Unique identifier. Alphanumeric, hyphens, underscores only. |
-| `version` | String | Yes | Semantic version (e.g., `1.0.0`). |
-| `title` | String | No | Human-readable display name. |
-| `description` | String | No | Brief description. |
-| `author` | String | No | Author or team name. |
-| `license` | String | No | License identifier (e.g., `MIT`, `Apache-2.0`). |
-| `icon` | String | No | Lucide icon name for UI. Defaults to `"package"`. |
-| `color` | String | No | Hex color code for UI. Defaults to `"#6366F1"`. |
-| `keywords` | List | No | Tags for search and discovery. |
-| `category` | String | No | Classification category. |
-| `builtin` | Boolean | No | Auto-install on new repositories when `true`. |
-| `dependencies` | List | No | Packages this package depends on. |
-| `provides` | Object | No | Declares what the package contributes. |
-| `workspace_patches` | Object | No | Workspace modifications applied during install. |
-| `sync` | Object | No | Bidirectional local↔server sync configuration (remote connection + conflict strategy), consumed by the export/local-dev tooling. **Not** the per-path install-reconciliation policy — that's a separate file, [`.raisin-sync.yaml`](#reconciling-updates-raisin-syncyaml), described below. |
+## Mixins and node types
 
-## Adding Mixins
-
-Mixins are installed **before** node types. Place YAML files in the `mixins/` directory:
+Schema files are YAML documents with a `name` and a `properties` list. Mixins
+are installed before node types so a node type can reference them.
 
 ```yaml
-# mixins/myapp_SEO.yaml
-name: myapp:SEO
-description: SEO metadata fields
+# mixins/blog_SEO.yaml
+name: blog:SEO
+title: SEO
 is_mixin: true
 properties:
   - name: meta_title
     type: String
   - name: meta_description
     type: String
-  - name: og_image
-    type: String
 ```
-
-## Adding NodeTypes
-
-Place node type definitions in the `nodetypes/` directory:
 
 ```yaml
 # nodetypes/blog_Article.yaml
 name: blog:Article
+title: Article
 description: A blog article
 mixins:
-  - myapp:SEO
-  - myapp:Timestamps
+  - blog:SEO
 properties:
   - name: title
     type: String
     required: true
   - name: body
     type: String
-    required: true
-  - name: excerpt
+  - name: status
     type: String
-  - name: category
-    type: Reference
+    default: draft
 versionable: true
-indexable: true
 ```
 
-## Adding Content
+`raisindb package validate` warns when a node type references a mixin or type
+that is neither built in nor defined in the same package.
 
-Inside `content/`, each node is a directory containing a `node.yaml` and any associated files:
+## Workspaces
+
+Each file under `workspaces/` defines one workspace. `root_structure` creates
+folders at install time.
 
 ```yaml
-# content/blog/posts/welcome-post/node.yaml
+# workspaces/blog.yaml
+name: blog
+title: Blog
+icon: newspaper
+color: "#3B82F6"
+
+allowed_node_types:
+  - raisin:Folder
+  - blog:Article
+
+allowed_root_node_types:
+  - raisin:Folder
+
+root_structure:
+  - name: posts
+    node_type: raisin:Folder
+    title: Posts
+```
+
+A workspace whose name contains a namespace, such as `raisin:access_control`,
+is spelled `_raisin__access_control` as a directory name under `content/`.
+
+## Content
+
+Content lives under `content/{workspace}/`. The directory structure is the node
+hierarchy, and the file name decides the node name:
+
+| File | Becomes |
+|------|---------|
+| `posts/.node.yaml` | the node `/posts` (a `.node.yaml` describes its own directory) |
+| `posts/getting-started.yaml` | the node `/posts/getting-started` |
+| `posts/welcome/hero.png` | a `raisin:Asset` node at `/posts/welcome/hero.png` |
+| `posts/welcome/.node.hero.png.yaml` | title, description and properties for `hero.png` |
+| `posts/welcome/.node.de.yaml` | German translation overlay for `/posts/welcome` |
+
+A node file carries the type and properties. A top-level `name:` overrides the
+name derived from the path; `properties.name` does not.
+
+```yaml
+# content/blog/posts/welcome/.node.yaml
 node_type: blog:Article
 properties:
-  title: Welcome to the Blog
-  excerpt: Your first post is ready
+  title: Welcome to the blog
+  body: Your first post is ready.
   status: published
 ```
 
-```markdown
-<!-- content/blog/posts/welcome-post/index.md -->
-# Welcome to the Blog
+A function is a `raisin:Function` node whose code sits beside it. The code file
+is installed as an asset child of the function node, and `entry_file` names it:
 
-This is your first post. Edit it to get started!
+```yaml
+# content/functions/lib/my-package/hello/.node.yaml
+node_type: raisin:Function
+properties:
+  name: hello
+  title: Hello
+  enabled: true
+  language: javascript
+  execution_mode: sync
+  entry_file: index.js:handler
 ```
 
-Associated files (code, templates, images) are stored alongside `node.yaml` and bundled automatically.
+```js
+// content/functions/lib/my-package/hello/index.js
+export function handler(input) {
+  return { greeting: `Hello, ${input.name || 'world'}` };
+}
+```
 
-## Adding Processing Rules
+After installation the two nodes exist at `/lib/my-package/hello` and
+`/lib/my-package/hello/index.js` in the `functions` workspace.
 
-`processing-rules/*.yaml` ships the routing table for uploaded binaries — which
-files get text extraction, which get a thumbnail, which are deliberately
-ignored. One file may hold a single rule or a list; prefer a list for rules that
-only make sense together, because splitting them across files hides the
-**order**, and matching is first-match-wins.
+## Processing rules
+
+`processing-rules/*.yaml` ships the rules that decide what happens to uploaded
+binaries. A file may hold one rule or a list. Rules are matched in `order`,
+first match wins, so keep rules that belong together in one file.
 
 ```yaml
 # processing-rules/assets.yaml
@@ -222,8 +233,6 @@ only make sense together, because splitting them across files hides the
     mime_type: application/pdf
   settings:
     tasks: [extract_text]
-    store_extracted_text: true
-    trigger_embedding: true
 
 - id: blog-images
   name: Images
@@ -235,222 +244,128 @@ only make sense together, because splitting them across files hides the
     tasks: [image_embedding]
 ```
 
-This exists so an application's handling of uploaded files travels with the
-application. Otherwise a package could ship the node type for its documents, the
-workspace they live in and the trigger that captions them — and still need a
-human to retype the rules into a console, or the uploads would sit unindexed
-with nothing saying why.
+Matcher types are `all`, `node_type`, `path`, `mime_type`, `workspace`,
+`property` and `combined`. Settings accept `tasks`, `chunking`, `pdf_strategy`
+and `generate_image_embedding`. Rules are installed after workspaces and before
+content, so a package's own seed assets are matched by the rules it ships.
 
-**Reinstalling never overwrites a rule id that already exists.** An operator who
-adjusted a rule on their server keeps their version across every redeploy. Note
-this differs from a workspace, which merges `allowed_node_types` additively: a
-rule's matcher and task list are one decision, and half your rule combined with
-half the operator's is a third rule neither of you wrote. To push a change,
-rename the id.
+In the default `skip` install mode a rule whose `id` already exists is left as
+the operator configured it. In `sync` or `overwrite` mode the package's version
+replaces it. See [Asset Processing](../ai/asset-processing.md) for the matcher
+forms and task names.
 
-See [Asset Processing](../ai/asset-processing.md) for the matcher forms, the
-task vocabulary, and how to check what a given server will actually run.
+## Workspace patches
 
-## Workspace Patches
-
-Patches modify workspace configurations during install — typically to register new node types:
+Patches extend workspaces the package does not define itself, typically to
+register your node types in a shared workspace such as `functions`:
 
 ```yaml
 workspace_patches:
-  blog:
-    allowed_node_types:
-      add:
-        - blog:Article
-        - blog:Category
   functions:
+    default_folder_type: raisin:Folder
     allowed_node_types:
       add:
-        - ai:Agent
-    default_folder_type: "raisin:Folder"
+        - raisin:AIAgent
 ```
 
-Patches are idempotent — applying the same patch twice does not create duplicate entries.
+Applying the same patch twice does not duplicate entries.
 
-### Reinstall behavior and existing workspaces
+### Reinstalling into existing workspaces
 
-When a package is **reinstalled**, an existing workspace is never overwritten — its live configuration is preserved. To pick up node types your package newly provides, the installer **additively merges** the `allowed_node_types` from your package's own `workspaces/<name>.yaml` into the existing workspace (add-only; it never removes a type). So for workspaces your package defines, simply listing a type in the workspace's `allowed_node_types` is enough — you do not need to duplicate it under `workspace_patches`.
+What happens to a workspace that already exists depends on the
+[install mode](./installing-packages.md#install-modes):
 
-The merge is **skipped when the workspace already allows everything** — an empty `allowed_node_types` (which means "allow all") or one containing `"*"`. In that case the new type is already permitted, and merging would silently narrow the workspace. A literal `"*"` is never merged in.
+- **`skip`** (the server default) keeps the existing workspace and only merges
+  the package's `allowed_node_types` into it, add-only. The merge is skipped when
+  the workspace already allows everything (an empty list or `"*"`), so an
+  unrestricted workspace is never narrowed.
+- **`sync`** and **`overwrite`** replace the workspace definition with the one in
+  the package. `raisindb deploy --install` uses `sync` by default and, after the
+  install, re-applies `allowed_node_types` and `allowed_root_node_types` from
+  each `workspaces/*.yaml` to workspaces that already existed.
 
-Use `workspace_patches` when you need to extend a workspace your package does **not** define itself — for example, adding your node types to another package's workspace, or a shared workspace by name.
+## Install policy: `.raisin-sync.yaml`
 
-## Reconciling Updates: .raisin-sync.yaml
+By default an install leaves existing content nodes alone, so redeploying a
+package does not clobber edits users made on the server. That is right for
+user-owned content, but a package usually also ships things that should always
+track the package: functions, configuration nodes, seed data.
 
-Install and reinstall default to **skip mode**: content nodes that already
-exist are left untouched, so a redeploy never clobbers a user's edits. That's
-the right default for user-owned content — but it also means anything your
-package treats as **platform code**, not user content (server-side functions,
-a config node, seed data that should stay in lockstep with the package), never
-refreshes on an existing install unless the operator deliberately reinstalls
-with a different [install mode](./installing-packages.md#install-modes) or you
-push it by hand with `raisindb sync --push --force`.
-
-For a package that ships updates to users who run their own installs — an
-update channel, a self-hosted instance auto-updating itself, a re-provisioning
-script — you can't rely on someone hand-running a force push every time.
-Declare the reconciliation policy in the package itself instead: drop a
-**`.raisin-sync.yaml`** file at the package root, next to `manifest.yaml`.
+A `.raisin-sync.yaml` at the package root, beside `manifest.yaml`, declares a
+per-path policy that the install job applies whatever mode the operator chose:
 
 ```yaml
-# .raisin-sync.yaml  (package root, beside manifest.yaml — NOT a field inside it)
+# .raisin-sync.yaml
 defaults:
-  mode: skip               # preserve user content by default — never clobber
+  mode: skip               # keep existing content nodes
 filters:
-  - root: /functions        # platform code the user never hand-edits
-    mode: replace            # always overwrite on update, so fixes/new fns land
+  - root: /functions       # /{workspace}{node_path} prefix
+    mode: replace          # always overwrite this subtree
 ```
 
-It rides along inside the built `.rap` automatically — the packager includes
-any file not excluded by `.gitignore`/`.rapignore`, so **don't gitignore this
-file** (see the naming collision note below).
+For each content node and binary the install touches:
 
-### How it's resolved
+1. If the operator chose `overwrite` mode, the policy is ignored and the path is
+   overwritten.
+2. Otherwise the last matching `filters` entry (by path prefix) decides. The
+   path compared is `/{workspace}{node_path}`, for example
+   `/functions/lib/my-package/hello`. With no match, `defaults.mode` applies.
+3. `skip` creates the node only if it is missing. `replace` always overwrites.
+   `merge` and `update` are accepted but defer to the operator's install mode.
 
-For every content path the install touches, the server's install job:
+The file ships inside the `.rap` automatically (it is not excluded by the
+default ignore list), and the uploaded package node gets a `sync_policy`
+property summarising it. The admin console shows a policy badge on such
+packages, and the [dry run](./installing-packages.md#preview-an-install-dry-run)
+annotates each path with the rule that decided its outcome:
 
-1. If the operator explicitly chose **`overwrite`** mode, `.raisin-sync.yaml`
-   is ignored entirely and that path is overwritten — the clean-reset escape
-   hatch always wins.
-2. Otherwise, it finds the **last** matching entry in `filters` by path prefix
-   (the prefix is `/{workspace}{node_path}`, e.g. `/functions/lib/notify`) and
-   uses its `mode`. No filter matches → `defaults.mode` applies.
-3. `mode: skip` never touches an existing node at that path (create only if
-   missing). `mode: replace` always overwrites it, regardless of the
-   operator's chosen install mode. `merge` and `update` also parse but aren't
-   specially handled today — they fall through to whichever install mode the
-   operator chose, so use `skip`/`replace` when you need an actual guarantee.
-
-Keep `defaults` conservative (`skip`) and carve out only the paths you
-consider platform-owned as `replace` — typically `/functions`, and any
-configuration content your package manages exclusively.
-
-### See it before you ship it
-
-The [dry-run preview](./installing-packages.md#preview-an-install-dry-run)
-annotates every affected path with *why* it will be created, updated, or
-skipped whenever `.raisin-sync.yaml` (not the chosen install mode) decided the
-outcome. A package that ships one also shows a "Custom Sync Policy" badge on
-its list/detail page in the admin console — hover it for the default mode and
-every filter — so you can confirm the policy landed without doing a real
-install.
-
-### Don't confuse it with the other `.raisin-sync.yaml`
-
-The `raisindb sync` CLI command also reads a file named `.raisin-sync.yaml` —
-but from your **local checkout**, not the package root inside a `.rap`. That
-one is connection config (server URL, repo, branch, ignore patterns) for the
-local↔server live-push workflow described in
-[Sync and Watch](./sync-and-watch.md), and the CLI always excludes it from
-what it pushes/packages. Same filename, same package-root location, entirely
-different purpose from the install-reconciliation file above — and if your
-project's `.gitignore` excludes the local connection-config version (common,
-since it can carry a server URL), double-check it isn't also swallowing the
-install-policy one. Verify what actually got packaged with:
-
-```bash
-unzip -l my-package-1.0.0.rap | grep raisin-sync
+```
+create content /posts/welcome            | package sync policy: skip (default)
+create content /lib/my-package/hello     | package sync policy: replace (filter '/functions')
 ```
 
-It's also unrelated to the manifest's own `sync:` field (in the field
-reference above) — that one configures the same bidirectional local↔server
-sync tooling, embedded in `manifest.yaml` instead of a local file.
+Check that the file was packaged with `unzip -l my-package-1.0.0.rap`.
+
+:::note A different file with a similar name
+The CLI's local sync configuration is `.raisindb-cli.yaml` (see
+[Sync and Watch](./sync-and-watch.md)). Older CLI versions wrote it as
+`.raisin-sync.yaml`; the current CLI still reads that name, but only when the
+file has a `server` field, so an install policy is never mistaken for it.
+:::
 
 ## Dependencies
 
-Packages can depend on other packages. Dependencies are resolved in topological order using Kahn's algorithm:
+The install job installs nested packages first: any `.rap` placed under
+`dependencies/` or `packages/` inside your package is installed before the
+outer package, up to three levels deep, and each nested package applies its own
+`.raisin-sync.yaml`.
 
-```yaml
-dependencies:
-  - name: core-functions
-    version: ">=1.0.0"
-  - name: base-types
-    version: ">=2.0.0"
-```
+The `dependencies` list in the manifest is parsed and shown, but the server does
+not resolve it against installed packages. Ship what you depend on as a nested
+`.rap`, or install it first.
 
-RaisinDB detects circular dependencies and reports the exact cycle:
-
-```
-Circular dependency detected:
-  > A → B → C → A (cycle)
-
-To resolve: Remove one of these dependency relationships.
-```
-
-## Build and Upload
-
-### Build the Package
+## Build and upload
 
 ```bash
-raisindb package create ./my-package
-# Output: my-package-1.0.0.rap
-```
-
-### Upload to a Repository
-
-```bash
+raisindb package validate ./my-package        # schema + flow checks, no file written
+raisindb package create ./my-package          # writes my-package-1.0.0.rap
 raisindb package upload my-package-1.0.0.rap --repo myapp
+raisindb package install my-package --repo myapp
 ```
 
-### Inspect Before Installing
+`package create` validates first and refuses to build on errors. Files matched
+by `.gitignore`, `.rapignore` or the built-in ignore list (`node_modules`,
+`target`, `.env*`, editor files) are left out. `raisindb deploy ./my-package
+--repo myapp --install` does all four steps in one go.
 
-```bash
-raisindb package inspect my-package-1.0.0.rap
-```
+To inspect a built archive, list it with `unzip -l`, or upload it and browse it
+in the admin console or with
+`GET /api/packages/{repo}/main/head/{name}/raisin:browse`.
 
-Lists the manifest, included node types, mixins, content nodes, and file counts.
+## Environment-specific values
 
-## Example: Blog Starter Kit
-
-A complete package for bootstrapping a blog:
-
-```yaml
-# manifest.yaml
-name: blog-starter
-version: 1.0.0
-title: Blog Starter Kit
-description: Complete blog setup with articles, categories, and seed content
-author: RaisinDB Team
-icon: newspaper
-color: "#3B82F6"
-keywords: [blog, cms, content]
-category: starter
-
-dependencies:
-  - name: base-types
-    version: ">=1.0.0"
-
-provides:
-  mixins:
-    - blog:Publishable
-  nodetypes:
-    - blog:Article
-    - blog:Category
-    - blog:Author
-  workspaces:
-    - blog
-  content:
-    - blog/welcome-post
-    - blog/getting-started
-
-workspace_patches:
-  blog:
-    allowed_node_types:
-      add:
-        - blog:Article
-        - blog:Category
-        - blog:Author
-```
-
-## Environment-Specific Values
-
-Any value that differs between dev, staging and production — a preview server
-URL, a public domain — belongs in an `{env:...}` token rather than in the YAML
-literally:
+Values that differ between dev, staging and production belong in `{env:...}`
+tokens rather than in the YAML literally:
 
 ```yaml
 properties:
@@ -458,13 +373,12 @@ properties:
   dev_url: "{env:PREVIEW_SERVER:-http://localhost:5173}"
 ```
 
-The CLI resolves these from your shell or a `.env` file when the package is
-built, validated or pushed, so one source tree builds for every environment.
-See [Environment Variables](./environment-variables.md).
+The CLI resolves them from your shell or a `.env` file when the package is
+validated, built or pushed. See [Environment Variables](./environment-variables.md).
 
-## Next Steps
+## Next steps
 
-- [Installing Packages](./installing-packages.md) — Install packages into repositories
-- [Built-in Packages](./builtin-packages.md) — Packages that ship with RaisinDB
-- [Sync and Watch](./sync-and-watch.md) — Live development workflow
-- [Environment Variables](./environment-variables.md) — `{env:...}` substitution in package YAML
+- [Installing Packages](./installing-packages.md)
+- [Built-in Packages](./builtin-packages.md)
+- [Sync and Watch](./sync-and-watch.md)
+- [Environment Variables](./environment-variables.md)

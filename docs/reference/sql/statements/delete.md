@@ -4,314 +4,102 @@ sidebar_position: 4
 
 # DELETE Statement
 
-The DELETE statement removes nodes from RaisinDB. By default, DELETE performs a soft delete (the node is marked as deleted but can be restored). Use `PURGE` for a permanent hard delete.
-
-:::info Workspace = Table Name
-The table name in DELETE refers to the **workspace name**. For example, `DELETE FROM products` removes nodes from the `products` workspace.
-:::
+`DELETE` removes nodes from a workspace. Deleting a node also removes everything under it.
 
 ## Syntax
 
 ```sql
-DELETE FROM workspace_name
-[ WHERE condition ]
-
--- Hard delete (permanent, cannot be restored)
-DELETE FROM workspace_name
-[ WHERE condition ]
-PURGE
+DELETE FROM 'workspace'
+WHERE condition
 ```
 
-## Basic DELETE
+The table name is the workspace. A `WHERE` clause is required; `DELETE FROM 'blog'` on its own is rejected with `DELETE requires a WHERE clause`. There is no `PURGE` or `USING`.
 
-Delete a specific node by ID:
+<!-- TODO(sql-ext): fill from engine report (RETURNING) -->
+
+## Delete one node
 
 ```sql
-DELETE FROM default
-WHERE id = '01HQ3K9V5NWCR3KXM2Y7P8G6ZT';
+DELETE FROM 'blog' WHERE path = '/t2';
 ```
 
-Delete by path:
+```json
+{"columns":["affected_rows"],"rows":[{"affected_rows":1}],"row_count":1,"execution_time_ms":2}
+```
+
+By id:
 
 ```sql
-DELETE FROM default
-WHERE path = '/content/blog/old-post';
+DELETE FROM 'blog' WHERE id = '11111111-2222-4333-8444-555555555555';
 ```
 
-## PURGE
+Deleting a node that does not exist is not an error; `affected_rows` is `0`.
 
-By default, DELETE performs a soft delete. Add `PURGE` to permanently remove the node:
+## Subtrees
+
+A node's descendants go with it. Deleting the `/news` folder that holds four pages removes five nodes:
 
 ```sql
--- Soft delete (can be restored)
-DELETE FROM default
-WHERE path = '/content/blog/old-post';
-
--- Hard delete (permanent)
-DELETE FROM default
-WHERE path = '/content/blog/old-post'
-PURGE;
+DELETE FROM 'blog' WHERE path = '/news';
 ```
 
-## WHERE Clause
+```json
+{"columns":["affected_rows"],"rows":[{"affected_rows":5}],"row_count":1,"execution_time_ms":8}
+```
 
-The WHERE clause specifies which rows to delete.
-
-### Delete with Simple Condition
+To remove only the children and keep the folder, select them with a hierarchy predicate (this runs as a job, see below):
 
 ```sql
-DELETE FROM default
-WHERE properties->>'status' = 'draft';
+DELETE FROM 'blog' WHERE CHILD_OF('/news');
 ```
 
-### Delete with Multiple Conditions
+## How the WHERE clause is executed
+
+`WHERE id = '...'` and `WHERE path = '...'` (a literal or a bound parameter) are point deletes and complete in the request. `EXPLAIN` confirms it:
+
+```
+=== DELETE Plan ===
+Target workspace: blog
+Strategy: fast path
+PathIndexLookup: path='/x' (O(1) point write)
+```
+
+Any other predicate is planned as a bulk operation and queued as a job. The statement returns at once with the job id:
 
 ```sql
-DELETE FROM default
-WHERE properties->>'status' = 'draft'
-  AND created_at < '2023-01-01';
+DELETE FROM 'blog' WHERE PATH_STARTS_WITH(path, '/t');
 ```
 
-### Delete with NULL Check
-
-```sql
-DELETE FROM default
-WHERE properties->>'description' IS NULL
-  AND properties->>'status' = 'draft';
+```json
+{"columns":["job_id","status","message"],"rows":[{"job_id":"QMrZF1vwojmJlqWdkXVDj","status":"accepted","message":"Bulk operation started. Poll /api/jobs/{job_id} for status."}],"row_count":1,"execution_time_ms":0}
 ```
 
-### Delete with Comparison
+Poll `GET /management/jobs/{job_id}` until `data` is `Completed`. A bulk delete whose predicate matches nothing is still accepted as a job and completes with no changes.
 
-```sql
-DELETE FROM default
-WHERE created_at < NOW() - INTERVAL '1 year';
-```
-
-## Hierarchical Deletion
-
-Delete nodes based on path hierarchy:
-
-```sql
--- Delete specific node
-DELETE FROM default
-WHERE path = '/content/blog/old-post';
-
--- Delete all children of a path
-DELETE FROM default
-WHERE CHILD_OF(path, '/content/temp');
-
--- Delete all descendants (recursively)
-DELETE FROM default
-WHERE DESCENDANT_OF(path, '/content/archive');
-
--- Delete nodes at specific depth
-DELETE FROM default
-WHERE DEPTH(path) > 5;
-
--- Delete by path prefix
-DELETE FROM default
-WHERE PATH_STARTS_WITH(path, '/content/drafts/');
-```
-
-## Delete with Pattern Matching
-
-```sql
--- Delete by LIKE pattern on property
-DELETE FROM default
-WHERE properties->>'title' LIKE 'Test%';
-
--- Delete by property suffix
-DELETE FROM default
-WHERE properties->>'slug' LIKE '%-backup';
-```
-
-## Delete with Subquery
-
-```sql
--- Delete based on subquery
-DELETE FROM default
-WHERE properties->>'category_id' IN (
-    SELECT id FROM nodes
-    WHERE node_type = 'Category'
-      AND properties->>'archived' = 'true'
-);
-
--- Delete with NOT EXISTS
-DELETE FROM nodes t
-WHERE t.node_type = 'Tag'
-  AND NOT EXISTS (
-    SELECT 1 FROM nodes a
-    WHERE a.node_type = 'Article'
-      AND a.properties->'tags' @> TO_JSON(t.properties->>'name')
-  );
-```
-
-## Delete Multiple Rows
-
-Delete all rows matching condition:
-
-```sql
-DELETE FROM default
-WHERE properties->>'status' IN ('draft', 'pending', 'rejected');
-```
-
-## Delete All Rows
-
-Delete without WHERE removes all rows (use with caution):
-
-```sql
--- Deletes everything from workspace
-DELETE FROM temp_data;
-```
-
-## Delete with Time-Based Filters
-
-```sql
--- Delete old nodes
-DELETE FROM default
-WHERE created_at < NOW() - INTERVAL '90 days';
-
--- Delete by specific date
-DELETE FROM default
-WHERE created_at < '2024-01-01';
-
--- Delete by timestamp range
-DELETE FROM default
-WHERE created_at BETWEEN '2023-01-01' AND '2023-12-31';
-```
-
-## Delete with JSON Conditions
-
-```sql
--- Delete based on JSON field
-DELETE FROM default
-WHERE properties->>'discontinued' = 'true';
-
--- Delete based on containment
-DELETE FROM default
-WHERE properties @> '{"temporary": true}';
-```
-
-## Delete with Geospatial Filters
-
-```sql
--- Delete points outside area
-DELETE FROM default
-WHERE NOT ST_WITHIN(
-    properties->'location',
-    ST_GEOMFROMGEOJSON('{"type":"Polygon","coordinates":[...]}')
-);
-
--- Delete points far from center
-DELETE FROM default
-WHERE ST_DISTANCE(properties->'location', ST_POINT(-122.4194, 37.7749)) > 10000;
-```
-
-## Delete with Full-Text Match
-
-```sql
-DELETE FROM default
-WHERE search_vector @@ TO_TSQUERY('deprecated & content');
-```
-
-## Delete with Aggregation (via Subquery)
-
-```sql
--- Delete duplicates, keeping newest
-DELETE FROM default p1
-WHERE EXISTS (
-    SELECT 1 FROM default p2
-    WHERE p2.properties->>'slug' = p1.properties->>'slug'
-      AND p2.created_at > p1.created_at
-);
-```
+Predicates that work in the bulk path are the ones `SELECT` accepts: property comparisons, `LIKE`, `IN (...)`, `DESCENDANT_OF`, `CHILD_OF`, `PATH_STARTS_WITH`, `DEPTH(path)`, `node_type = ...`, timestamps compared against a cast literal, and `AND` / `OR` combinations of them. A subquery in `WHERE id = (SELECT ...)` is not accepted. Run the same predicate as a `SELECT` first when you want to see what a bulk delete will remove.
 
 ## Examples
 
-### Delete Single Node
-
 ```sql
-DELETE FROM default
-WHERE id = '01HQ3K9V5NWCR3KXM2Y7P8G6ZT';
-```
-
-### Delete Old Drafts
-
-```sql
-DELETE FROM default
+-- Drafts older than a date (bulk job)
+DELETE FROM 'blog'
 WHERE properties->>'status' = 'draft'
-  AND created_at < NOW() - INTERVAL '30 days';
+  AND created_at < '2025-01-01T00:00:00Z'::TIMESTAMPTZ;
+
+-- Everything flagged temporary (bulk job)
+DELETE FROM 'blog' WHERE properties @> '{"temporary": true}';
+
+-- Deep nodes of one type (bulk job)
+DELETE FROM 'blog' WHERE DEPTH(path) > 3 AND node_type = 'raisin:Asset';
+
+-- Bound parameter (fast path)
+-- {"sql": "DELETE FROM 'blog' WHERE path = $1", "params": ["/news/old"]}
 ```
 
-### Delete Entire Hierarchy Branch
+## Targeting a branch
 
-```sql
-DELETE FROM default
-WHERE DESCENDANT_OF(path, '/content/deprecated')
-   OR path = '/content/deprecated';
-```
+`WHERE __branch = 'staging' AND path = '/draft'` deletes on another branch; the `__branch` predicate selects the branch and is not part of the filter.
 
-### Delete Unpublished Content
+## After a delete
 
-```sql
-DELETE FROM default
-WHERE properties->>'status' IN ('draft', 'pending')
-  AND created_at < '2023-01-01'
-  AND (properties->>'view_count')::int = 0;
-```
-
-### Delete Based on JSON Properties
-
-```sql
-DELETE FROM default
-WHERE properties->>'discontinued' = 'true'
-  AND updated_at < NOW() - INTERVAL '180 days';
-```
-
-### Hard Delete Test Data
-
-```sql
-DELETE FROM default
-WHERE PATH_STARTS_WITH(path, '/test/')
-   OR properties @> '{"test": true}'
-PURGE;
-```
-
-### Delete by Multiple Criteria
-
-```sql
-DELETE FROM default
-WHERE (properties->>'status' = 'cancelled' OR properties->>'status' = 'expired')
-  AND (properties->>'attendee_count')::int = 0;
-```
-
-### Delete with Complex Hierarchy Logic
-
-```sql
-DELETE FROM default
-WHERE DEPTH(path) > 3
-  AND NOT PATH_STARTS_WITH(path, '/content/important/')
-  AND node_type = 'TemporaryNode';
-```
-
-## Cascading Deletes
-
-RaisinDB handles cascading deletes based on reference relationships:
-
-```sql
--- Deleting a parent may cascade to children
--- depending on reference configuration
-DELETE FROM default
-WHERE id = '01HQ3K9V5NWCR3KXM2Y7P8G6ZT';
-```
-
-## Notes
-
-- DELETE without `PURGE` performs a soft delete (node can be restored)
-- DELETE with `PURGE` is permanent and cannot be undone
-- Deleting a node may affect references from other nodes
-- System columns are automatically removed with the node
-- DELETE without WHERE removes all rows from the workspace
-- Failed deletes (constraint violations) will roll back
-- Use transactions for complex delete operations
-- Hierarchical deletes may affect multiple levels
+A deleted node no longer resolves by path or id, and `RESTORE NODE path='...' TO REVISION HEAD~1` answers `not found` for it: `RESTORE` rewinds a live node to an earlier revision, it does not undelete. To keep a safety net, do the deletion on a branch and merge it, or copy the subtree first with [`COPY`](./graph-dml.md).

@@ -4,47 +4,44 @@ sidebar_position: 1
 
 # Installation & Setup
 
-Get RaisinDB up and running in your development environment.
+Get RaisinDB running in your development environment.
 
 ## Quick Start
 
 ```bash
-npm install -g @raisindb/cli   # Install the CLI
-raisindb server start           # Download & start server
-raisindb login                  # Authenticate (opens browser)
-raisindb package init my-app    # Scaffold project + install types + agent skills
+npm install -g @raisindb/cli   # install the CLI
+raisindb server start           # download the server binary and start it
+raisindb login                  # authenticate (browser flow)
+raisindb package init my-app    # scaffold a project + install types + agent skills
 ```
 
-This gets you a running server, authenticated CLI, and a project ready for AI-assisted development. See the [Quick Start tutorial](/docs/tutorials/quickstart) for the full walkthrough.
+This gives you a running server, an authenticated CLI, and a project ready for development. See the [Quick Start tutorial](/docs/tutorials/quickstart) for the full walkthrough.
 
 ## Installation Options
 
-### CLI (Recommended)
+### CLI (recommended)
 
-The RaisinDB CLI downloads and manages the server binary automatically:
+The CLI downloads and manages the server binary:
 
 ```bash
-# Install the CLI
 npm install -g @raisindb/cli
 
-# Download and start the server
-raisindb server start
-
-# Or install the binary separately
-raisindb server install
-
-# Update to the latest version
-raisindb server update
-
-# Check installed version
-raisindb server version
+raisindb server start      # downloads the binary on first use, then starts it
+raisindb server install    # only download/install the binary
+raisindb server update     # update to the latest release
+raisindb server version    # show the installed server version
+raisindb server status     # health check of the running server
+raisindb server logs       # tail ~/.raisindb/server.log
+raisindb server stop
 ```
 
-The server binary is cached in `~/.raisindb/bin/` and verified with SHA256 checksums.
+The binary is cached in `~/.raisindb/bin/` and verified against the release's `SHA256SUMS`. The server's log goes to `~/.raisindb/server.log`, and data goes to `./.data/rocksdb` relative to where you ran `server start`.
 
-### Binary Download
+`raisindb server start` runs the binary in development mode (`--dev-mode`), which supplies insecure defaults for the JWT and signing secrets so you can start without configuring any, and turns on the PostgreSQL listener (the binary itself leaves it off unless told otherwise). Use `--production` when you have set the secrets described under [Production secrets](#production-secrets).
 
-Download pre-built binaries directly from [GitHub Releases](https://github.com/maravilla-labs/raisindb/releases):
+### Binary download
+
+Download pre-built binaries from [GitHub Releases](https://github.com/maravilla-labs/raisindb/releases):
 
 ```bash
 # macOS (Apple Silicon)
@@ -54,246 +51,207 @@ sudo mv raisindb-*/raisindb /usr/local/bin/
 
 # macOS (Intel)
 curl -LO https://github.com/maravilla-labs/raisindb/releases/latest/download/raisindb-latest-x86_64-apple-darwin.tar.gz
-tar xzf raisindb-latest-x86_64-apple-darwin.tar.gz
-sudo mv raisindb-*/raisindb /usr/local/bin/
 
 # Linux (x64)
 curl -LO https://github.com/maravilla-labs/raisindb/releases/latest/download/raisindb-latest-x86_64-unknown-linux-gnu.tar.gz
-tar xzf raisindb-latest-x86_64-unknown-linux-gnu.tar.gz
-sudo mv raisindb-*/raisindb /usr/local/bin/
 
-# Windows (x64) — download the .zip from GitHub Releases
-# https://github.com/maravilla-labs/raisindb/releases
+# Windows (x64): download the .zip from the releases page
 ```
 
-### Build from Source
+### Build from source
 
 ```bash
-# Prerequisites: Rust 1.89+
 git clone https://github.com/maravilla-labs/raisindb.git
 cd raisindb
-
-# Build server
 cargo build --release --package raisin-server --features "storage-rocksdb,websocket,pgwire"
-
-# Binary will be at target/release/raisin-server
+# binary: target/release/raisin-server
 ```
 
-## Configuration
+## Starting the server
 
-Create a configuration file at `~/.config/raisindb/config.toml`:
+### With the CLI
+
+```bash
+raisindb server start                         # dev mode, HTTP on 8080, pgwire on 5432
+raisindb server start --port 8081 --pgwire-port 5433
+raisindb server start --config ./raisindb.toml  # the file's [pgwire] section decides pgwire
+raisindb server start --production            # requires JWT_SECRET and RAISINDB_SIGNING_SECRET
+raisindb server start --detach                # run in the background
+raisindb server start --verbose               # show server logs in the terminal
+```
+
+### With the binary directly
+
+```bash
+raisin-server --dev-mode
+raisin-server --config ./raisindb.toml
+raisin-server --port 8081 --data-dir /var/lib/raisindb --pgwire-enabled true --pgwire-port 5432
+```
+
+Every flag has an environment variable equivalent; CLI flags override the config file:
+
+| Flag | Environment variable | Default |
+|------|----------------------|---------|
+| `--config <path>` | `RAISIN_CONFIG` | none |
+| `--port <port>` | `RAISIN_PORT` | `8080` |
+| `--bind-address <addr>` | `RAISIN_BIND_ADDRESS` | `127.0.0.1` |
+| `--data-dir <path>` | `RAISIN_DATA_DIR` | `./.data/rocksdb` |
+| `--initial-admin-password <pw>` | `RAISIN_ADMIN_PASSWORD` | generated on first start |
+| `--pgwire-enabled true` | `RAISIN_PGWIRE_ENABLED` | `false` |
+| `--pgwire-port <port>` | `RAISIN_PGWIRE_PORT` | `5432` |
+| `--pgwire-bind-address <addr>` | `RAISIN_PGWIRE_BIND_ADDRESS` | `127.0.0.1` |
+| `--pgwire-max-connections <n>` | `RAISIN_PGWIRE_MAX_CONNECTIONS` | `100` |
+| `--dev-mode` | `RAISIN_DEV_MODE` | off |
+| `--cluster-node-id`, `--replication-port`, `--replication-peers` | `RAISIN_CLUSTER_NODE_ID`, `RAISIN_REPLICATION_PORT`, `RAISIN_REPLICATION_PEERS` | replication off |
+
+Logging is controlled by `RUST_LOG` (default `info`). The full config file format is in the [Configuration Reference](/docs/reference/configuration).
+
+## Configuration file
+
+A minimal `raisindb.toml`:
 
 ```toml
 [server]
-host = "0.0.0.0"
-http_port = 8080
-pgwire_port = 5432
+port = 8080
+bind_address = "127.0.0.1"
+data_dir = "./.data/rocksdb"
+anonymous_enabled = true                     # unauthenticated requests get the "anonymous" role
+cors_allowed_origins = ["http://localhost:5173"]
 
-[storage]
-type = "rocksdb"
-path = "/var/lib/raisindb/data"
-
-[auth]
-mode = "password"  # Options: "password", "api_key", "oidc", "none"
-secret_key = "your-secret-key-here"
-
-[tenants.default]
+[pgwire]
 enabled = true
+port = 5432
 ```
 
-## Starting the Server
+## Production secrets
 
-### Using the CLI (recommended):
+Outside `--dev-mode` the server refuses to start unless these are set:
 
-```bash
-raisindb server start
-# Or with options:
-raisindb server start --config ~/.config/raisindb/config.toml
-raisindb server start --port 8081 --pgwire-enabled true
-```
+| Variable | Purpose |
+|----------|---------|
+| `JWT_SECRET` | Signs admin and identity tokens |
+| `RAISINDB_SIGNING_SECRET` | Signs short-lived asset URLs |
+| `RAISIN_MASTER_KEY` | Encrypts stored secrets and credentials (an all-zero dev key is used in dev mode) |
 
-### Using the binary directly:
+## First steps
 
-```bash
-raisin-server --config ~/.config/raisindb/config.toml
-```
-
-### Using environment variables:
-
-```bash
-export RAISINDB_HTTP_PORT=8080
-export RAISINDB_PGWIRE_PORT=5432
-export RAISINDB_STORAGE_PATH=/var/lib/raisindb/data
-raisin-server
-```
-
-## CLI Tools
-
-The CLI provides authentication, package management, and development tools:
-
-```bash
-# Authentication
-raisindb login                          # Authenticate (opens browser)
-raisindb logout                         # Clear authentication
-
-# Non-interactive (CI): username/password, a token, or env vars
-raisindb login --server https://db.example.com --username admin --password "$PASSWORD"
-raisindb login --server https://db.example.com --token "$TOKEN"
-# or: export RAISINDB_SERVER=... RAISINDB_TOKEN=...   (wins over .raisinrc)
-
-# Project scaffolding
-raisindb package init my-app            # Create project with types + skills
-
-# Package management
-raisindb package deploy ./package       # Validate + build + upload
-raisindb package sync ./package --watch # Live sync during development
-raisindb package create ./package --check # Validate only
-
-# Interactive shell
-raisindb shell
-```
-
-See the [CLI Reference](/docs/reference/cli/commands) for all commands and options.
-
-## First Steps
-
-### 1. Verify the Server is Running
+### 1. Check the server
 
 ```bash
 curl http://localhost:8080/health
+# ok
 ```
 
-Expected response:
+### 2. Log in and get a token
+
+```bash
+curl -s -X POST http://localhost:8080/api/raisindb/sys/default/auth \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"<generated password>"}'
+```
+
 ```json
 {
-  "status": "healthy",
-  "version": "0.1.0"
+  "token": "eyJ0eXAiOiJKV1QiLCJhbGc...",
+  "user_id": "b86457ac-...",
+  "username": "admin",
+  "must_change_password": true,
+  "expires_at": 1788805990,
+  "access_flags": { "console_login": true, "cli_access": true, "api_access": true, "pgwire_access": false, "can_impersonate": false }
 }
 ```
 
-### 2. Create Your First Repository
+`default` is the tenant. Send the token as `Authorization: Bearer <token>` on every request.
 
-Using the HTTP API:
+### 3. Create a repository
 
 ```bash
 curl -X POST http://localhost:8080/api/repositories \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{
-    "repository_id": "myapp",
-    "description": "My first RaisinDB repository"
-  }'
+  -d '{"repo_id":"myapp","description":"My first repository"}'
 ```
 
-### 3. Connect via PostgreSQL
+Or with the CLI: `raisindb repo create myapp`.
+
+### 4. Change the admin password
 
 ```bash
-psql -h localhost -p 5432 -U admin -d default/myapp
+curl -X POST http://localhost:8080/api/raisindb/sys/default/auth/change-password \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"old_password":"<generated>","new_password":"<new password>"}'
 ```
 
-When prompted, enter the default password: `admin`
+### 5. Create an API key
 
-### 4. Install JavaScript Client
+API keys are long-lived credentials for scripts, drivers and `psql`. They are created for the logged-in admin user and are shown once:
 
-For application development:
+```bash
+curl -X POST http://localhost:8080/api/raisindb/me/api-keys \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"local-dev"}'
+```
+
+```json
+{
+  "key": { "key_id": "047b191d-...", "name": "local-dev", "key_prefix": "raisin_DV2vMEwAg", "created_at": "...", "last_used_at": null, "is_active": true },
+  "token": "raisin_DV2vMEwAg6tuRqDoLbx0z8f2wrupeB4e"
+}
+```
+
+Use the `token` value as a bearer token on content, query and SQL endpoints, and as the `psql` password. See [Authentication API](/docs/reference/http-api/authentication).
+
+### 6. Install the JavaScript client
 
 ```bash
 npm install @raisindb/client
 ```
 
-## Authentication Setup
-
-### Password Authentication (Development)
-
-Default credentials:
-- Username: `admin`
-- Password: `admin`
-
-**Change the admin password immediately:**
+## CLI overview
 
 ```bash
-curl -X POST http://localhost:8080/api/raisindb/sys/default/auth/change-password \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -d '{
-    "old_password": "admin",
-    "new_password": "your-secure-password"
-  }'
+raisindb login                          # browser flow against http://localhost:8080
+raisindb login --server https://db.example.com --username admin --password "$PASSWORD"
+raisindb login --server https://db.example.com --token "$TOKEN"
+raisindb logout
+# The CLI also reads RAISINDB_SERVER, RAISINDB_REPO and RAISINDB_TOKEN, which take
+# precedence over .raisinrc.
+
+raisindb package init my-app            # scaffold a project
+raisindb package create ./package --check   # validate only
+raisindb package create ./package       # build a .rap file
+raisindb package deploy ./package -r myapp --install   # validate + build + upload (+ install)
+raisindb package sync ./package --watch # live sync during development
+raisindb repo create myapp
+raisindb shell                          # interactive SQL shell
 ```
 
-### API Key Authentication (Production)
-
-Generate an API key:
-
-```bash
-curl -X POST http://localhost:8080/api/raisindb/me/api-keys \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -d '{
-    "name": "production-key",
-    "expires_at": "2025-12-31T23:59:59Z"
-  }'
-```
-
-Use the API key in requests:
-
-```bash
-curl http://localhost:8080/api/repositories \
-  -H "X-API-Key: your-api-key"
-```
-
-### OIDC Authentication (Enterprise)
-
-Configure in `config.toml`:
-
-```toml
-[auth.oidc]
-enabled = true
-provider = "google"  # or "okta", "azure", "keycloak"
-client_id = "your-client-id"
-client_secret = "your-client-secret"
-issuer_url = "https://accounts.google.com"
-```
-
-## Environment Variables Reference
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `RAISINDB_HTTP_PORT` | HTTP API port | `8080` |
-| `RAISINDB_PGWIRE_PORT` | PostgreSQL protocol port | `5432` |
-| `RAISINDB_STORAGE_PATH` | Data storage directory | `/var/lib/raisindb/data` |
-| `RAISINDB_TENANT_ID` | Default tenant ID | `default` |
-| `RAISINDB_AUTH_MODE` | Authentication mode | `password` |
-| `RAISINDB_LOG_LEVEL` | Logging level | `info` |
+See the [CLI Reference](/docs/reference/cli/commands) for all commands and options.
 
 ## Troubleshooting
 
-### Port Already in Use
+### Port already in use
 
-If ports 8080 or 5432 are occupied:
+`raisindb server start` tries to free port 8080 itself. To run on other ports use `raisindb server start --port 8081 --pgwire-port 5433`, or run the binary with `--port` / `--pgwire-port`.
+
+### Storage permission denied
+
+Make the data directory writable by the user running the server:
 
 ```bash
-# Use different ports
-raisindb server start --port 8081 --pgwire-port 5433
+sudo mkdir -p /var/lib/raisindb
+sudo chown -R $USER /var/lib/raisindb
+raisin-server --data-dir /var/lib/raisindb
 ```
 
-### Storage Permission Denied
-
-Ensure the data directory is writable:
+### Connection refused
 
 ```bash
-sudo mkdir -p /var/lib/raisindb/data
-sudo chown -R $USER:$USER /var/lib/raisindb
-```
-
-### Connection Refused
-
-Check if the server is running:
-
-```bash
-# Check HTTP API
-curl http://localhost:8080/health
-
-# Check PostgreSQL
-nc -zv localhost 5432
+curl http://localhost:8080/health      # HTTP
+nc -zv localhost 5432                  # pgwire
+raisindb server logs
 ```
 
 ## Next Steps

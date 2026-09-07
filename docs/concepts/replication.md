@@ -4,109 +4,110 @@ sidebar_position: 12
 
 # Replication
 
-RaisinDB uses operation-based CRDTs (Conflict-free Replicated Data Types) for masterless multi-master replication. Any node in a cluster can accept writes, and all nodes converge to identical state without coordination.
+RaisinDB replicates between servers as a masterless cluster. Every node accepts reads and writes, ships its writes to its peers as operations, and applies the operations it receives. There is no leader and no election; a node that loses its peers keeps serving and catches up when they return.
 
-## How It Works
+## How it works
 
-Every mutation in RaisinDB is recorded as an **operation** — a self-contained, replayable unit. Operations are streamed between cluster nodes and applied in causal order:
+Each write is captured as an **operation** and appended to a local operation log. Operations are streamed to peers over a dedicated TCP port, and each peer applies them to its own storage. An operation carries the tenant, repository and branch it belongs to, the originating node's id, a wall-clock timestamp, and a vector clock.
 
-```
-Node A: Write "title = Hello"  →  Operation sent to B, C
-Node B: Write "status = published"  →  Operation sent to A, C
-Node C: Receives both operations  →  Applies in causal order  →  Converges
-```
+Most content writes travel as an `apply_revision` operation: the full node snapshots a commit produced, together with the branch head after the commit. Schema (NodeTypes, archetypes, element types, workspaces), branches, tags, revision metadata, users, permissions, secrets and API keys are replicated as records of their own kind. Everything derived from those records is rebuilt on each node locally rather than shipped: full-text, spatial, reference and vector indexes are recomputed on every replica from the replicated nodes.
 
-There is no leader election and no consensus protocol. Every node accepts reads and writes at all times.
-
-## Vector Clocks
-
-Vector clocks track causal dependencies between operations. Each cluster node maintains a counter, and the vector clock is a map from node ID to counter value:
-
-```
-Node A writes  →  clock: {A: 1}
-Node A writes  →  clock: {A: 2}
-Node B writes  →  clock: {B: 1}
-Node B receives A's ops  →  clock: {A: 2, B: 1}
-```
-
-Comparing two vector clocks yields one of four results:
-
-| Result | Meaning |
-|--------|---------|
-| **Before** | This clock happened before the other (causal predecessor) |
-| **After** | This clock happened after the other (causal successor) |
-| **Concurrent** | Neither happened before the other (potential conflict) |
-| **Equal** | The clocks are identical |
-
-## CRDT Merge Strategies
-
-Different data types use different CRDT strategies for automatic conflict resolution:
-
-### Properties: Last-Write-Wins (LWW)
-
-When two nodes concurrently update the same property, the winner is determined by:
-
-1. **Vector clock** — Causal ordering takes priority
-2. **Timestamp** — Wall-clock time breaks ties between concurrent operations
-3. **Node ID** — Deterministic string comparison as final tiebreaker
-
-This guarantees every node converges to the same value, even under concurrent writes.
-
-### Relations: Last-Write-Wins
-
-Relationship edges (created with `RELATE`) use LWW. Relations are identified by a composite key `(source_id, target_id, relation_type)`, and only one relation of a given type can exist between two nodes.
-
-### Ordered Lists: RGA
-
-Ordered lists use the Replicated Growable Array (RGA) algorithm with tombstones. Concurrent insertions and deletions merge without conflicts, preserving user intent.
-
-### Node Moves: Last-Write-Wins
-
-When two nodes concurrently move the same node to different parents, the one with the higher vector clock wins. A conflict event is emitted for observability.
-
-### Deletes: Delete-Wins
-
-Delete operations take priority over concurrent updates, preventing "resurrection" of deleted content.
-
-## Conflict Observability
-
-While CRDTs resolve all conflicts automatically, RaisinDB records when conflicts occur for auditing:
-
-| Conflict Type | Description |
-|---------------|-------------|
-| Concurrent property update | Two nodes updated the same property simultaneously |
-| Concurrent move | Two nodes moved the same node to different parents |
-| Concurrent schema update | Concurrent NodeType changes |
-| Delete wins over update | A delete was concurrent with an update |
-
-Conflicts are auto-resolved but recorded, so you can review what happened.
-
-## Causal Delivery
-
-The causal delivery module ensures operations are applied in happens-before order. If operation B depends on operation A, B is buffered until A has been applied — even if B arrives first over the network.
-
-This prevents inconsistencies like applying a property update to a node that hasn't been created yet.
-
-## Operation Log and Garbage Collection
-
-Every mutation is appended to a persistent operation log. The garbage collection system provides bounded growth:
-
-- **Compaction** — Old operations that all nodes have acknowledged are compacted
-- **Retention window** — Configurable window for how long to keep operations
-- **Catch-up support** — Operations needed for lagging nodes are preserved
-
-## Cluster Setup
-
-A multi-node cluster is configured in each node's TOML configuration file. Nodes discover peers and begin streaming operations automatically:
+You can inspect a node's log and clock over the admin API:
 
 ```bash
-# Start a 3-node test cluster
-./scripts/start-cluster.sh
+curl http://localhost:8080/api/replication/default/myapp/vector-clock -H "Authorization: Bearer $TOKEN"
+# {"vector_clock":{"clock":{"node1":541}},"nodes":["node1"]}
+
+curl "http://localhost:8080/api/replication/default/myapp/operations?limit=1" -H "Authorization: Bearer $TOKEN"
+# {"operations":[{"op_id":"e62c62a2-...","op_seq":1,"cluster_node_id":"node1",
+#   "timestamp_ms":1788719723269,"vector_clock":{"clock":{"node1":1}},
+#   "tenant_id":"default","repo_id":"myapp","branch":"main","op_type":{"update_repository":{...}}}]}
 ```
 
-Each node is fully independent — it can accept reads and writes even if other nodes are temporarily unreachable. When connectivity is restored, operations are replayed and state converges.
+## Vector clocks and ordering
+
+Each node keeps a counter, and a vector clock is the map of node id to counter that an operation was created under:
+
+```
+node1 writes            -> {node1: 1}
+node1 writes            -> {node1: 2}
+node2 writes            -> {node2: 1}
+node2 receives node1's  -> {node1: 2, node2: 1}
+```
+
+Comparing two clocks gives one of four answers: `Before`, `After`, `Concurrent` or `Equal`. Operations that are causally ordered are applied in that order. Operations that are concurrent target-by-target are ordered deterministically by vector clock, then wall-clock timestamp, then node id, so every replica picks the same winner.
+
+## Conflict rules
+
+Concurrent operations on the same target are merged with a fixed rule per operation kind:
+
+| Target | Rule |
+|--------|------|
+| Node snapshots and properties | Last write wins, using the ordering above |
+| Relations | Last write wins per `(source, target, relation_type)` |
+| Moves | Last write wins; the node ends up under one parent |
+| Deletes | A delete wins over a concurrent update, so deleted content does not come back |
+
+A concurrent property update, a concurrent move to different parents, or a delete racing an update is applied and also counted as a conflict in the replication metrics, so you can see that it happened.
+
+## Causal delivery
+
+Operations can arrive out of order over the network. A causal delivery buffer holds an operation until everything its vector clock depends on has been applied, so a property update is never applied before the create it depends on. Buffered operations are released as their dependencies arrive.
+
+## Operation log and garbage collection
+
+The operation log is durable and is what a lagging or restarted peer catches up from. A collector trims it under these defaults:
+
+| Setting | Default |
+|---------|---------|
+| Maximum age of an operation | 30 days |
+| Maximum log size | 10 GB, trimmed back to 9 GB |
+| Peer acknowledgements required before trimming | all peers |
+
+Operations a peer has not acknowledged are kept, so a node that has been down does not lose its catch-up window unless the size limit forces an emergency trim.
+
+## Cluster setup
+
+Replication is configured per node, in the `[replication]` section of the TOML config or through flags and environment variables. A node needs an id, a replication port and the list of its peers:
+
+```toml
+[replication]
+enabled = true
+node_id = "node1"
+port = 9001
+bind_address = "127.0.0.1"
+
+[[replication.peers]]
+peer_id = "node2"
+address = "127.0.0.1"
+port = 9002
+
+[[replication.peers]]
+peer_id = "node3"
+address = "127.0.0.1"
+port = 9003
+```
+
+The same settings as flags or environment variables:
+
+```bash
+raisin-server --cluster-node-id node1 --replication-port 9001 \
+  --replication-peers "node2=127.0.0.1:9002,node3=127.0.0.1:9003"
+
+RAISIN_CLUSTER_NODE_ID=node1 RAISIN_REPLICATION_PORT=9001 \
+RAISIN_REPLICATION_PEERS="node2=127.0.0.1:9002,node3=127.0.0.1:9003" raisin-server
+```
+
+Both the node id and the port are required; with only one of them the server logs a warning and runs standalone. Peers given on the command line are merged with those in the file, overriding an entry with the same `peer_id`.
+
+At startup the node discovers the tenant and repository pairs that exist locally and syncs those. Extra pairs can be listed in `RAISIN_CLUSTER_SYNC_EXTRA_REPOS`. The example configs under `examples/cluster/` and the script `./scripts/start-cluster.sh` start a three-node cluster on one machine.
+
+Two things to plan for in a cluster:
+
+- **Derived indexes and embeddings are built on every node.** Each replica indexes the content it receives, so an embedding provider must be reachable from every node and embedding cost scales with the node count.
+- **Locks need a shared backend.** The in-process lock manager serializes within one node only. A cluster that uses `raisin.locks` or inventory claims must set `[locks] backend = "redis"`; the server warns when replication is on and the backend is `inprocess`.
 
 ## Next Steps
 
-- [Multi-Tenancy](./multi-tenancy) — Tenant isolation in replicated clusters
-- [Time-Travel Queries](/docs/guides/querying/time-travel-queries) — Query historical state
+- [Multi-Tenancy](./multi-tenancy) - Tenant isolation in replicated clusters
+- [Revisions](./versioning/revisions) - The revision model that replicated commits carry

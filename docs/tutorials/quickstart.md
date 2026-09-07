@@ -4,125 +4,125 @@ sidebar_position: 1
 
 # Quick Start
 
-Get up and running with RaisinDB in under 10 minutes. You'll install the server, scaffold a project with AI agent support, and build your first content-driven app.
+Get up and running with RaisinDB in about ten minutes. You will install the CLI, start a local server, scaffold a project with AI agent support, and deploy your first content package.
 
 ## Prerequisites
 
 - Node.js (v18 or later) and npm
-- An AI coding agent ([Claude Code](https://claude.ai/code), [Cursor](https://cursor.com), or any agent that supports [Agent Skills](https://skills.sh))
+- Optionally, an AI coding agent ([Claude Code](https://claude.ai/code), [Cursor](https://cursor.com), or any agent that supports [Agent Skills](https://skills.sh))
 
-## Step 1: Install the CLI & Start the Server
+## Step 1: Install the CLI and start the server
 
 ```bash
 npm install -g @raisindb/cli
 raisindb server start
 ```
 
-The CLI downloads the right server binary for your platform and starts RaisinDB with:
+The CLI downloads the server binary for your platform into `~/.raisindb/bin/`, verifies its checksum, and starts it in development mode. On the first start it generates an admin password and prints it once:
 
-- **Admin Console** at [http://localhost:8080/admin](http://localhost:8080/admin)
-- **HTTP API** on port **8080**
-- **PGWire** (PostgreSQL protocol) on port **5432**
+```
+  RaisinDB v0.x  Development Mode
 
-On first start, you'll see the admin credentials in the terminal output. Log in to the admin console and change the password.
+  HTTP         http://localhost:8080
+  PgSQL        postgresql://localhost:5432
+  Admin        http://localhost:8080/admin
 
-:::tip Alternative installation
-Download binaries directly from [GitHub Releases](https://github.com/maravilla-labs/raisindb/releases) or [build from source](/docs/guides/installation#build-from-source).
+  Username     admin
+  Password     <generated>
+
+  ! Save this password — it won't be shown again.
+```
+
+Data is stored in `./.data/rocksdb` under the directory you ran the command in. Useful follow-up commands: `raisindb server status`, `raisindb server logs`, `raisindb server stop`.
+
+:::note PostgreSQL protocol
+`raisindb server start` also enables the PostgreSQL wire listener on port 5432 (`--pgwire-port` to change it). Connect with `psql -h localhost -p 5432 -U default -d <repo>`, using an API key as the password. See [Connect via PostgreSQL](/docs/guides/connecting/pgwire).
 :::
 
-## Step 2: Login & Create a Repository
+:::tip Alternative installation
+Download binaries from [GitHub Releases](https://github.com/maravilla-labs/raisindb/releases) or [build from source](/docs/guides/installation#build-from-source).
+:::
 
-Authenticate with the server (opens your browser):
+## Step 2: Log in and create a repository
+
+Authenticate the CLI. With no options it opens a browser flow against `http://localhost:8080`; in a terminal-only environment pass the credentials directly:
 
 ```bash
 raisindb login
+# or, non-interactive:
+raisindb login --username admin --password '<generated password>'
 ```
 
-This saves your credentials to `.raisinrc` — all subsequent CLI commands (`deploy`, `sync`, `upload`) will use this authentication automatically.
+The token is saved to `.raisinrc`, so later commands (`deploy`, `sync`, `repo`) use it automatically.
 
-Then in the admin console at [http://localhost:8080/admin](http://localhost:8080/admin):
+Then create a repository. Its name is what your frontend and your SQL connections will refer to:
 
-1. Click **"Create Repository"**
-2. Give it a name (e.g., `demo`) — remember this name, your frontend will use it
+```bash
+raisindb repo create demo
+```
+
+You can also do this from the admin console at [http://localhost:8080/admin](http://localhost:8080/admin) or with the HTTP API (`POST /api/repositories` with `{"repo_id":"demo"}`).
 
 :::tip Remote servers
-To connect to a remote server instead of localhost:
 ```bash
 raisindb login --server https://my-raisindb.example.com
 ```
 :::
 
-## Step 3: Scaffold Your Project
+## Step 3: Scaffold your project
 
 ```bash
 raisindb package init my-app
 ```
 
-This does three things automatically:
-1. **Scaffolds** the project structure
-2. **Runs `npm install`** — installs `@raisindb/functions-types` (TypeScript definitions for the server-side function runtime)
-3. **Installs AI agent skills** via `npx skills add` — 10 skill files that teach your AI agent how to build RaisinDB apps
+This does three things:
+
+1. **Scaffolds** the project structure (below).
+2. **Runs `npm install`**, which installs `@raisindb/functions-types` (TypeScript definitions for the server-side function runtime).
+3. **Installs AI agent skills** with `npx skills add maravilla-labs/raisindb/packages/raisindb-skills`.
+
+Pass `--skip-install` to do only the first step.
 
 The resulting project:
 
 ```
 my-app/
 ├── package.json          # npm scripts + @raisindb/functions-types
-├── .gitignore
-├── AGENT.md              # Instructions for AI agents
+├── AGENT.md, CLAUDE.md, GEMINI.md   # instructions for AI agents
 ├── README.md
 ├── package/              # RaisinDB content package (YAML)
 │   ├── manifest.yaml
 │   ├── nodetypes/
+│   ├── mixins/
 │   ├── archetypes/
 │   ├── elementtypes/
 │   ├── workspaces/
-│   └── content/
-└── frontend/             # Your web app (SvelteKit or React)
+│   ├── content/
+│   └── static/
+└── frontend/             # your web app goes here
 ```
 
-The installed skills:
-
-| Skill | What it teaches |
-|-------|----------------|
-| `raisindb-overview` | Core concepts, path-as-URL routing, project structure |
-| `raisindb-content-modeling` | NodeTypes, Archetypes, ElementTypes in YAML |
-| `raisindb-frontend-sveltekit` | SvelteKit frontend with dynamic routing |
-| `raisindb-frontend-react` | React Router frontend with SSR |
-| `raisindb-sql` | SQL queries, JSONB, hierarchy, graph |
-| `raisindb-auth` | Login, register, anonymous access |
-| `raisindb-translations` | Multi-language content |
-| `raisindb-file-uploads` | File upload, thumbnails, signed URLs |
-| `raisindb-functions-triggers` | Server-side functions and event triggers |
-| `raisindb-access-control` | Roles, permissions, row-level security |
-
-Skills use progressive loading — your agent only reads the ones relevant to the current task.
+The installed skills cover content modeling, SQL, SvelteKit and React frontends, auth, access control, translations, file uploads, functions and triggers, workflows, MCP servers and widgets, messaging agents, branch workflows, and virtual-mount adapters. Agents load only the skills relevant to the task at hand.
 
 :::tip Adding skills to an existing project
-If you have an existing project (or used `--skip-install`), install the skills manually:
-
 ```bash
 npx skills add maravilla-labs/raisindb/packages/raisindb-skills
 ```
-
-This works with any project — not just ones created with `raisindb package init`.
 :::
 
-## Step 4: Build with Your AI Agent
+## Step 4: Build with your AI agent
 
-Open your project in your AI coding tool and start building. Here are example prompts:
+Open the project in your AI coding tool and describe what you want. Example prompts:
 
 ### Define your content model
 
 > "Create a blog with Article and Author node types. Articles should have a title, body, excerpt, featured image, and tags. Add a LandingPage archetype with Hero and TextBlock elements."
 
-The agent will create YAML files in `package/nodetypes/`, `package/archetypes/`, and `package/elementtypes/`, then validate with `npm run validate`.
+The agent creates YAML files in `package/nodetypes/`, `package/archetypes/`, and `package/elementtypes/`, then validates them with `npm run validate`.
 
 ### Build the frontend
 
 > "Create a SvelteKit frontend that renders pages from the content package using path-based routing. The repository name is `demo`."
-
-The agent will scaffold the SvelteKit app in `frontend/`, set up the RaisinDB client with WebSocket connection, create component registries for archetypes and elements, and wire up the `[...slug]` route.
 
 ### Add authentication
 
@@ -131,42 +131,42 @@ The agent will scaffold the SvelteKit app in `frontend/`, set up the RaisinDB cl
 ### Deploy your content
 
 ```bash
-npm run deploy              # Validate + build + upload to server
+npm run deploy              # validate + build + upload to the server
 # or
-npm run sync                # Live sync during development
+npm run sync                # watch the package directory and sync changes
 ```
 
-## Available npm Scripts
+## Available npm scripts
 
-| Script | What it does |
-|--------|-------------|
-| `npm run validate` | Validate all YAML in `package/` |
-| `npm run build` | Build `.rap` package file |
-| `npm run deploy` | Validate + build + upload to server |
-| `npm run sync` | Live sync package changes (watch mode) |
-| `npm run dev` | Start frontend dev server |
+| Script | Runs |
+|--------|------|
+| `npm run validate` | `raisindb package create ./package --check` |
+| `npm run build` | `raisindb package create ./package` (builds the `.rap` file) |
+| `npm run deploy` | `raisindb package deploy ./package` |
+| `npm run sync` | `raisindb package sync . --watch` inside `package/` |
+| `npm run dev` | `npm run dev` inside `frontend/` |
 
-## How It Works
+## How it works
 
 RaisinDB apps follow a **content-to-component pipeline**:
 
 ```
 NodeType (schema)  →  Archetype (page template)  →  ElementTypes (blocks)
       ↕                       ↕                           ↕
-YAML in package/       Maps to Page Component      Maps to Element Components
+YAML in package/       maps to a page component    map to element components
 ```
 
-1. **Content lives at paths** like `/workspace/home`, `/workspace/about`
-2. **The frontend route** `/{slug}` queries `WHERE path = '/workspace/{slug}'`
-3. **The archetype** on the node determines which page component renders it
-4. **Elements** in `properties.content[]` map to inline block components
+1. **Content lives at paths** such as `/home` and `/about` inside a workspace.
+2. **The frontend route** `/{slug}` queries `WHERE path = '/{slug}'` in that workspace.
+3. **The archetype** on the node decides which page component renders it.
+4. **Elements** in `properties.content[]` map to block components.
 
-This means your URL structure IS your content structure. Add a page in YAML, it appears at that URL.
+Your URL structure is your content structure: add a page to the package and it appears at that URL.
 
-## Next Steps
+## Next steps
 
-- [Core Concepts](/docs/concepts/overview) — Understand the data model in depth
-- [DCAD: Schema-Driven Apps](/docs/concepts/dcad) — How your schema defines your app
-- [SQL Reference](/docs/reference/sql/overview) — Full query language reference
-- [JavaScript Client](/docs/reference/javascript-client/overview) — SDK reference
-- [Creating Packages](/docs/guides/packages/creating-packages) — Package format reference
+- [Core Concepts](/docs/concepts/overview): the data model in depth
+- [DCAD: Schema-Driven Apps](/docs/concepts/dcad): how your schema defines your app
+- [SQL Reference](/docs/reference/sql/overview): the query language
+- [JavaScript Client](/docs/reference/javascript-client/overview): SDK reference
+- [Creating Packages](/docs/guides/packages/creating-packages): the package format

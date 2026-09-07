@@ -6,29 +6,35 @@ description: Give agents custom tools, let them propose multi-step plans, and bu
 
 # Agent Plans & Custom Tools
 
-RaisinDB agents can do more than answer: give them **custom tools** and they
-act on your data; enable **task creation** and they decompose work into a
-persisted plan with tasks, optionally gated behind human approval.
+An agent is a `raisin:AIAgent` node. Give it tools and it can act on your data;
+switch on task creation and it decomposes work into a persisted plan of tasks,
+optionally gated behind a human approval.
 
-The SDK is the product here: RaisinDB persists the plan, streams the state
-changes, and exposes one deterministic projection — **you build the chat UI**
-on top of it. This guide is the contract: how to define tools, how the four
-execution modes behave, what the plan nodes look like, and the exact SDK
-recipe for an approval UI.
+RaisinDB persists the plan, streams state changes to the chat, and the SDK
+projects the plan state for you. This guide covers how to define tools, how the
+four execution modes behave, what gets persisted, and the SDK recipe for an
+approval UI.
 
 ## Custom tools
 
-A tool is a plain `raisin:Function` in the `functions` workspace. Its
-`description` and `input_schema` properties **are** the LLM tool definition —
-write them for the model, not for humans:
+A tool is a `raisin:Function` node in the `functions` workspace. Its
+`description` and `input_schema` properties become the tool definition the
+model sees (`{ name, description, parameters }`), and its node name becomes the
+tool name. Write the description for the model:
 
 ```yaml
-# functions workspace, e.g. /lib/myapp/list-shifts
+# functions workspace, /lib/myapp/list-shifts/.node.yaml
 node_type: raisin:Function
 properties:
+  name: list-shifts
+  title: List Shifts
   description: >
     List all shifts on the board with their title, day, time and current
     assignee. Use this before answering any question about shifts.
+  enabled: true
+  language: javascript
+  execution_mode: async
+  entry_file: index.js:handler
   input_schema:
     type: object
     properties:
@@ -39,25 +45,26 @@ properties:
 ```
 
 ```javascript
-// index.js — the handler the agent invokes
+// index.js
 async function handler(input) {
   const { day, __raisin_context } = input;
 
-  // __raisin_context is injected into every agent tool call:
-  // { agent_name, conversation_path, sender_id, workspace, msg_path, ... }
-  // Use it to know who is talking and from which conversation thread.
+  // __raisin_context is added to every agent tool call. Keys:
+  // workspace, chat_path, msg_path, conversation_path, agent_name, sender_id,
+  // execution_mode, orchestration_mode, orchestration_round.
 
-  const rows = await raisin.sql.query(
-    `SELECT path, properties FROM 'default'
-     WHERE node_type = 'myapp:Shift'
-       ${day ? "AND properties->>'day'::String = $1" : ''}
-     ORDER BY created_at ASC`,
+  const rows = raisin.sql.query(
+    `SELECT path, properties FROM 'staffing'
+      WHERE node_type = 'myapp:Shift'
+        ${day ? "AND properties->>'day'::String = $1" : ''}
+      ORDER BY created_at ASC`,
     day ? [day] : [],
   );
+  if (rows.error) return { error: rows.error };
 
   if (rows.length === 0) {
-    // Return errors AS DATA, don't throw: the model reads the message and
-    // self-corrects in the same turn instead of failing the whole call.
+    // Return errors as data. The model reads the message and can try
+    // something else in the same turn; a thrown error fails the tool call.
     return { error: 'No shifts found. The board may be empty for that day.' };
   }
 
@@ -68,44 +75,49 @@ async function handler(input) {
 Wire it into the agent:
 
 ```yaml
+# functions workspace, /agents/shift-planner/.node.yaml
 node_type: raisin:AIAgent
 properties:
+  title: Shift Planner
   system_prompt: |
     ...
-  provider: groq
+  provider: groq                      # a provider slug from the tenant's AI configuration
   model: llama-3.3-70b-versatile
+  temperature: 0.2
+  max_tokens: 1024
+  execution_mode: automatic
   tools:
     - /lib/myapp/list-shifts
 ```
 
-### Tools from other MCP servers
+`provider` is a slug from the tenant's
+[provider list](./ai-provider-configuration.md), not a provider kind. Other
+agent properties: `thinking_enabled` (default true), `rules` (a list of
+strings appended to the prompt), `execution_context` (`user`, `agent` or
+`system`, with `roles` and `groups` for the `agent` case), `max_history_messages`,
+and the compaction settings `auto_compact`, `compact_threshold_messages`,
+`compact_keep_messages` and `max_conversation_tokens`.
 
-An agent's `tools:` array is not limited to functions in this repository. Register a connection to an external MCP server and its tools become ordinary `raisin:Function` nodes you list the same way:
+Tools proxied from an external MCP server are `raisin:Function` nodes as well
+and are listed the same way. See
+[Connecting to External Servers](../mcp/connecting-to-servers.md).
 
-```yaml
-  tools:
-    - /lib/myapp/list-shifts        # your function
-    - /mcp/linear/search-issues     # a Linear tool
-```
+### The function runtime is not the client SDK
 
-The model sees one flat list. See [Connecting to External Servers](../mcp/connecting-to-servers.md).
+Three things to know when writing a tool:
 
-### Function-runtime traps
-
-The function runtime is **not** the client SDK — three things bite everyone
-once:
-
-- `raisin.sql.query(...)` returns the **row array directly**. The client's
-  `executeSql` returns `{ rows }` — don't expect that shape inside a
-  function. Use `raisin.sql.execute` for DML.
-- Every agent tool call receives the injected `__raisin_context` argument.
-  Destructure it out of `input` so it doesn't leak into your own validation.
-- Throwing makes the whole tool call fail; returning `{ error: '...' }` lets
-  the model recover gracefully.
+- `raisin.sql.query(sql, params)` is synchronous and returns the row array. A
+  failed query does not throw; it returns `{ error, rows: [] }`, so check
+  `error`. `raisin.sql.execute` returns the affected row count, or `-1` on
+  failure.
+- Every agent tool call carries `__raisin_context` in its input. Destructure it
+  out before validating your own arguments.
+- Throwing fails the whole tool call. Returning `{ error: '...' }` lets the model
+  recover.
 
 ## Enabling plans
 
-Add the builtin planning tools and switch on task creation:
+Add the built-in planning tools and switch on task creation:
 
 ```yaml
 node_type: raisin:AIAgent
@@ -121,69 +133,81 @@ properties:
     - /lib/myapp/list-shifts          # your domain tools
 ```
 
-`task_creation_enabled` is the gate: when it is `false` (or absent), every
-tool with `category: planning` is filtered out of the model's tool list and
-the planning system-prompt addition is skipped — the agent answers directly
-and **no plan nodes are ever created**, even if the tools are listed.
+The four planning tools ship with the built-in `ai-tools` package and carry
+`category: planning`. `task_creation_enabled` is the gate: when it is `false`
+(the default), every tool in that category is removed from the model's tool
+list and the planning instructions are left out of the system prompt, so the
+agent answers directly and no plan nodes are created even if the tools are
+listed.
 
 ### The four execution modes
 
 | Mode | Approval gate | Execution | Use when |
 |------|---------------|-----------|----------|
-| `automatic` | none | all tasks run immediately after plan creation | trusted, low-risk automation; background jobs |
-| `approve_then_auto` | plan waits for `approvePlan()` | after approval all tasks run to completion | the default for user-facing agents: one human decision, then hands-off |
-| `step_by_step` | plan waits for `approvePlan()` | exactly **one task per continue signal**; the agent pauses after each task | high-stakes operations you want to watch task by task |
-| `manual` | plan waits for `approvePlan()` | nothing runs automatically — execution needs explicit user instructions | plan-as-a-document workflows; you drive every step in chat |
+| `automatic` | none | tasks run immediately after the plan is created | trusted, low-risk automation |
+| `approve_then_auto` | plan waits for `approvePlan()` | after approval all tasks run to completion | user-facing agents: one human decision, then hands-off |
+| `step_by_step` | plan waits for `approvePlan()` | one task per continue signal; the agent pauses after each task | operations you want to watch task by task |
+| `manual` | plan waits for `approvePlan()` | nothing runs on its own; you drive each step in chat | plan-as-a-document workflows |
 
-Rejection works the same in all gated modes: `rejectPlan(planPath, feedback?)`
-cancels the plan and the agent proposes a revision based on your feedback.
+`rejectPlan(planPath, feedback?)` works the same in all gated modes: the plan is
+cancelled and the agent proposes a revision based on the feedback.
 
 ## What gets persisted
 
-Plans are real nodes, created under the assistant message that proposed them
-(in the agent's conversation in the `ai` workspace):
+Plans are nodes in the `ai` workspace, created under the assistant message
+that proposed them:
 
-```
+```text
 {conversation}/msg-.../
   plan-1718012345678          raisin:AIPlan
-    ├─ title, description
-    ├─ status: pending_approval | in_progress | completed | cancelled
-    ├─ estimated_steps, completed_steps
-    ├─ task-1                 raisin:AITask
-    │    ├─ title, description, priority
-    │    └─ status: pending | in_progress | completed | failed | cancelled
-    └─ task-2                 raisin:AITask
+    title, description, reasoning
+    status: draft | pending_approval | in_progress | completed | cancelled
+    estimated_steps, completed_steps
+    task-1                    raisin:AITask
+      title, description
+      status: pending | in_progress | completed | cancelled
+      priority: low | normal | high | urgent
+    task-2                    raisin:AITask
 ```
 
-In parallel, the agent delivers **message cards** into the conversation:
-`message_type: 'ai_plan'` (the proposal — title, tasks, `plan_path`,
-`requires_approval`) and `message_type: 'ai_task_update'` (each status
-change). These cards are what the SDK projects plan state from, so a chat UI
-needs no extra queries against the plan nodes.
+In parallel the agent writes message cards into the conversation, as
+`raisin:Message` nodes with a `message_type`:
 
-## Building the approval UI (the SDK recipe)
+- `ai_plan`: the proposal. Its `data` holds `plan_id`, `plan_path`, `title`,
+  `description`, `tasks`, `status` and `requires_approval`.
+- `ai_task_update`: each status change. Its `data` holds `task_id`, `title`,
+  `status`, `plan_path`, `plan_id`, `plan_status`, `total_tasks`,
+  `completed_tasks` and `pending_tasks`.
 
-`ConversationStore` exposes everything as one snapshot field: `plans`, a
-deterministic projection rebuilt from the persisted `ai_plan` /
-`ai_task_update` cards on every change — it survives reloads and needs no
-extra wiring.
+The SDK projects plan state from these messages, so a chat UI needs no extra
+queries against the plan nodes.
+
+## Building the approval UI
+
+`ConversationStore` exposes plan state as one snapshot field, `plans`, rebuilt
+from the persisted `ai_plan` and `ai_task_update` messages on every change. It
+survives reloads.
 
 ```typescript
 interface PlanProjection {
-  planPath?: string;          // the real raisin:AIPlan node path
+  key: string;
+  planPath?: string;          // the raisin:AIPlan node path
+  planId?: string;
   title: string;
   status: string;             // pending_approval | in_progress | completed | cancelled
   requiresApproval: boolean;  // true => render Approve / Reject
-  tasks: { taskId?: string; title: string; status: string }[];
+  tasks: { taskId?: string; title: string; status: string; description?: string; priority?: string }[];
+  sourceMessagePath?: string;
+  updatedAt?: string;
 }
 ```
 
-The full loop — paste this shape into your own chat UI:
+The full loop:
 
 ```typescript
 import { RaisinClient, ConversationStore } from '@raisindb/client';
 
-const client = new RaisinClient('ws://localhost:8081/ws/myrepo');
+const client = new RaisinClient('ws://localhost:8090', { repository: 'myrepo' });
 await client.loginWithEmail(email, password, 'myrepo');
 const db = client.database('myrepo');
 
@@ -195,25 +219,22 @@ const store = new ConversationStore({
 store.subscribe((s) => {
   renderMessages(s.messages, s.streamingText);
 
-  // 1. Render plan cards from the projection
+  // 1. Plan cards from the projection
   for (const plan of s.plans) {
-    renderPlanCard(plan); // title + tasks[] with per-task status
+    renderPlanCard(plan);
 
-    // 2. Proposal: show Approve / Reject while pending
+    // 2. Proposal: Approve / Reject while pending
     if (plan.requiresApproval && plan.status === 'pending_approval') {
       onApproveClick(() => store.approvePlan(plan.planPath!));
       onRejectClick((feedback) => store.rejectPlan(plan.planPath!, feedback));
     }
   }
 
-  // 3. Waiting states: the turn pauses instead of finishing
-  if (s.isWaiting) {
-    // reason 'awaiting_plan_approval' arrives as a `waiting` chat event —
-    // the agent is parked until approvePlan/rejectPlan is called.
-  }
+  // 3. The turn pauses instead of finishing: a `waiting` event with
+  //    reason 'awaiting_plan_approval' arrives, and s.isWaiting is true.
 
   // 4. step_by_step: the turn ends with finish_reason 'awaiting_step_continue'.
-  //    Any plain user message resumes the next task:
+  //    Any user message resumes the next task.
   const last = s.messages.at(-1);
   if (last?.finishReason === 'awaiting_step_continue') {
     showContinueButton(() => store.sendMessage('continue'));
@@ -223,38 +244,38 @@ store.subscribe((s) => {
 await store.sendMessage('Plan next week and assign the open shifts.');
 ```
 
-Notes on the lifecycle:
+Lifecycle notes:
 
-- **After `approvePlan()`** in `approve_then_auto` / `step_by_step`, the
-  backend creates a continuation turn automatically — keep your stream
-  subscription open and the task statuses progress live through the
-  projection. In `manual` mode approval flips the status and then waits for
-  your explicit instructions in chat.
-- **After `rejectPlan(path, feedback)`** the plan becomes `cancelled` and the
-  agent answers with a revised proposal (a new `ai_plan` card appears).
-- Task status updates are persisted messages, so a `loadMessages()` (or the
-  store's own refresh) is always enough to resync — no bespoke endpoints.
+- `approvePlan()` returns a receipt (`{ accepted, action, planPath, jobId, ... }`)
+  immediately. In `approve_then_auto` and `step_by_step` the backend starts a
+  continuation turn; keep the subscription open and task statuses progress
+  through the projection. In `manual` mode approval flips the status and the
+  agent waits for your instructions in chat.
+- `rejectPlan(path, feedback)` cancels the plan and the agent answers with a
+  revised proposal, which appears as a new `ai_plan` card.
+- Task updates are persisted messages, so `loadMessages()` always resyncs.
 
 The framework adapters expose the same snapshot: `useConversation` from
-`@raisindb/client/react` and `@raisindb/client/vue`, plus the Svelte stores
-from `@raisindb/client/svelte`.
+`createRaisinReact(React)` or `createRaisinVue(Vue)`, and
+`createConversationAdapter` for Svelte. See
+[Chat & Conversations](/docs/reference/javascript-client/chat).
 
 ## Reference implementation
 
-The admin console's agent **Test Chat** (Functions IDE → open an agent →
-"Test Chat") is a reference-quality plan client built on exactly this
-contract: plan proposal cards with Approve/Reject, live task progression
-during execution, and a Continue affordance for `step_by_step` pauses. When
-in doubt about UI behavior, mirror what it does.
+The admin console's agent **Test Chat** (Functions IDE, open an agent, "Test
+Chat") is a plan client built on this contract: proposal cards with
+Approve/Reject, live task progression, and a Continue affordance for
+`step_by_step` pauses.
 
-For an end-to-end scripted version of all four modes (including the SDK
-assertions), see `examples/shiftboard/plan-modes-test.mjs` in the RaisinDB
-repository.
+For a scripted run of all four modes with SDK assertions, see
+`examples/shiftboard/plan-modes-test.mjs` in the RaisinDB repository. The
+`shift-coordinator` agent in that example is a complete `approve_then_auto`
+configuration.
 
 ## See also
 
-- [Chat & Conversations (JS client reference)](/docs/reference/javascript-client/chat) —
+- [Chat & Conversations (JS client reference)](/docs/reference/javascript-client/chat):
   `ConversationStore`, `approvePlan` / `rejectPlan`, event types
-- [Function-Based Tool Use](/docs/guides/ai/function-based-tool-use) — the
-  full `raisin.*` runtime API available inside tools
+- [Function-Based Tool Use](/docs/guides/ai/function-based-tool-use): the
+  `raisin.*` runtime available inside tools
 - [AI Provider Configuration](/docs/guides/ai/ai-provider-configuration)

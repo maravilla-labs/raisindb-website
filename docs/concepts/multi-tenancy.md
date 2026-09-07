@@ -4,142 +4,93 @@ sidebar_position: 11
 
 # Multi-Tenancy
 
-RaisinDB supports multi-tenancy through storage key prefixing and scoped services, allowing multiple customers to share a single deployment with complete data isolation.
+One RaisinDB server can serve many tenants. Each tenant has its own repositories, users and schema, and every storage key is prefixed with the tenant id, so a query for one tenant never reads another tenant's data.
 
-## Isolation Modes
+## How a request is assigned to a tenant
 
-RaisinDB offers three isolation modes to match your requirements:
+The HTTP server reads the tenant from the `x-tenant-id` request header. When the header is absent the request belongs to the tenant named `default`, which is what a single-organisation installation uses without ever setting the header.
 
-### Single Tenant
+```bash
+# Explicit tenant
+curl http://localhost:8080/api/repositories \
+  -H "Authorization: Bearer $TOKEN" -H "x-tenant-id: acme"
 
-No tenant prefix — keys are stored directly. Suitable for simple applications or embedded usage.
-
-```
-nodes:default:node-1
-nodes:default:node-2
-```
-
-**Use when:** Single organization, embedded database, prototyping.
-
-### Shared Database (Recommended)
-
-All tenants share one database instance. Data isolation is achieved through automatic key prefixing:
-
-```
-/acme/production/nodes:default:node-1
-/acme/production/nodes:default:node-2
-/techco/production/nodes:default:node-1
+# No header: tenant "default"
+curl http://localhost:8080/api/repositories -H "Authorization: Bearer $TOKEN"
 ```
 
-Each tenant's data is logically isolated. Prefix scans are efficient — querying Acme's data never touches TechCo's keys.
+Each client library sets the header for you:
 
-**Use when:** SaaS applications, cost-effective multi-tenancy, easy tenant provisioning.
+| Client | Where the tenant comes from |
+|---|---|
+| JavaScript client | The `/sys/{tenant}` segment of the connection URL, for example `raisin://localhost:8080/sys/acme` |
+| CLI | `raisindb login --tenant acme` |
+| PostgreSQL clients | The connection **username** is the tenant id, the **database** is the repository, and the password is an API key |
 
-### Dedicated Database
+A user also logs in against a tenant. The login endpoint carries the tenant in its path, and the token it returns is scoped to that tenant:
 
-Each tenant gets their own physical database instance. Complete hardware-level isolation.
-
-**Use when:** Enterprise customers, strict compliance requirements, independent scaling needs.
-
-## Storage Prefix Pattern
-
-In shared database mode, every storage key is prefixed with `/{tenant_id}/{deployment}/`:
-
-```
-/acme/production/nodes:content:page-1      # Acme's production page
-/acme/preview/nodes:content:page-1         # Acme's preview page
-/techco/production/nodes:content:page-1    # TechCo's production page
+```bash
+curl -X POST http://localhost:8080/api/raisindb/sys/acme/auth \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"..."}'
 ```
 
-This enables:
-- Complete logical isolation between tenants
-- Efficient prefix scans (fast queries within a tenant)
-- Simple per-tenant backup and deletion
-- Separate deployment environments (production, staging, preview)
+An optional `x-deployment-key` header (default `production`) names a deployment environment. It is recorded in the tenant registry and used to track schema initialization per environment; it does not change where data is stored.
 
-## ScopedStorage
+## Storage layout
 
-The `ScopedStorage` wrapper automatically applies the tenant prefix to all storage operations. Business logic code doesn't need to know about multi-tenancy:
+Every key in the store starts with the tenant, then the repository, branch and workspace, separated by null bytes:
 
 ```
-Your code calls: get_node("content", "page-1")
-ScopedStorage translates to: get("/acme/production/nodes:content:page-1")
+{tenant}\0{repo}\0{branch}\0{workspace}\0nodes\0{node_id}\0{revision}
 ```
 
-This is transparent — the same business logic works in single-tenant and multi-tenant mode without changes.
+Reads are prefix scans under the requesting tenant's prefix. This is what makes isolation structural rather than a filter that a query could forget: a scan for `acme` cannot produce a key that starts with `globex`, and deleting or backing up one tenant is a matter of one prefix.
 
-## Tenant Resolution
+Internally every service takes a scope (`tenant`, `repo`, `branch`, `workspace`) and builds keys from it, so application code above the storage layer never assembles a tenant prefix by hand.
 
-RaisinDB uses a pluggable `TenantResolver` to extract tenant identity from incoming requests:
+## Tenants, repositories and workspaces
 
-### Subdomain Resolver
+| Level | What it isolates | Example |
+|---|---|---|
+| Tenant | A customer or organisation. Separate users, repositories and schema. | `acme`, `globex` |
+| Repository | A versioned data set inside a tenant, with its own branches. | `website`, `crm` |
+| Workspace | A named group of nodes inside a repository. | `site`, `assets`, `raisin:access_control` |
 
-Extracts the tenant from the request subdomain:
+Workspaces organise content and can be secured per role, but they are not a tenancy mechanism: a query can join two workspaces of the same repository, while nothing can join two tenants. Put customers in tenants and content categories in workspaces.
 
-```
-acme.myapp.com    → tenant: "acme"
-techco.myapp.com  → tenant: "techco"
-```
+## Provisioning a tenant
 
-### Fixed Resolver
+A tenant comes into existence the first time a request names it, and it can be set up explicitly by the operator. The management endpoint creates the tenant's `admin` user and initialises the built-in NodeTypes:
 
-Always returns the same tenant — useful for single-tenant deployments:
-
-```
-any request → tenant: "default"
-```
-
-### Custom Resolvers
-
-Implement your own resolver for JWT tokens, API keys, headers, or any other scheme.
-
-## Workspaces vs Tenancy
-
-Workspaces and tenancy are orthogonal concepts:
-
-| Concept | Purpose | Example |
-|---------|---------|---------|
-| **Tenant** | Isolate different customers | Acme Corp, TechCo |
-| **Deployment** | Isolate environments per tenant | production, staging, preview |
-| **Workspace** | Organize content within a repository | content, media, users |
-
-Each tenant can have multiple deployments, and each deployment can have multiple workspaces:
-
-```
-/acme/production/
-  ├── nodes:content:page-1      # Acme's website pages
-  ├── nodes:media:logo           # Acme's media assets
-  └── nodes:users:jane           # Acme's users
-/acme/staging/
-  ├── nodes:content:page-1      # Acme's staging pages
-  └── nodes:media:logo           # Acme's staging assets
-/techco/production/
-  ├── nodes:content:page-1      # TechCo's website pages
-  └── nodes:users:admin          # TechCo's users
+```bash
+curl -X POST http://localhost:8080/management/admin/tenants \
+  -H "Authorization: Bearer $SUPERADMIN_TOKEN" -H 'content-type: application/json' \
+  -d '{"tenant_id":"acme"}'
 ```
 
-## Deployment Environments
+```json
+{"tenant_id":"acme","admin_username":"admin","admin_password":"<generated>","created_at":"2026-09-06T18:40:48.143999Z"}
+```
 
-Each tenant can have multiple deployment environments:
+Pass `admin_password` in the body to choose the password instead of receiving a generated one. The call returns `409` if the tenant already has an admin user. Known tenants are listed with:
 
-| Environment | Purpose |
-|-------------|---------|
-| `production` | Live customer data |
-| `staging` | Pre-production testing |
-| `preview` | Content preview |
-| `dev` | Development |
-| `feature-x` | Feature branch environment |
+```bash
+curl http://localhost:8080/api/management/registry/tenants -H "Authorization: Bearer $SUPERADMIN_TOKEN"
+```
 
-Changes to one environment never affect another.
+```json
+[{"tenant_id":"default","created_at":"2026-09-06T18:26:23.539874+00:00","last_seen":"2026-09-06T18:39:56.856291+00:00","deployments":[],"metadata":{}}]
+```
 
-## Security
+## Security notes
 
-- **Automatic isolation**: `ScopedStorage` makes it structurally impossible to access another tenant's data through normal APIs
-- **Type-safe at compile time**: The Rust type system enforces that scoped services can only access their tenant's data
-- **No cross-tenant queries**: Standard SQL queries are always scoped to the authenticated tenant
-- **Audit support**: All operations can be logged with tenant context for compliance
+- Isolation is enforced by key prefixes in the storage layer and applies equally to REST, WebSocket, SQL and the PostgreSQL wire protocol.
+- Tenant-scoped management endpoints answer `404` rather than `403` when a path names a tenant other than the request's tenant, so the response does not reveal whether the other tenant exists.
+- Revision metadata records the actor of every change, so a tenant's change history can be reviewed from the revision list.
 
-## Next Steps
+## Next steps
 
-- [Replication](./replication) — Multi-master CRDT replication across nodes
-- [Workspaces](/docs/concepts/workspaces) — Organizing content within a repository
+- [Workspaces](/docs/concepts/workspaces) for organising content within a repository
+- [Access Control](/docs/concepts/access-control) for users, roles and permissions inside a tenant
+- [Replication](./replication) for running several servers

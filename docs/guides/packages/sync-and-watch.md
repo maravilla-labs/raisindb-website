@@ -4,111 +4,137 @@ sidebar_position: 4
 
 # Sync and Watch: The Development Loop
 
-RaisinDB packages are the unit of deployment — but during development you
-don't want to rebuild and reinstall a package for every edit. The CLI gives
-you a two-speed loop:
+Packages are the unit of deployment, but while developing you do not want to
+rebuild and reinstall for every edit. The CLI gives you two speeds:
 
-- **`raisindb sync --watch`** — watches your package directory and pushes each
-  change to the running instance live (typically within a second or two of
-  saving). This covers **both content nodes and schema** — node types,
-  archetypes, element types, and mixins are upserted to the management API, so
-  the editor's resolved schemas update **without a re-deploy**. This is the
-  loop you'll use for almost all development.
-- **`raisindb deploy --install`** — full build → upload → install. Use it for
-  the first install, and whenever the **manifest** or a **workspace
-  definition** changes (those are applied at install time). Re-running it also
-  updates existing schema — a reinstall upserts node types / archetypes /
-  element types / mixins (content nodes are left untouched).
+- **`raisindb sync --watch`** watches your package directory and pushes each
+  change to the running server as you save. This covers content nodes and
+  schema: node types, archetypes, element types and mixins are upserted through
+  the management API, so a changed definition applies without a redeploy. This
+  is the loop for almost all development.
+- **`raisindb deploy --install`** validates, builds, uploads and installs. Use
+  it for the first install and whenever the manifest or a workspace definition
+  changes, because those are applied at install time.
 
 ## Local development setup
 
 ```bash
-# 1. Start a local server in your project folder (data lives in ./.data)
+# 1. Start a local server (data lives in ./.data under the current folder)
 raisindb server start
 
-# 2. Authenticate (writes server + token to .raisinrc)
+# 2. Authenticate (writes server URL and token to .raisinrc)
 raisindb login --server http://localhost:8080 --username admin --password '...'
 
 # 3. Create the target repository
 raisindb repo create myapp --exists-ok
 
-# 4. First install (creates the schema + seed content)
+# 4. First install: schema, workspaces and seed content
 raisindb deploy ./package --repo myapp --install
 
-# 5. Develop: watch + push every change (content AND schema) live as you edit
+# 5. Develop: push every change live as you edit
 raisindb sync ./package --repo myapp --watch --push
 ```
 
-On start, `--watch` does a **one-time full sync** (pushes the current local
-state once), then pushes **only changed files** as you edit. `--push` makes it
-one-way (local → server) and skips the server-event subscription, which is the
-right mode for a single-developer loop.
+`--watch` starts with a full push of the current local state, then pushes only
+the files that change. `--push` makes the session one-way (local to server) and
+skips the server-event subscription, which is the right mode for a
+single-developer loop.
 
-`deploy --install` validates the package, builds the `.rap`, uploads it,
-starts the install job, and **waits for the final state**: it succeeds only
-when the package reaches status `installed`, and fails with the server's
-error detail when the status becomes `failed`.
+`deploy --install` waits for the install job and succeeds only when the package
+reaches status `installed`; on `failed` it prints the server's error detail.
+It installs in `sync` mode by default, so a redeploy also updates existing
+content nodes. Pass `--mode skip` to leave existing content alone.
 
-`sync ./package --repo myapp` needs no config file — the repository comes
-from the flag and the server/token from `raisindb login` (or environment
-variables, see CI below). If a `.raisin-sync.yaml` exists in the package
-directory it is used; run `raisindb sync --init` to create one.
+With `--repo` on the command line, `sync` needs no configuration file: the
+repository comes from the flag and the server and token from `raisindb login`
+or the environment (see [CI](#ci)). If a `.raisindb-cli.yaml` exists in the
+package directory it is used instead; `raisindb sync ./package --init --repo
+myapp` writes one:
 
-:::note Two different `.raisin-sync.yaml` files
-This is your **local, gitignore-worthy connection config** (server URL, repo,
-branch) for the CLI's local↔server push — always excluded from what gets
-pushed or packaged. There's a *separate*, same-named file the server's install
-job reads **from inside a built `.rap`** to reconcile content updates on
-install — see [Reconciling Updates](./creating-packages.md#reconciling-updates-raisin-syncyaml)
-in Creating Packages. Same filename, same package-root location, different
-purpose — don't let one shadow the other in your `.gitignore`.
+```yaml
+version: 1
+server: http://localhost:8080
+repository: myapp
+branch: main
+remote_path: /my-package
+conflict_strategy: prompt
+ignore:
+  - "*.local.*"
+  - .raisindb-cli.yaml
+  - .raisin-sync.yaml
+  - node_modules/
+  - .git/
+  - .env
+  - .env.*
+```
+
+:::note Two files, two purposes
+`.raisindb-cli.yaml` is the CLI's connection config for the local push loop and
+is never pushed or packaged. `.raisin-sync.yaml` at the same location is the
+package's install policy, which ships inside the `.rap` and is read by the
+server's install job (see
+[Creating Packages](./creating-packages.md#install-policy-raisin-syncyaml)).
+Earlier CLI versions wrote their connection config as `.raisin-sync.yaml`;
+the current CLI still reads that name when the file has a `server` field.
 :::
 
 ## What watch mode syncs
 
-Watch mode maps each changed file to the node the package installer created
-from it:
+Each changed file is mapped to the node the installer would create from it:
 
 | You edit | What happens on the server |
 |----------|---------------------------|
-| `content/{ws}/.../{dir}/.node.yaml` | Properties of the `{dir}` node are updated (PUT) |
-| `content/{ws}/.../{name}.yaml` | Properties of the `{name}` node are updated (PUT) |
-| `content/{ws}/.../index.js` (also `.py`, `.star`) | The asset node's inline `code` property is updated — the function runtime picks it up on the next call |
-| `content/{ws}/.../{base}.{locale}.yaml` | Translations for `{base}` are applied via the translate command |
-| other binary files | Re-uploaded as the asset's `file` resource (multipart) |
-| `nodetypes/`, `archetypes/`, `elementtypes/`, `mixins/` (`*.yaml`) | **Upserted to the management API live** — schema is package-authoritative, so a changed definition applies immediately (no re-deploy). `getResolved` reflects it right away. |
-| `manifest.yaml`, `workspaces/` | **Not synced** — applied at install time. The watcher prints a re-deploy hint |
+| `content/{ws}/.../{dir}/.node.yaml` | Properties of the `{dir}` node are updated |
+| `content/{ws}/.../{name}.yaml` | Properties of the `{name}` node are updated |
+| `content/{ws}/.../index.js` (also `.py`, `.star`) | The asset node's `code` property is updated; the function runtime picks it up on the next call |
+| `content/{ws}/.../.node.{file}.yaml` | Metadata of the sibling asset `{file}` is updated |
+| `content/{ws}/.../{base}.{locale}.yaml` | Translations for `{base}` are applied |
+| other files | Re-uploaded as the asset's `file` resource (multipart) |
+| `nodetypes/`, `archetypes/`, `elementtypes/`, `mixins/` (`*.yaml`) | Upserted through `/api/management/{repo}/{branch}/{kind}`; the resolved schema reflects it immediately |
+| `manifest.yaml`, `workspaces/`, `static/` | Not synced; the watcher prints a redeploy hint |
 
-:::tip Schema is part of the live loop
-Schema directories live at the package root (a sibling of `content/`). Editing
-a node type, archetype, element type, or mixin pushes it straight to the
-management endpoints (`/api/management/{repo}/{branch}/{kind}`), which upsert —
-so re-saving a file applies the change instead of erroring. Only the manifest
-and workspace definitions still need a re-deploy.
-:::
+Files under `content/` whose name starts with a dot, other than the `.node.*`
+forms above, are ignored. A `.wasm` artifact is uploaded as a binary asset.
 
-When the **manifest** or a **workspace** definition changes, finish your edit
-and run:
+When the manifest or a workspace definition changes, run:
 
 ```bash
 raisindb deploy ./package --repo myapp --install
 ```
 
-On an interactive terminal, watch mode renders a live status UI. When stdout
-is not a TTY (CI, piped to a file), it prints plain log lines instead:
+On an interactive terminal, watch mode renders a live status view. When stdout
+is not a TTY, for example in CI or when piped to a file, it prints plain lines:
 
 ```
+Initial sync: 13 pushed, 0 failed — now watching for changes.
 [watch] watching /work/myapp/package
 [watch] target http://localhost:8080 repo=myapp branch=main
-Initial sync: 32 pushed, 0 failed — now watching for changes.
-[watch] 2026-06-10T11:40:01.123Z change: elementtypes/hero.yaml
-[watch] 2026-06-10T11:40:01.872Z pushed: elementtypes/hero.yaml
+[watch] local watcher ready
+[watch] 2026-09-06T18:37:24.548Z change: blog/posts/getting-started.yaml
+[watch] 2026-09-06T18:37:25.062Z pushed: blog/posts/getting-started.yaml
 ```
+
+Structural changes print a line such as
+`structural change: workspaces/blog.yaml — not synced; run "raisindb deploy ..."`.
+
+## One-shot push
+
+To push everything once without watching:
+
+```bash
+raisindb sync ./package --repo myapp --push
+raisindb sync ./package --repo myapp --push --dry-run     # list what would be pushed
+```
+
+`--force` retries a rejected create as an update. `--pull` downloads server
+changes to local files and refuses to overwrite a local file that contains
+`{env:...}` tokens unless `--force` is given (see
+[Environment Variables](./environment-variables.md#pulling-tokens-are-protected)).
 
 ## Install status lifecycle
 
 Every uploaded package is a `raisin:Package` node whose `status` property
-tracks the lifecycle truthfully:
+tracks the lifecycle:
 
 ```
 processing  →  uploaded  →  installing  →  installed
@@ -118,23 +144,19 @@ processing  →  uploaded  →  installing  →  installed
 | Status | Meaning |
 |--------|---------|
 | `processing` | Upload accepted; manifest extraction in progress |
-| `uploaded` | Package stored and validated, not installed |
-| `installing` | Install job running (node types, workspaces, content) |
-| `installed` | Install completed — `installed: true`, `installed_at` set |
-| `failed` | Processing or install failed — the CLI reports the error detail |
+| `uploaded` | Package stored, not installed |
+| `installing` | Install job running |
+| `installed` | Install completed; `installed: true`, `installed_at` set |
+| `failed` | Processing or install failed; the CLI prints the error |
 
-`raisindb package list --repo myapp` shows the status column, and
-`raisindb package install` / `deploy --install` print the failure detail
-(from the package node's `error` property where the schema supports it, or
-from the install job record). Built-in packages installed automatically at
-repository creation have no `status` property.
-
-Uninstalling a package returns it to `uploaded`.
+`raisindb package list --repo myapp` shows the status column. Built-in packages
+that are registered but not installed show `-`. Uninstalling a package returns
+it to `uploaded`.
 
 ## CI
 
 All commands are non-interactive and exit non-zero on failure, so a pipeline
-is just:
+is:
 
 ```bash
 # Authentication: environment variables win over .raisinrc
@@ -146,27 +168,24 @@ raisindb repo create myapp --exists-ok
 raisindb deploy ./package --repo myapp --install
 ```
 
-Exit codes: `0` — package reached status `installed`; `1` — validation,
-upload, or install failed (the install error detail is printed). A one-shot
-push of content **and** schema (node types / archetypes / element types /
-mixins) without a full reinstall is available as
-`raisindb sync ./package --repo myapp --push`.
+Exit codes: `0` when the package reached status `installed`; `1` when
+validation, upload or install failed. A one-shot push of content and schema
+without a reinstall is `raisindb sync ./package --repo myapp --push`.
 
-Environment-specific values in the package YAML (preview URLs, public domains)
-should be `{env:...}` tokens, which the pipeline resolves from the same
-exported variables:
+Environment-specific values in the package YAML should be `{env:...}` tokens,
+resolved from the same exported variables:
 
 ```bash
 export PREVIEW_SERVER=https://preview.example.ch
 raisindb deploy ./package --repo myapp --install
 ```
 
-An unset variable with no inline default fails the deploy instead of shipping
-a literal token — see [Environment Variables](./environment-variables.md).
+An unset variable with no inline default fails the deploy instead of shipping a
+literal token.
 
-## Next Steps
+## Next steps
 
-- [Creating Packages](./creating-packages.md) — Package format and structure
-- [Installing Packages](./installing-packages.md) — Package lifecycle
-- [Built-in Packages](./builtin-packages.md) — Pre-installed packages
-- [Environment Variables](./environment-variables.md) — `{env:...}` substitution in package YAML
+- [Creating Packages](./creating-packages.md)
+- [Installing Packages](./installing-packages.md)
+- [Built-in Packages](./builtin-packages.md)
+- [Environment Variables](./environment-variables.md)

@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
         'tutorials/shiftboard/ssr-live-board',
         'tutorials/shiftboard/agent-coordination',
         'tutorials/shiftboard/durable-workflow',
+        'tutorials/shiftboard/planner-plans-workflows',
       ],
     },
     {

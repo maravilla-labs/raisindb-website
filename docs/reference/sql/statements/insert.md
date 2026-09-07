@@ -4,326 +4,132 @@ sidebar_position: 2
 
 # INSERT Statement
 
-The INSERT statement adds new nodes to RaisinDB.
-
-:::info Workspace = Table Name
-The table name in INSERT refers to the **workspace name**. For example, `INSERT INTO products` inserts into the `products` workspace.
-:::
+`INSERT` creates nodes in a workspace. `UPSERT` has the same syntax and creates or replaces.
 
 ## Syntax
 
 ```sql
-INSERT INTO workspace_name (path, node_type, properties)
-VALUES (path_value, type_value, properties_jsonb)
-[, (path_value, type_value, properties_jsonb) ...]
+INSERT INTO 'workspace' (path, node_type [, name] [, id] [, archetype] [, properties] [, __branch])
+VALUES (...) [, (...) ...]
+
+UPSERT INTO 'workspace' (...) VALUES (...)
 ```
+
+The table name is the workspace. `path` and `node_type` are required; everything else has a default. Values must be literals or bound parameters (`$1`); expressions such as `JSONB_SET(...)` or `'{}'::jsonb || '{}'::jsonb` in `VALUES` are rejected with `Complex expressions in DML VALUES are not yet supported`. `INSERT ... SELECT` and `RETURNING` are not part of the current build.
+
+<!-- TODO(sql-ext): fill from engine report (INSERT...SELECT, RETURNING) -->
 
 ## Basic INSERT
 
-Insert a node with path, node type, and properties:
-
 ```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/content/blog/getting-started',
-    'Article',
-    '{"title": "Getting Started", "content": "Welcome to RaisinDB", "status": "published"}'
-);
+INSERT INTO 'blog' (path, node_type, name, properties)
+VALUES ('/hello', 'raisin:Page', 'hello', '{"title": "Hello", "views": 10, "tags": ["a", "b"]}'::jsonb);
 ```
 
-## With Explicit ID
-
-You can optionally specify the node ID:
-
-```sql
-INSERT INTO default (id, path, node_type, properties)
-VALUES (
-    '01HQ3K9V5NWCR3KXM2Y7P8G6ZT',
-    '/content/blog/my-post',
-    'Article',
-    '{"title": "My Post", "content": "Hello world", "status": "draft"}'
-);
+```json
+{"columns":["affected_rows"],"rows":[{"affected_rows":1}],"row_count":1,"execution_time_ms":4}
 ```
 
-## Multiple Rows
+The JSON literal must be cast to `jsonb`. Without the cast the statement fails with `Type mismatch: expected JSONB, got TEXT`.
 
-Insert multiple nodes in one statement:
-
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES
-    ('/content/tags/database', 'Tag', '{"name": "database", "color": "blue"}'),
-    ('/content/tags/tutorial', 'Tag', '{"name": "tutorial", "color": "green"}'),
-    ('/content/tags/reference', 'Tag', '{"name": "reference", "color": "red"}');
-```
-
-## Targeting a Branch
-
-By default an INSERT writes to the current/connection branch. To insert into a
-**different** branch in a single statement, add a `__branch` pseudo-column to the
-column list — the analog of the `WHERE __branch = '…'` override that
-[SELECT](./select.md), UPDATE, and DELETE already support.
+Read the node back to see what the server filled in:
 
 ```sql
--- Write this node to the `staging` branch, regardless of the current branch
-INSERT INTO default (__branch, path, node_type, properties)
-VALUES ('staging', '/content/blog/draft', 'Article', '{"title": "Draft"}');
+SELECT id, path, name, node_type, version, created_by, created_at FROM 'blog' WHERE path = '/hello';
 ```
 
-This is what lets a server-side function read one branch and write another in a
-single execution — for example, copy a node from `main` into another branch:
+```json
+{"id":"eebfcd9f-9a5b-4ec9-89aa-421294f3278b","path":"/hello","name":"hello","node_type":"raisin:Page","version":1,"created_by":"system","created_at":"2026-09-06T18:32:15.143528+00:00"}
+```
+
+## Columns
+
+| Column | Default | Notes |
+|--------|---------|-------|
+| `path` | required | Must start with `/`. The parent must exist unless the node is at the root. |
+| `node_type` | required | Must be allowed in the workspace (`allowed_node_types`, and `allowed_root_node_types` for root-level paths). |
+| `name` | last segment of `path` | `'/news/no-name'` becomes `name = 'no-name'`. |
+| `id` | generated UUID | Any string; must be unique in the repository. |
+| `archetype` | NULL | Must name an existing archetype. |
+| `properties` | `{}` | JSONB. Validated against the NodeType's property schema. |
+| `__branch` | current branch | Pseudo-column, see below. |
+
+`created_at`, `updated_at`, `created_by`, `updated_by` and `version` are set by the server and cannot be supplied.
+
+### Explicit id
 
 ```sql
--- inside a function: read main, then insert into another branch
-SELECT * FROM default WHERE __branch = 'main' AND path = '/content/blog/post';
-INSERT INTO default (__branch, path, node_type, properties)
-VALUES ('staging', '/content/blog/post', 'Article', '{ ... }');
+INSERT INTO 'blog' (id, path, node_type, name, properties)
+VALUES ('11111111-2222-4333-8444-555555555555', '/news/third', 'raisin:Page', 'third', '{"title": "Third"}'::jsonb);
 ```
 
-Rules:
+## Multiple rows
 
-- `__branch` must be a **string literal** and the **same value for every row** in
-  the statement.
-- It requires an **explicit column list** (the all-columns shorthand has nowhere
-  to place it) and is removed before the row is stored — it is not a property.
-- The override applies in auto-commit mode. Inside an explicit `BEGIN … COMMIT`
-  the branch is fixed at `BEGIN`; use [`USE BRANCH`](./branch.md) instead there.
-
-See the [branches reference](../../javascript-client/branches.md) for the
-client-side `onBranch` equivalent.
-
-## NULL Values
-
-Properties that aren't specified in the JSON are simply absent:
+One statement can insert several nodes. Parents listed earlier in the same statement are available to later rows.
 
 ```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/content/blog/untitled',
-    'Article',
-    '{"title": "Untitled", "status": "draft"}'
-);
+INSERT INTO 'blog' (path, node_type, name, properties) VALUES
+  ('/news',        'raisin:Folder', 'news',   '{"title": "News"}'::jsonb),
+  ('/news/first',  'raisin:Page',   'first',  '{"title": "First post", "views": 42, "published": false}'::jsonb),
+  ('/news/second', 'raisin:Page',   'second', '{"title": "Second", "views": 7, "published": true}'::jsonb);
 ```
 
-To explicitly set a JSON null:
+```json
+{"columns":["affected_rows"],"rows":[{"affected_rows":3}],"row_count":1,"execution_time_ms":5}
+```
+
+## Bound parameters
+
+```json
+{"sql": "INSERT INTO 'blog' (path, node_type, properties) VALUES ($1, 'raisin:Page', $2::jsonb)",
+ "params": ["/news/fourth", {"title": "Fourth"}]}
+```
+
+## UPSERT
+
+`UPSERT` creates the node if the path is free and replaces it if the path exists. The properties are replaced, not merged.
 
 ```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/content/blog/untitled',
-    'Article',
-    '{"title": "Untitled", "description": null, "status": "draft"}'
-);
+INSERT INTO 'blog' (path, node_type, name, properties) VALUES ('/t1', 'raisin:Folder', 't1', '{}'::jsonb);
+INSERT INTO 'blog' (path, node_type, name, properties) VALUES ('/t1', 'raisin:Folder', 't1', '{}'::jsonb);
+-- Conflict: Node with path '/t1' already exists (id=4ef79d59-05fd-412b-8101-de4ec286e927)
+
+UPSERT INTO 'blog' (path, node_type, name, properties) VALUES ('/t1', 'raisin:Folder', 't1', '{"x": 1}'::jsonb);
+-- {"affected_rows":1}
 ```
 
-## JSON Data
+## Validation
 
-Build properties using JSON syntax:
+The write is checked against the workspace and the NodeType before anything is stored. Each failure is a `VALIDATION_FAILED` response naming the rule:
+
+```
+Missing required property 'title' for NodeType 'raisin:Page'
+Workspace 'blog' does not allow root nodes of type 'raisin:User'. Allowed root types: ["raisin:Folder", "raisin:Page"]
+Conflict: Node with path '/t1' already exists (id=...)
+```
+
+A multi-row statement is rejected as a whole if any row fails.
+
+## Targeting a branch
+
+By default an `INSERT` writes to the branch of the request (`/api/sql/{repo}/{branch}`, or the repository's default branch). Add a `__branch` pseudo-column to write to a different branch in one statement:
 
 ```sql
--- Nested objects
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/products/widget-1',
-    'Product',
-    '{"name": "Widget", "metadata": {"color": "blue", "size": "large"}, "tags": ["new", "featured"]}'
-);
-
--- Using JSONB cast
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/products/gadget-1',
-    'Product',
-    '{"name": "Gadget", "price": 29.99}'::JSONB
-);
+INSERT INTO 'blog' (__branch, path, node_type, properties)
+VALUES ('staging', '/news/draft', 'raisin:Page', '{"title": "Draft"}'::jsonb);
 ```
 
-Using JSONB_SET to build properties:
+`__branch` must be a string literal, the same for every row, and it needs an explicit column list. It is removed before the row is stored. Inside an explicit `BEGIN ... COMMIT` the branch is fixed at `BEGIN`; use [`USE BRANCH`](./branch.md) there instead. `SELECT`, `UPDATE` and `DELETE` accept the same override as `WHERE __branch = '...'`.
 
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/products/gadget-2',
-    'Product',
-    JSONB_SET('{"name": "Gadget"}', '{color}', '"red"')
-);
-```
+The target branch must already carry the node type. A branch created with a bare `CREATE BRANCH 'staging'` and written to immediately answered `NodeType not found: raisin:Page` in testing; create the branch from a populated one (`CREATE BRANCH 'staging' FROM 'main'`, see [Branch statements](./branch.md)) before inserting into it.
 
-## Timestamps
+## Property values
 
-Include timestamp values in properties:
+`properties` is free-form JSON checked against the NodeType schema. Nested objects, arrays, numbers and booleans are stored as written. Two value shapes have special meaning:
 
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/events/launch',
-    'Event',
-    '{"name": "Launch", "event_time": "2024-01-15T10:00:00Z"}'
-);
-```
+- A reference: `{"raisin:ref": "/news/second", "raisin:workspace": "blog"}`. On write the server resolves the path to the target's id and stores `raisin:ref` (id), `raisin:workspace` and `raisin:path`. `REFERENCES(...)` and `RESOLVE(...)` work on these; see [Path functions](../functions/path-functions.md).
+- A geometry: a GeoJSON object such as `{"type": "Point", "coordinates": [-122.4, 37.8]}` in a property. It is indexed for `ST_DWITHIN` and friends; see [Geospatial functions](../functions/geospatial-functions.md).
 
-:::note
-System columns `created_at` and `updated_at` are set automatically and cannot be specified in INSERT.
-:::
+Fields marked `FULLTEXT` or `VECTOR` in the NodeType are indexed after the write; nothing extra is needed in the statement.
 
-## Geospatial Data
-
-Geometry values use typed columns defined in the schema. The geometry data is stored separately from the JSON properties:
-
-```sql
-INSERT INTO default (path, node_type, properties, point)
-VALUES (
-    '/locations/san-francisco',
-    'Location',
-    '{"name": "San Francisco"}',
-    ST_POINT(-122.4194, 37.7749)
-);
-```
-
-## Arrays
-
-Include arrays in properties:
-
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/content/blog/sql-guide',
-    'Article',
-    '{"title": "SQL Guide", "tags": ["sql", "database", "tutorial"]}'
-);
-```
-
-## Vectors
-
-Vector embeddings use typed columns defined in the schema. The vector data is stored separately from the JSON properties:
-
-```sql
-INSERT INTO default (path, node_type, properties, embedding)
-VALUES (
-    '/documents/doc-1',
-    'Document',
-    '{"title": "Document 1"}',
-    ARRAY[0.1, 0.2, 0.3]::VECTOR(3)
-);
-```
-
-## Full-Text Search
-
-Full-text search is schema-driven. Mark properties with the `FULLTEXT` keyword in the schema definition, and RaisinDB automatically indexes their content. No special column is needed at insert time — just insert the text properties normally:
-
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/content/blog/db-tutorial',
-    'Article',
-    '{"title": "Database Tutorial", "content": "A tutorial for beginners"}'
-);
-```
-
-:::tip
-Properties marked as `FULLTEXT` in the schema are automatically indexed for search. You can then query them using `search_vector @@ TO_TSQUERY(...)` or the `fulltext_search()` function.
-:::
-
-## Expressions in VALUES
-
-Use expressions when building properties:
-
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/content/blog/example',
-    'Article',
-    JSONB_SET(
-        '{"title": "Example Page", "status": "draft"}',
-        '{slug}',
-        TO_JSON(LOWER('Example Page'))
-    )
-);
-```
-
-## Examples
-
-### Basic Node Insert
-
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/content/guides/raisindb-intro',
-    'Article',
-    '{
-        "title": "Introduction to RaisinDB",
-        "content": "RaisinDB is a hierarchical document database...",
-        "status": "published",
-        "author": "admin"
-    }'
-);
-```
-
-### Insert Product with Metadata
-
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/products/premium-widget',
-    'Product',
-    '{
-        "name": "Premium Widget",
-        "price": 99.99,
-        "metadata": {
-            "color": "blue",
-            "weight": 500,
-            "features": ["waterproof", "durable"]
-        }
-    }'
-);
-```
-
-### Insert Location
-
-```sql
-INSERT INTO default (path, node_type, properties, location)
-VALUES (
-    '/stores/downtown',
-    'Store',
-    '{
-        "name": "Downtown Store",
-        "address": "123 Main St"
-    }',
-    ST_POINT(-122.4194, 37.7749)
-);
-```
-
-### Insert Event
-
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES (
-    '/events/product-launch',
-    'Event',
-    '{
-        "name": "Product Launch",
-        "description": "New product release",
-        "event_date": "2024-06-15T14:00:00Z"
-    }'
-);
-```
-
-### Batch Insert
-
-```sql
-INSERT INTO default (path, node_type, properties)
-VALUES
-    ('/content/tags/database', 'Tag', '{"name": "Database", "slug": "database", "description": "Database related content"}'),
-    ('/content/tags/tutorial', 'Tag', '{"name": "Tutorial", "slug": "tutorial", "description": "Tutorial content"}'),
-    ('/content/tags/guide', 'Tag', '{"name": "Guide", "slug": "guide", "description": "Guide content"}'),
-    ('/content/tags/reference', 'Tag', '{"name": "Reference", "slug": "reference", "description": "Reference documentation"}');
-```
-
-## Notes
-
-- System columns (`id`, `path`, `created_at`, `updated_at`, `version`) are auto-generated
-- The `id` column can optionally be provided; if omitted, a ULID is generated
-- The `node_type` determines the schema used for validation (if schema validation is enabled)
-- All user data goes in the `properties` JSONB column
-- Constraint violations from schema validation will cause the INSERT to fail
-- Invalid JSON in properties will cause an error
+Timestamps in properties are plain strings. Keep them in ISO 8601 (`"2024-01-15T10:00:00Z"`) so they sort correctly as text.

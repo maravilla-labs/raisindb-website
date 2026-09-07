@@ -4,264 +4,66 @@ sidebar_position: 9
 
 # Vector Functions
 
-Functions for vector embedding generation and similarity search.
-
-## EMBEDDING
-
-Generate a vector embedding from text input.
-
-### Syntax
-
-```sql
-EMBEDDING(text) → VECTOR
-```
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| text | TEXT | Input text to embed |
-
-### Return Value
-
-VECTOR - Vector embedding of the input text.
-
-### Examples
-
-```sql
--- Generate an embedding
-SELECT EMBEDDING('machine learning algorithms');
-
--- Store embeddings for documents
-UPDATE documents
-SET embedding = EMBEDDING(title || ' ' || content)
-WHERE embedding IS NULL;
-
--- Insert with embedding
-INSERT INTO articles (title, content, embedding)
-VALUES (
-    'SQL Guide',
-    'Learn SQL from scratch...',
-    EMBEDDING('SQL Guide Learn SQL from scratch')
-);
-```
-
-### Notes
-
-- Embedding dimensions depend on the configured model
-- Returns NULL if text is NULL or empty
-- Useful for semantic search and similarity matching
-
----
-
-## VECTOR_L2_DISTANCE
-
-Calculate the L2 (Euclidean) distance between two vectors.
-
-### Syntax
-
-```sql
-VECTOR_L2_DISTANCE(vector1, vector2) → DOUBLE
-```
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| vector1 | VECTOR | First vector |
-| vector2 | VECTOR | Second vector |
-
-### Return Value
-
-DOUBLE - Euclidean distance between the two vectors. Lower values indicate more similar vectors.
-
-### Examples
-
-```sql
--- Calculate distance between two document embeddings
-SELECT VECTOR_L2_DISTANCE(a.embedding, b.embedding) AS distance
-FROM documents a, documents b
-WHERE a.title = 'SQL Guide' AND b.title = 'Database Tutorial';
-
--- Find nearest neighbors
-SELECT title, VECTOR_L2_DISTANCE(embedding, EMBEDDING('search query')) AS distance
-FROM documents
-ORDER BY distance
-LIMIT 10;
-```
-
-### Notes
-
-- Both vectors must have the same dimensions
-- Returns 0.0 for identical vectors
-- Also available as the `<->` operator
-
----
-
-## VECTOR_COSINE_DISTANCE
-
-Calculate the cosine distance between two vectors.
-
-### Syntax
-
-```sql
-VECTOR_COSINE_DISTANCE(vector1, vector2) → DOUBLE
-```
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| vector1 | VECTOR | First vector |
-| vector2 | VECTOR | Second vector |
-
-### Return Value
-
-DOUBLE - Cosine distance (1 - cosine similarity). Lower values indicate more similar vectors.
-
-### Examples
-
-```sql
--- Cosine similarity search
-SELECT title, VECTOR_COSINE_DISTANCE(embedding, EMBEDDING('query text')) AS distance
-FROM documents
-ORDER BY distance
-LIMIT 10;
-
--- Find semantically similar content
-SELECT
-    a.title AS source,
-    b.title AS similar,
-    VECTOR_COSINE_DISTANCE(a.embedding, b.embedding) AS distance
-FROM documents a
-CROSS JOIN documents b
-WHERE a.__id != b.__id
-  AND VECTOR_COSINE_DISTANCE(a.embedding, b.embedding) < 0.3
-ORDER BY distance;
-```
-
-### Notes
-
-- Range: 0.0 (identical direction) to 2.0 (opposite direction)
-- Normalized for vector magnitude — measures directional similarity
-- Also available as the `<=>` operator
-
----
-
-## VECTOR_INNER_PRODUCT
-
-Calculate the inner product (dot product) of two vectors.
-
-### Syntax
-
-```sql
-VECTOR_INNER_PRODUCT(vector1, vector2) → DOUBLE
-```
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| vector1 | VECTOR | First vector |
-| vector2 | VECTOR | Second vector |
-
-### Return Value
-
-DOUBLE - Inner product of the two vectors. Higher values indicate more similar vectors.
-
-### Examples
-
-```sql
--- Inner product similarity
-SELECT title, VECTOR_INNER_PRODUCT(embedding, EMBEDDING('search terms')) AS score
-FROM documents
-ORDER BY score DESC
-LIMIT 10;
-```
-
-### Notes
-
-- Higher values indicate greater similarity (unlike distance functions)
-- Best suited for normalized vectors
-- Also available as the `<#>` operator (returns negative inner product for ORDER BY compatibility)
-
----
-
-## Vector Operators
-
-### Distance Operators
-
-| Operator | Function Equivalent | Description |
-|----------|-------------------|-------------|
-| `<->` | `VECTOR_L2_DISTANCE` | L2 (Euclidean) distance |
-| `<=>` | `VECTOR_COSINE_DISTANCE` | Cosine distance |
-| `<#>` | `VECTOR_INNER_PRODUCT` | Negative inner product |
-
-### Examples
-
-```sql
--- Using operators for nearest neighbor search
-SELECT title
-FROM documents
-ORDER BY embedding <-> EMBEDDING('search query')
-LIMIT 10;
-
--- Cosine distance with operator
-SELECT title, embedding <=> EMBEDDING('machine learning') AS distance
-FROM documents
-WHERE embedding <=> EMBEDDING('machine learning') < 0.5
-ORDER BY distance;
-
--- Inner product with operator
-SELECT title, embedding <#> EMBEDDING('search terms') AS score
-FROM documents
-ORDER BY score
-LIMIT 10;
-```
-
----
+SQL surface for embeddings and similarity search: the three search table
+functions, the `EMBEDDING` / `VECTOR_OF` query builders, the distance operators,
+and the statements that configure and maintain the vector index.
+
+Every example on this page was run against a tenant whose embedding
+configuration points at a local Ollama `bge-m3` model. A query that embeds text
+(`KNN('some text')`, `EMBEDDING('some text')`) needs an enabled embedding
+configuration; without one the statement fails with a message that says so. See
+[AI Provider Configuration](/docs/guides/ai/ai-provider-configuration).
 
 ## Search table functions: `KNN`, `FULLTEXT_SEARCH`, `HYBRID_SEARCH`
 
-Three entry points over **one** engine. `KNN` is `HYBRID_SEARCH` with the
-lexical leg switched off; `FULLTEXT_SEARCH` is the same with the vector leg off.
-All three return the same columns and apply the same row-level security.
+Three entry points over one engine. `KNN` is `HYBRID_SEARCH` with the lexical
+leg switched off; `FULLTEXT_SEARCH` is the same engine with the vector leg off.
+All three return the same columns and apply the caller's row-level security.
 
 ### Syntax
 
 ```text
-HYBRID_SEARCH  ( query [, limit] [, workspace] [, named …] )
-FULLTEXT_SEARCH( query ,  language            [, named …] )
-KNN            ( query [, limit]              [, named …] )
+HYBRID_SEARCH  ( query [, limit] [, named ...] )
+FULLTEXT_SEARCH( query ,  language [, named ...] )
+KNN            ( query [, limit]  [, named ...] )
 ```
 
-Positionals must precede named arguments, and each value may be given once.
-Unknown named arguments are **rejected**, not ignored.
+Positional arguments come first, then named arguments written as
+`name => value`. Each value may be given once. An unknown named argument is an
+error that lists the valid names, for example
+`unknown argument 'foo' for FULLTEXT_SEARCH. Valid: workspaces, limit, language.`
 
-### Parameters
+### Named arguments
 
 | Named argument | `HYBRID_SEARCH` | `FULLTEXT_SEARCH` | `KNN` | Default |
 |---|:-:|:-:|:-:|---|
-| `workspaces` | ✅ | ✅ | ✅ | **required** |
-| `limit` | ✅ | ✅ | ✅ | 10 (100 for `FULLTEXT_SEARCH`) |
-| `language` | ✅ | ✅ (also positional #2) | — | the repo's default |
-| `vector_weight` | ✅ | — | — | 1.0 |
-| `fulltext_weight` | ✅ | — | — | 1.0 |
-| `max_distance` | ✅ | — | ✅ | 0.6 |
-| `kind` | ✅ | — | ✅ | `'text'` |
+| `workspaces` | yes | yes | yes | required |
+| `limit` | yes | yes | yes | 10 (100 for `FULLTEXT_SEARCH`); 1 to 1000 |
+| `language` | yes | yes (also positional #2, required there) | no | the repository's default language |
+| `vector_weight` | yes | no | no | 1.0 |
+| `fulltext_weight` | yes | no | no | 1.0 |
+| `max_distance` | yes | no | yes | 0.6, or the tenant's `DEFAULT_MAX_DISTANCE` |
+| `kind` | yes | no | yes | `'text'` |
+| `granularity` | yes | no | yes | `'node'` |
 
-`language` must be an **ISO 639-1 code** (`'en'`, not `'english'`) — the index
-stores two-letter codes. `kind` selects the embedding space: `'text'`,
-`'image'` or `'all'`; it defaults to `'text'` so that adding an image tower
-cannot silently change existing queries.
+- `language` is an ISO 639-1 code (`'en'`, not `'english'`). The index stores
+  two-letter codes, so any other spelling is rejected.
+- `kind` selects the embedding space: `'text'`, `'image'` or `'all'`. It
+  defaults to `'text'`, so adding image embeddings later does not change what
+  existing queries return.
+- `granularity` says what one row is. `'node'` (the default) returns one row per
+  document carrying its best-matching chunk, so `LIMIT 10` is ten documents.
+  `'chunk'` returns one row per passage, so several rows may share a `node_id`
+  and `LIMIT 10` is ten passages. `'document'` and `'passage'` are accepted as
+  synonyms.
+- `fulltext_weight => 0` skips the lexical leg; `vector_weight => 0` skips the
+  vector leg, including embedding the query, so a tenant with no embedding
+  provider can still run a hybrid query as keyword search. Both at zero is an
+  error.
 
-Setting `fulltext_weight => 0` skips the lexical leg entirely;
-`vector_weight => 0` skips the vector leg, including embedding-provider
-resolution — so a tenant with no embedder can still run a hybrid query.
+### The `workspaces` scope
 
-### The `workspaces` scope is required
-
-Omitting it is an error, not a repo-wide search. There are four spellings:
+The scope is written in every call. There are four spellings:
 
 ```sql
 workspaces => 'library'              -- one workspace
@@ -270,200 +72,316 @@ workspaces => 'content-*'            -- a glob; matching nothing is fine
 workspaces => 'ALL READABLE'         -- every workspace this caller may read
 ```
 
-A **name** is an assertion (one that does not resolve is an error); a **glob**
-is a question (matching nothing is not). `'*'` and `'ALL'` are rejected.
+A name that does not resolve is an error (`workspace 'nope' is not available to
+this query`). A glob that matches nothing returns zero rows. Omitting the scope
+is an error, and so is `'*'` or `'ALL'`; use `'ALL READABLE'` for a repository-wide
+search.
 
 ### The query argument
 
-`KNN`'s first argument accepts five forms:
+`KNN` accepts five forms for its first argument:
 
 ```sql
-KNN('some text')                        -- embedded with the tenant's provider
-KNN(EMBEDDING('some text'))             -- identical; the wrapper is unwrapped
-KNN(ARRAY[0.1, 0.2, ...])               -- a vector literal
-KNN('[0.1, 0.2, ...]')                  -- the pgvector text form
-KNN(VECTOR_OF('library:/winter-layup')) -- a node's own stored vector
+KNN('some text', ...)                        -- embedded with the tenant's provider
+KNN(EMBEDDING('some text'), ...)             -- identical
+KNN(ARRAY[0.1, 0.2, ...], ...)               -- a vector literal
+KNN('[0.1, 0.2, ...]', ...)                  -- the pgvector text form
+KNN(VECTOR_OF('library:/winter-layup'), ...) -- a node's own stored vector
 ```
 
-The last two are what make binding a vector as a query parameter work.
-`VECTOR_OF` and raw vectors are **`KNN`-only**: they have no lexical surface, so
-a `HYBRID_SEARCH` built on one would be a vector-only search reported as hybrid.
+A vector of the wrong width is refused:
+`Query dimension mismatch: expected 1024, got 2`.
 
-`VECTOR_OF(node_ref [, chunk])` requires a workspace prefix
-(`'workspace:/path'` or `'workspace:<node-id>'`), because embeddings are keyed
-by the workspace the node lives in, which is not necessarily one being searched.
-The source node is excluded from its own results.
+`VECTOR_OF(node_ref [, chunk_index])` reads a node's stored vector. The
+reference needs a workspace prefix (`'workspace:/path'` or `'workspace:<node-id>'`)
+because embeddings are keyed by the workspace the node lives in, which need not
+be one of the workspaces being searched. Without a chunk index the node must
+have exactly one stored vector; a chunked document needs the index. The source
+node is excluded from its own results. `VECTOR_OF` and raw vectors work only
+with `KNN`, since they have no text for a lexical leg.
 
 ### Return columns
 
 | Column | Type | Description |
 |--------|------|-------------|
-| node_id | TEXT | The matched node ID — unique only *within* its workspace |
-| workspace_id | TEXT | The workspace the hit came from |
-| name | TEXT | Node name |
-| path | TEXT | Node path in the content hierarchy |
-| node_type | TEXT | Node type |
-| score | DOUBLE | Fused RRF score (higher = more relevant) |
-| fulltext_rank | INTEGER | 1-based rank in the lexical leg; `NULL` if it did not match |
-| vector_rank | INTEGER | 1-based rank in the vector leg; `NULL` if it did not match |
-| vector_distance | DOUBLE | Cosine distance of the vector hit; `NULL` when `vector_rank` is |
-| chunk_index | INTEGER | Which chunk answered; `0` for an unchunked document |
-| embedding_kind | TEXT | `'text'` or `'image'` — which space produced the vector hit |
-| revision | INTEGER | Node revision |
-| created_at, updated_at | TEXT | Timestamps |
-| properties | JSON | Node properties, already field-filtered by the granting permission |
+| `node_id` | TEXT | The matched node id. Unique within its workspace |
+| `workspace_id` | TEXT | The workspace the hit came from |
+| `name`, `path`, `node_type` | TEXT | From the node |
+| `score` | DOUBLE | Fused rank score (higher is better) |
+| `fulltext_rank` | INTEGER | 1-based rank in the lexical leg; `NULL` if it did not match |
+| `vector_rank` | INTEGER | 1-based rank in the vector leg; `NULL` if it did not match |
+| `vector_distance` | DOUBLE | Cosine distance of the vector hit; `NULL` when `vector_rank` is |
+| `chunk_index` | INTEGER | Which chunk answered; `0` for an unchunked document; `NULL` for a lexical-only hit |
+| `embedding_kind` | TEXT | `'text'` or `'image'`; `NULL` for a lexical-only hit |
+| `chunk_text` | TEXT | The text of the chunk that answered, or `NULL` |
+| `chunk_text_source` | TEXT | `'exact'` (sliced from the document by its stored span), `'excerpt'` (the stored preview, up to 200 characters) or `'unavailable'` |
+| `revision` | INTEGER | Node revision |
+| `created_at`, `updated_at` | TEXT | Timestamps |
+| `properties` | JSON | Node properties, filtered by the permission that granted access |
+
+Fusion is rank based: `score = sum(weight / (60 + rank))` over the legs a
+document appeared in. Distances are reported but never added to the score, so a
+text hit and an image hit stay comparable by rank alone.
 
 ### Examples
 
 ```sql
--- Basic hybrid search
-SELECT path, score, fulltext_rank, vector_rank, vector_distance
-FROM HYBRID_SEARCH('how does authentication work', 10,
-                   workspaces => 'docs');
+-- Semantic search, one workspace
+SELECT path, name, vector_distance, chunk_index
+FROM KNN('how do vector indexes work', 10, workspaces => 'knowledge');
+```
 
--- Filter the results: a residual WHERE is applied AFTER fusion,
--- so `limit` still means rows delivered.
+```json
+{"columns":["path","name","vector_distance","chunk_index"],
+ "rows":[{"path":"/handbook","name":"handbook","vector_distance":0.3247,"chunk_index":86},
+         {"path":"/vector-search-explained","name":"vector-search-explained","vector_distance":0.4384,"chunk_index":1}]}
+```
+
+```sql
+-- Hybrid: both legs, rank-fused
+SELECT path, score, fulltext_rank, vector_rank, vector_distance, chunk_index
+FROM HYBRID_SEARCH('how does replication work', 5, workspaces => 'knowledge');
+-- {"path":"/handbook","score":0.0328,"fulltext_rank":1,"vector_rank":1,"vector_distance":0.3769,"chunk_index":58}
+
+-- Passages for a RAG context window: several rows may share a node
+SELECT path, chunk_index, vector_distance, chunk_text
+FROM KNN('merging a branch back', 3, workspaces => 'knowledge', granularity => 'chunk');
+
+-- Lexical only, explicit language
+SELECT path, score FROM FULLTEXT_SEARCH('graph', 'en', workspaces => 'knowledge');
+
+-- A residual WHERE is applied after fusion; `limit` still means rows delivered
 SELECT node_id, name, score
 FROM HYBRID_SEARCH('database replication', 20, workspaces => 'ALL READABLE')
 WHERE node_type = 'kb:Article'
 ORDER BY score DESC
 LIMIT 10;
 
--- Semantic only, across a family of workspaces
-SELECT path, chunk_index, vector_distance
-FROM KNN('storing a boat over winter', 5, workspaces => 'content-*');
-
--- Lexical only, German analyzer
-SELECT path, score
-FROM FULLTEXT_SEARCH('Bremsbeläge', 'de', workspaces => 'library');
-
 -- More like this, from a node's own stored vector
 SELECT path, vector_distance
-FROM KNN(VECTOR_OF('library:/winter-layup'), 4,
-         workspaces => 'ALL READABLE');
+FROM KNN(VECTOR_OF('knowledge:/intro-to-sql'), 3, workspaces => 'knowledge');
+
+-- Bind the query text as a parameter
+SELECT path FROM KNN($1, 5, workspaces => 'knowledge');
 ```
-
-### Notes
-
-- Fusion is **rank-based**, never score-based: `score(doc) = Σ weight / (60 + rank)`.
-  Distances from two embedding spaces are not commensurable, so they are
-  reported (as `vector_distance`, beside `embedding_kind`) but never combined.
-- Results are fused per **node**, not per chunk — one long document does not
-  fill the result set. `chunk_index` names the chunk that answered.
-- A query vector of the wrong width is refused rather than degraded.
-
-## Distance Filtering in WHERE Clauses
-
-The `<=>` operator can be used in `WHERE` clauses to filter results by distance. The threshold is extracted and pushed down to the HNSW engine for efficient search:
-
-```sql
--- Only return results within cosine distance 0.3
-SELECT id, name
-FROM 'default'
-WHERE embedding <=> EMBEDDING('machine learning') < 0.3
-ORDER BY embedding <=> EMBEDDING('machine learning');
-```
-
-### Configurable Default Max Distance
-
-```sql
--- Set the default maximum distance threshold per-tenant
-ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5';
-```
-
-This controls the default cutoff for vector search results. Results beyond this distance are filtered out.
 
 ---
 
-## Vector Index Management
+## `EMBEDDING` and the distance operators
 
-SQL commands for managing HNSW indexes.
-
-### REBUILD VECTOR INDEX
-
-Rebuild the HNSW index from stored embeddings:
-
-```sql
-REBUILD VECTOR INDEX;
-```
-
-Use this after bulk data imports or if the index becomes inconsistent.
-
-### VERIFY VECTOR INDEX
-
-Check the integrity of the HNSW index:
+`EMBEDDING(text)` embeds text with the tenant's configured provider. It is only
+recognised inside a nearest-neighbour pattern: an `ORDER BY` on a distance
+between the virtual `embedding` column and a query, followed by `LIMIT`. The
+planner turns that pattern into a `VectorScan` over the HNSW index.
 
 ```sql
-VERIFY VECTOR INDEX;
+SELECT path, name, embedding <=> EMBEDDING('index maintenance') AS distance
+FROM 'knowledge'
+ORDER BY distance
+LIMIT 3;
 ```
 
-Returns a report of any inconsistencies found.
+```json
+{"columns":["knowledge.path","knowledge.name","knowledge.distance"],
+ "rows":[{"knowledge.path":"/handbook","knowledge.name":"handbook","knowledge.distance":0.3599},
+         {"knowledge.path":"/intro-to-sql","knowledge.name":"intro-to-sql","knowledge.distance":0.5928}]}
+```
+
+Columns from a `VectorScan` come back prefixed with the table name
+(`knowledge.path`). The search table functions return bare column names.
+
+### Operators and function spellings
+
+| Operator | Function spelling | Metric |
+|----------|-------------------|--------|
+| `<=>` | `VECTOR_COSINE_DISTANCE(embedding, q)` | cosine distance (0 identical, up to 2 opposite) |
+| `<->` | `VECTOR_L2_DISTANCE(embedding, q)` | Euclidean distance |
+| `<#>` | `VECTOR_INNER_PRODUCT(embedding, q)` | inner product, ordered so that ascending means most similar first |
+
+All three are accepted as the `ORDER BY` key of the pattern above and select the
+metric of the `VectorScan`. `EXPLAIN` shows which was chosen:
+
+```sql
+EXPLAIN SELECT path FROM 'knowledge'
+ORDER BY embedding <-> EMBEDDING('sql databases') LIMIT 5;
+-- VectorScan: table=knowledge, column=embedding, k=5, metric=L2
+```
+
+Outside that pattern the functions and operators are not evaluated. A `SELECT`
+without `ORDER BY ... LIMIT` returns `NULL` for the distance, and
+`SELECT EMBEDDING('x')` on its own fails with `Unknown function: EMBEDDING`.
+Use the search table functions when you need a distance as an ordinary value.
+
+### Distance threshold
+
+A distance comparison in `WHERE` is pushed into the scan as `max_distance`. Both
+the operator form and the alias form are recognised:
+
+```sql
+SELECT path, embedding <=> EMBEDDING('sql databases') AS distance
+FROM 'knowledge'
+WHERE distance < 0.5
+ORDER BY distance
+LIMIT 10;
+```
+
+```text
+EXPLAIN ... -> VectorScan: table=knowledge, column=embedding, k=10, metric=Cosine, max_distance=0.50
+```
+
+Other predicates become a filter over a wider candidate set (`fetch_k`), so a
+`WHERE node_type = ...` or `PATH_STARTS_WITH(path, ...)` composes with the scan:
+
+```text
+Limit: limit=5, offset=0
+  Filter: 1 predicates
+    VectorScan: table=knowledge, column=embedding, k=5, metric=Cosine, fetch_k=100
+```
+
+### Default maximum distance
+
+Search results beyond the maximum distance are dropped. The default is 0.6 and
+can be set per tenant:
+
+```sql
+ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5';
+-- {"result":"Embedding configuration updated","success":true}
+```
+
+`KNN` and `HYBRID_SEARCH` also take `max_distance => 0.3` per call.
+
+---
+
+## Embedding configuration statements
+
+| Statement | Result |
+|---|---|
+| `SHOW EMBEDDING CONFIG` | key/value rows: `enabled`, `provider`, `model`, `dimensions`, `has_api_key`, `base_url`, `include_name`, `include_path`, `default_max_distance`, `distance_metric`, `max_embeddings_per_repo` |
+| `ALTER EMBEDDING CONFIG SET key = value [SET key = value ...]` | `result`, `success` |
+| `TEST EMBEDDING CONNECTION` | `result`, `model`, `success`, and `dimensions` on success |
+
+Accepted keys for `ALTER EMBEDDING CONFIG SET`: `PROVIDER` (`openai`, `claude`,
+`ollama`, `huggingface`), `MODEL`, `DIMENSIONS`, `API_KEY`, `BASE_URL`, `ENABLED`,
+`INCLUDE_NAME`, `INCLUDE_PATH`, `DEFAULT_MAX_DISTANCE` (a number, or `none`),
+`DISTANCE_METRIC` (`cosine`, `l2`, `inner_product`, `hamming`),
+`MAX_EMBEDDINGS_PER_REPO` (a number, or `unlimited`). Keys are case-insensitive;
+values are quoted.
+
+```sql
+ALTER EMBEDDING CONFIG
+  SET PROVIDER = 'ollama'
+  SET MODEL = 'bge-m3'
+  SET DIMENSIONS = 1024
+  SET BASE_URL = 'http://localhost:11434'
+  SET ENABLED = true;
+```
+
+## Provider statements
+
+The tenant's provider list (the record behind `/api/tenants/{tenant}/ai/config`,
+the CLI and the console) has its own statements:
+
+| Statement | Result |
+|---|---|
+| `SHOW AI PROVIDERS` (alias `SHOW AI CONFIG`) | one row per provider: `slug`, `kind`, `enabled`, `has_api_key`, `api_endpoint`, `models` |
+| `ALTER AI CONFIG ADD PROVIDER '<slug>' [SET key = value ...]` | create or update the provider with that slug |
+| `ALTER AI CONFIG DROP PROVIDER '<slug>'` | remove it |
+
+`ADD PROVIDER` SET keys: `KIND` (`openai`, `anthropic`, `google`, `ollama`,
+`azure_openai`, `groq`, `openrouter`, `bedrock`, `custom`, `local`; defaults to
+the slug when the slug is a kind name), `API_KEY`, `BASE_URL` (or `ENDPOINT`),
+`DISPLAY_NAME`, `ENABLED`, `MODEL` (repeatable or comma-separated; the first
+becomes the default) and `USE_CASES` (comma-separated, applied to the models
+named in the same statement; default `chat,agent`). A key that is not set keeps
+its stored value, so re-running the statement without `API_KEY` keeps the key.
+
+```sql
+ALTER AI CONFIG ADD PROVIDER 'bedrock'
+  SET API_KEY = 'AKIAIOSFODNN7EXAMPLE:wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
+  SET BASE_URL = 'us-east-1'
+  SET MODEL = 'anthropic.claude-sonnet-4-20250514-v1:0';
+
+ALTER AI CONFIG ADD PROVIDER 'openai'
+  SET MODEL = 'text-embedding-3-small' SET USE_CASES = 'embedding';
+
+SHOW AI PROVIDERS;
+-- {"slug":"bedrock","kind":"bedrock","enabled":true,"has_api_key":true,"api_endpoint":"us-east-1",
+--  "models":"anthropic.claude-sonnet-4-20250514-v1:0*[chat,agent]"}
+```
+
+In the `models` column a `*` marks a default model and the bracket lists its
+use cases.
+
+---
+
+## Vector index management
+
+Each statement acts on the current repository and branch.
 
 ### SHOW VECTOR INDEX HEALTH
 
-Display health statistics for the vector index:
+One row per index partition. A partition is one embedding model and kind; a
+tenant that changed models has one partition per model it ever used.
 
 ```sql
 SHOW VECTOR INDEX HEALTH;
 ```
 
-Returns metrics including vector count, index size, and integrity status.
-
----
-
-## Examples
-
-### Semantic Search
-
-```sql
--- Find documents semantically similar to a query
-SELECT
-    title,
-    VECTOR_COSINE_DISTANCE(embedding, EMBEDDING('how to query databases')) AS relevance
-FROM documents
-ORDER BY relevance
-LIMIT 20;
+```json
+{"columns":["partition","queried","status","count","dimensions","memory_bytes","quantization","metric"],
+ "rows":[{"partition":"7TKpxhrIUdAT","queried":true,"status":"available","count":126,
+          "dimensions":1024,"memory_bytes":16798240,"quantization":"F32","metric":"Cosine"}]}
 ```
 
-### Recommendation Engine
+`queried` marks the partition the current configuration searches. A branch
+that has no index yet returns one row with `status: "empty"`.
 
-```sql
--- Find similar products based on description embeddings
-SELECT
-    b.name AS recommended,
-    VECTOR_L2_DISTANCE(a.embedding, b.embedding) AS similarity
-FROM products a
-CROSS JOIN products b
-WHERE a.name = 'Premium Widget'
-  AND a.__id != b.__id
-ORDER BY similarity
-LIMIT 5;
+### VERIFY VECTOR INDEX
+
+Compares the number of vectors in the index with the number of stored
+embeddings.
+
+```json
+{"columns":["status","hnsw_count","storage_count"],
+ "rows":[{"status":"consistent","hnsw_count":133,"storage_count":133}]}
 ```
 
-### Hybrid Search (Vector + Full-Text)
+On a mismatch the row also carries `action: "Run REBUILD VECTOR INDEX to fix"`.
+The counts cover every partition, so a repository whose configuration changed
+models reports the older partition's vectors as well.
 
-```sql
--- Use the HYBRID_SEARCH table function for combined ranking
-SELECT node_id, name, score, fulltext_rank, vector_rank
-FROM HYBRID_SEARCH('database management', 10, workspaces => 'docs');
+### REBUILD VECTOR INDEX
 
--- Or combine vector distance with full-text manually
-SELECT
-    title,
-    TS_RANK(search_vector, TO_TSQUERY('database')) AS text_rank,
-    VECTOR_COSINE_DISTANCE(embedding, EMBEDDING('database management')) AS vector_distance
-FROM articles
-WHERE search_vector @@ TO_TSQUERY('database')
-ORDER BY vector_distance
-LIMIT 10;
+Rebuilds the index for the configured partition from stored embeddings. Use it
+after a bulk import, after creating a branch (a new branch starts with an empty
+index), or when `VERIFY` reports a mismatch.
+
+```json
+{"result":"Vector index rebuilt: 126 embeddings indexed (workspaces: functions, knowledge)","success":true}
 ```
+
+### REGENERATE EMBEDDINGS
+
+Reports the current count and points at the HTTP endpoint that queues
+regeneration jobs:
+
+```http
+POST /api/admin/management/database/{tenant}/{repo}/vector/regenerate
+```
+
+The same management prefix also offers `vector/health`, `vector/verify`,
+`vector/rebuild`, `vector/optimize` and `vector/restore`.
 
 ---
 
 ## Notes
 
-- Vector columns must have a fixed dimension defined in the schema: `VECTOR(768)`
-- All distance functions require vectors of the same dimension
-- Use `EMBEDDING()` to generate vectors from text at query time
-- Operators `<->`, `<=>`, and `<#>` can be used in ORDER BY for efficient nearest-neighbor queries
-- The `<#>` operator returns the negative inner product so that ORDER BY ASC returns the most similar results
+- A search function's rows are ordinary rows: project them, filter them with a
+  residual `WHERE`, and order them.
+- `ORDER BY ... LIMIT` with an `OFFSET` is not planned as a `VectorScan`; leave
+  the offset out and page with a distance threshold instead.
+- `WHERE __revision = <hlc>` applies to the operator form as well: the scan
+  reads each hit at that revision. `EXPLAIN` does not print it.
+- Cosine distance is `1 - cosine similarity`. As a rough guide with a text
+  model, values under about 0.4 are close matches and values above 0.6 are
+  filtered out by default.

@@ -4,155 +4,130 @@ sidebar_position: 4
 
 # Schema Management
 
-Manage and resolve **NodeTypes**, **Archetypes**, and **ElementTypes** at runtime — list, read, create/update/delete, publish, and resolve inheritance (`extends`).
-
-Both clients expose the same three accessors on a database handle:
+The `@raisindb/client` package manages **NodeTypes**, **Archetypes** and **ElementTypes** at runtime: list, read, create, update, delete, publish, and resolve inheritance. Both clients expose the same three accessors on a database handle:
 
 ```typescript
-const db = client.database('my_repo');
+import { RaisinClient, RaisinHttpClient } from '@raisindb/client';
 
-db.nodeTypes();     // NodeType management
-db.archetypes();    // Archetype management
-db.elementTypes();  // ElementType management
+// WebSocket client
+const client = new RaisinClient('raisin://localhost:8090/sys/default');
+await client.connect();
+await client.authenticate({ username: 'admin', password: '...' });
+const db = client.database('docs-model');
+
+// HTTP client (server-side rendering, scripts)
+const http = new RaisinHttpClient('http://localhost:8090');
+await http.authenticate({ username: 'admin', password: '...' });
+const hdb = http.database('docs-model');
+
+db.nodeTypes();     // NodeTypes        (HttpNodeTypes on the HTTP client)
+db.archetypes();    // Archetypes       (HttpArchetypes)
+db.elementTypes();  // ElementTypes     (HttpElementTypes)
 ```
 
-- The **WebSocket client** (`RaisinClient`) talks to the realtime schema protocol.
-- The **HTTP client** (`RaisinHttpClient`, for SSR) talks to the management REST API.
-
-The method names are identical across both clients, so call sites can switch transports with minimal changes.
+The WebSocket accessors send schema requests over the realtime protocol; the HTTP accessors call the management REST API (`/api/management/{repo}/{branch}/{nodetypes|archetypes|elementtypes}`). Method names match across both, so call sites can switch transports.
 
 ## Methods
 
-Every accessor (`nodeTypes()`, `archetypes()`, `elementTypes()`) exposes the same surface:
+Every accessor exposes this surface. Definitions and results are plain objects (`Record<string, unknown>` in, `unknown` out); the shapes are the ones the server stores, see [NodeTypes](/docs/concepts/data-model/nodetypes), [Archetypes](/docs/concepts/data-model/archetypes) and [Elements](/docs/concepts/data-model/elements).
 
-| Method | Description |
-|--------|-------------|
-| `get(name)` | Fetch a single schema by name |
-| `list(publishedOnly?)` | List all schemas (or only published) |
-| `getResolved(name)` | Fetch the schema with full inheritance (`extends`) merged |
-| `create(name, definition, commit?)` | Create a schema |
-| `update(name, definition, commit?)` | Update a schema |
-| `delete(name, commit?)` | Delete a schema |
-| `publish(name, commit?)` | Publish a schema |
-| `unpublish(name, commit?)` | Unpublish a schema |
+| Method | WebSocket | HTTP |
+|--------|-----------|------|
+| `list(publishedOnly = false)` | `list(publishedOnly?)` | `list(publishedOnly?)` |
+| `get(name)` | `get(name)` | `get(name)` |
+| `getResolved(name)` | `getResolved(name)` | `getResolved(name, { workspace? })` on NodeTypes; `getResolved(name)` on the others |
+| `create(name, definition)` | `create(name, definition)` | `create(name, definition, commit?)` |
+| `update(name, definition)` | `update(name, definition)` | `update(name, definition, commit?)` |
+| `delete(name)` | `delete(name)` | `delete(name, commit?)` |
+| `publish(name)` | `publish(name)` | `publish(name, commit?)` |
+| `unpublish(name)` | `unpublish(name)` | `unpublish(name, commit?)` |
+| `validate(node)` | NodeTypes only | not available |
+
+The `name` argument is merged into the definition, so you do not repeat it inside `definition`:
 
 ```typescript
-const elementTypes = db.elementTypes();
+const nodeTypes = hdb.nodeTypes();
 
-await elementTypes.list();                  // all element types
-await elementTypes.list(true);              // published only
-await elementTypes.get('launchpad:Hero');
-await elementTypes.create('launchpad:Hero', { fields: [/* ... */] });
-await elementTypes.publish('launchpad:Hero');
+await nodeTypes.create(
+  'blog:Comment',
+  { properties: [{ name: 'body', type: 'String', required: true }] },
+  { message: 'Add comment type', actor: 'jane' }
+);
+await nodeTypes.publish('blog:Comment', { message: 'Publish', actor: 'jane' });
+
+const published = await nodeTypes.list(true);   // [{ name: 'blog:Article', ... }, ...]
+const one = await nodeTypes.get('blog:Comment');  // { name: 'blog:Comment', version: 2, published_by: 'jane', ... }
+await nodeTypes.delete('blog:Comment');
 ```
 
+`list()` returns an array; `get()` rejects with an error when the name does not exist (`Invalid request: Node type not found: blog:Comment` over WebSocket, an HTTP error with code `NODE_TYPE_NOT_FOUND` over HTTP).
+
 :::note Commit metadata
-The optional `commit` argument is `{ message: string; actor?: string }`. It is only honored by the **HTTP client** (the management REST API records a commit). When omitted, the server uses a default message and the `"system"` actor. The WebSocket client auto-commits writes as the system actor.
+`commit` is `{ message: string; actor?: string }` and is only accepted by the **HTTP** client, where it becomes the revision message and author. Without it the server records a generated message and the `system` actor. The WebSocket client always commits schema writes as `system`.
 :::
+
+### `validate(node)` (WebSocket, NodeTypes only)
+
+Sends the node to the server's write-time checks without storing it. The server requires a workspace in the request context for this call, and `db.nodeTypes()` sends none, so in the current client the call fails with `Invalid request: Workspace required`. Until that is wired, validate over HTTP with `POST /api/management/{repo}/{branch}/nodetypes/validate` (see the [NodeTypes API](/docs/reference/http-api/nodetypes-api#validate-a-node)).
 
 ## Resolving inheritance: `getResolved()`
 
-NodeTypes, Archetypes, and ElementTypes can `extend` a parent (and NodeTypes also compose `mixins`). `getResolved()` walks the whole chain — base first, child overrides by name, with cycle detection — so you don't have to merge `extends`/`mixins` yourself.
+NodeTypes, Archetypes and ElementTypes can `extend` a parent, and NodeTypes also take `mixins`. `getResolved()` returns the type's own definition together with the merged result, so you do not have to walk the chain yourself. The WebSocket and HTTP responses have the same shape.
 
-:::important It returns an envelope, not a merged definition
-`getResolved()` does **not** return a single type object with everything folded in. It returns a wrapper with the **original** (unmerged) definition under one key (`node_type` / `archetype` / `element_type`) **plus** the fully-merged data under separate `resolved_*` keys.
+The resolved object is an envelope, not a merged definition: the authored definition sits under `node_type` / `archetype` / `element_type`, and the merged data under `resolved_*` keys. Read effective properties from `resolved_properties` (or `resolved_fields`), not from `node_type.properties`.
 
-So to read the effective properties/fields, use `resolved_properties` / `resolved_fields` — **not** `node_type.properties` / `element_type.fields` (those are only the leaf type's own, unmerged entries).
-:::
-
-### ElementType / Archetype return shape
+### NodeType
 
 ```typescript
-const resolved = await db.elementTypes().getResolved('launchpad:Hero');
+const r = await hdb.nodeTypes().getResolved('blog:Guide', { workspace: 'blog' });
 ```
 
 ```typescript
 {
-  element_type: ElementType,        // (or `archetype` for archetypes) the ORIGINAL definition, unmerged
-  resolved_fields: FieldSchema[],   // ALL fields merged: parent → child, child overrides by name
-  resolved_layout: LayoutNode[] | null, // merged layout (child wins if it sets one)
-  inheritance_chain: string[],      // leaf → root, e.g. ['launchpad:Hero', 'launchpad:BaseBlock']
-  resolved_strict: boolean          // effective strict-mode flag after merge
+  node_type: NodeType,                         // the authored definition
+  resolved_properties: PropertyValueSchema[],  // extends ancestors + mixins + own, sorted by name
+  resolved_allowed_children: string[],
+  resolved_mixins: string[],                   // effective mixin names, transitive, deduped
+  inheritance_chain: string[]                  // leaf to root, e.g. ['blog:Guide', 'blog:Article']
 }
 ```
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `element_type` / `archetype` | object | The type's **own** definition as authored (not merged) |
-| `resolved_fields` | `FieldSchema[]` | Every field including inherited ones; child overrides parent by `name` |
-| `resolved_layout` | `LayoutNode[] \| null` | Merged layout, or `null` if none in the chain |
-| `inheritance_chain` | `string[]` | Names from leaf to root (for debugging/UX) |
-| `resolved_strict` | `boolean` | Effective `strict` flag |
+Passing `{ workspace }` resolves against that workspace's pinned NodeType versions. Over WebSocket the workspace comes from the request context instead of an argument.
 
-### NodeType return shape
+### Archetype and ElementType
 
 ```typescript
-const node = await db.nodeTypes().getResolved('blog:Article');
+const r = await hdb.elementTypes().getResolved('launchpad:Hero');
 ```
 
 ```typescript
 {
-  node_type: NodeType,                  // the ORIGINAL definition, unmerged
-  resolved_properties: PropertyValueSchema[], // ALL properties: extends ancestors + mixins + own
-  resolved_allowed_children: string[],  // merged allowed-children list
-  resolved_mixins: string[],            // effective mixin names (inherited + transitive, deduped)
-  inheritance_chain: string[]           // leaf → root of the `extends` chain
+  element_type: ElementType,            // or `archetype` for archetypes
+  resolved_fields: FieldSchema[],       // parent fields first, child overrides by name
+  resolved_layout: LayoutNode[] | null, // the nearest layout in the chain
+  inheritance_chain: string[],
+  resolved_strict: boolean
 }
 ```
-
-| Field | Type | Meaning |
-|-------|------|---------|
-| `node_type` | object | The NodeType's **own** definition as authored (not merged) |
-| `resolved_properties` | `PropertyValueSchema[]` | Every property merged from `extends` ancestors **and** mixins; the type's own properties win |
-| `resolved_allowed_children` | `string[]` | Allowed child types, merged across the chain |
-| `resolved_mixins` | `string[]` | Effective mixin names, including those pulled in via `extends` and transitively from other mixins |
-| `inheritance_chain` | `string[]` | `extends` chain names, leaf to root |
-
-Mixin **properties** land in `resolved_properties`; the mixin **names** are listed in `resolved_mixins`.
-
-NodeType resolution can also be **workspace-aware** (honoring workspace NodeType pins) on the HTTP client:
-
-```typescript
-await db.nodeTypes().getResolved('blog:Article', { workspace: 'content' });
-```
-
-`getResolved()` is available for **all three** schema kinds on **both** the WebSocket and HTTP clients, and the WebSocket and HTTP responses use the **same** shapes shown above.
 
 ## Branches
 
-Schema definitions are **per-branch**, exactly like nodes — `launchpad:Hero` on `main` and on a `staging` branch are independent records. Every operation runs against a branch.
-
-By default, operations target the database's branch (`main` unless configured otherwise). Use `onBranch()` to target a different branch:
+Schema definitions are stored per branch, like nodes. Operations run against the database handle's branch (`main` unless configured). Use `onBranch()` for another branch on either client:
 
 ```typescript
-// Default branch (main)
-await db.elementTypes().getResolved('launchpad:Hero');
-
-// Target a specific branch — works on both clients
+await db.elementTypes().getResolved('launchpad:Hero');                 // main
 await db.onBranch('staging').elementTypes().getResolved('launchpad:Hero');
-await db.onBranch('staging').nodeTypes().list();
+await hdb.onBranch('staging').nodeTypes().list();
 ```
 
-For the HTTP client the branch is part of the REST path
-(`/api/management/{repo}/{branch}/...`); for the WebSocket client it travels in
-the request context. In both cases, `onBranch('staging')` returns a
-branch-scoped database whose schema operations all run against that branch.
+On the HTTP client the branch becomes part of the REST path; on the WebSocket client it travels in the request context.
 
-## Availability
+## Exports
 
-| Operation | WebSocket client | HTTP client |
-|-----------|:---------------:|:-----------:|
-| `nodeTypes/archetypes/elementTypes()` | ✅ | ✅ |
-| `get` / `list` | ✅ | ✅ |
-| `getResolved` (NodeType) | ✅ | ✅ |
-| `getResolved` (Archetype, ElementType) | ✅ | ✅ |
-| `create` / `update` / `delete` | ✅ | ✅ |
-| `publish` / `unpublish` | ✅ | ✅ |
-| Branch targeting (`onBranch`) | ✅ | ✅ |
+The accessor classes are exported as `NodeTypes`, `Archetypes`, `ElementTypes` (WebSocket) and `HttpNodeTypes`, `HttpArchetypes`, `HttpElementTypes` (HTTP). Definitions are untyped objects; use the JSON shapes from the concept pages.
 
 ## See also
 
-- [NodeTypes](/docs/concepts/data-model/nodetypes) — schema definition and inheritance
-- [Archetypes](/docs/concepts/data-model/archetypes) — editor templates
-- [Elements](/docs/concepts/data-model/elements) — composable content blocks
-- [NodeTypes HTTP API](/docs/reference/http-api/nodetypes-api) — REST endpoints
+- [NodeTypes](/docs/concepts/data-model/nodetypes) for the definition format and inheritance
+- [NodeTypes HTTP API](/docs/reference/http-api/nodetypes-api) for the REST routes the HTTP client calls
+- [Archetypes](/docs/concepts/data-model/archetypes) and [Elements](/docs/concepts/data-model/elements)

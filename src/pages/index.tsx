@@ -36,7 +36,7 @@ function HomepageHeader() {
             <span className={styles.heroTitleAccent}>versioned like Git.</span>
           </Heading>
           <p className={styles.heroSubtitle}>
-            RaisinDB provides branching memory and state management your AI agents need to reason, iterate, and never forget context. Query with SQL, traverse graphs, search vectors — all through any PostgreSQL client.
+            RaisinDB provides branching memory and state management your AI agents need to reason, iterate, and never forget context. Query with SQL, traverse graphs, search vectors, all through any PostgreSQL client.
           </p>
           <div className={styles.codeExample}>
             <div className={styles.codeHeader}>
@@ -46,15 +46,15 @@ function HomepageHeader() {
               <span className={styles.codeTitle}>Branching in action</span>
             </div>
             <CodeBlock language="sql" code={`-- Create an isolated branch for an agent task
-CREATE BRANCH agent/research-42 FROM main;
+CREATE BRANCH 'agent/research-42' FROM 'main';
 
 -- Agent stores findings in its branch
 INSERT INTO 'default' (path, node_type, properties)
 VALUES ('/findings/report', 'research:Finding',
-  '{"summary": "Key insight...", "confidence": 0.92}');
+  '{"summary": "Key insight...", "confidence": 0.92}'::jsonb);
 
 -- Merge results back when done
-MERGE BRANCH agent/research-42 INTO main;`} />
+MERGE BRANCH 'agent/research-42' INTO 'main';`} />
           </div>
           <div className={styles.ctaRow}>
             <Link className={clsx('button button--secondary button--lg', styles.ctaPrimary)} to="/docs/tutorials/quickstart">
@@ -187,7 +187,7 @@ ORDER BY created_at DESC;`,
   {
     id: 'vector',
     label: 'Vector',
-    code: `SELECT node_id, path, vector_distance
+    code: `SELECT node_id, path, score, vector_distance
 FROM KNN(
   'how do I rotate a key',
   10,
@@ -207,10 +207,9 @@ FROM KNN(
     id: 'timetravel',
     label: 'Time-Travel',
     code: `-- Query data as it existed at revision 42
-SET __revision = 42;
-
 SELECT * FROM 'default'
-WHERE node_type = 'Article';`,
+WHERE node_type = 'Article'
+  AND __revision = 42;`,
   },
   {
     id: 'transaction',
@@ -220,10 +219,11 @@ BEGIN;
 
 INSERT INTO 'content' (path, node_type, properties)
 VALUES ('/blog/new-post', 'Article',
-  '{"title": "Hello World", "status": "draft"}');
+  '{"title": "Hello World", "status": "draft"}'::jsonb);
 
-RELATE FROM path='/authors/alice'
-  TO path='/blog/new-post' TYPE 'AUTHORED';
+RELATE FROM path='/authors/alice' IN WORKSPACE 'content'
+  TO path='/blog/new-post' IN WORKSPACE 'content'
+  TYPE 'AUTHORED';
 
 COMMIT WITH MESSAGE 'Add new post'
   ACTOR 'alice';`,
@@ -263,7 +263,7 @@ function MultiModelTabs() {
             One query language, every data model
           </Heading>
           <p className={styles.sectionSubtitle}>
-            Documents, graphs, vectors, full-text, and time-travel — all through standard SQL via any PostgreSQL client.
+            Documents, graphs, vectors, full-text, and time-travel, all through SQL via any PostgreSQL client.
           </p>
         </div>
 
@@ -341,7 +341,7 @@ function FeatureGrid() {
             </div>
             <Heading as="h3" className={styles.bentoTitle}>Graph Queries</Heading>
             <p className={styles.bentoDesc}>
-              Model relationships with bidirectional edges. Traverse graphs with SQL/PGQ and the NEIGHBORS() function.
+              Model relationships with typed edges. Traverse graphs with SQL/PGQ GRAPH_TABLE, REFERENCES() and the NEIGHBORS() table function.
             </p>
           </div>
 
@@ -374,7 +374,7 @@ function FeatureGrid() {
             </div>
             <Heading as="h3" className={styles.bentoTitle}>RAP Packages</Heading>
             <p className={styles.bentoDesc}>
-              Package schemas, content, and functions into Raisin Archive Packages. Distribute and install reusable content modules.
+              Package schemas, content, and functions into Raisin Archive Packages (.rap). Deploy with the CLI, install into any repository.
             </p>
           </div>
 
@@ -384,7 +384,7 @@ function FeatureGrid() {
             </div>
             <Heading as="h3" className={styles.bentoTitle}>Serverless Functions</Heading>
             <p className={styles.bentoDesc}>
-              Run JavaScript, Starlark, or SQL functions inside the database. Triggers, computed fields, and custom API endpoints.
+              Run JavaScript, Starlark, WebAssembly, or SQL functions inside the database. Triggers, webhooks, scheduled jobs, and AI agent tools.
             </p>
           </div>
 
@@ -414,7 +414,7 @@ function FeatureGrid() {
             </div>
             <Heading as="h3" className={styles.bentoTitle}>ACID Transactions</Heading>
             <p className={styles.bentoDesc}>
-              Atomic commits across multiple operations. Begin, commit, or rollback — strong consistency across all data models in a single transaction.
+              Atomic commits across multiple operations. BEGIN and COMMIT with a message and actor, so every change carries its provenance.
             </p>
           </div>
 
@@ -424,7 +424,7 @@ function FeatureGrid() {
             </div>
             <Heading as="h3" className={styles.bentoTitle}>Real-Time Events</Heading>
             <p className={styles.bentoDesc}>
-              Subscribe to node changes via WebSocket or SSE. Filter by workspace, node type, or path. Automatic reconnection and deduplication built in.
+              Subscribe to node changes over WebSocket. Filter by workspace, node type, or path. The JavaScript client reconnects and restores subscriptions automatically.
             </p>
           </div>
         </div>
@@ -487,12 +487,14 @@ const connectTabs = [
     label: 'Node.js',
     language: 'javascript',
     code: `import pg from 'pg';
-const pool = new pg.Pool({
-  connectionString: 'postgresql://admin:admin@localhost:5432/myrepo'
+// user = tenant, password = an API key, database = repository
+const client = new pg.Client({
+  connectionString: 'postgresql://default:<api-key>@localhost:5432/myrepo'
 });
+await client.connect();
 
-// Standard PostgreSQL queries — just works
-const { rows } = await pool.query(\`
+// Standard PostgreSQL queries
+const { rows } = await client.query(\`
   SELECT path, properties->>'title'::String AS title
   FROM 'content'
   WHERE node_type = 'news:Article'
@@ -500,8 +502,8 @@ const { rows } = await pool.query(\`
   ORDER BY created_at DESC LIMIT 10
 \`);
 
-// Row-level security via user context
-await client.query('SET app.user = $1', [accessToken]);
+// Row-level security: run as an identity user (JWT)
+await client.query("SET app.user = '" + accessToken + "'");
 const results = await client.query(sql);
 await client.query('RESET app.user');`,
   },
@@ -526,12 +528,12 @@ public class ArticleRepository {
       """, articleMapper, limit);
   }
 
-  // Graph queries with REFERENCES
+  // Reference queries: the target is 'workspace:/path'
   public List<Article> findByTag(String tagPath) {
     return jdbc.query("""
       SELECT id, path, properties FROM content
       WHERE REFERENCES(?) AND node_type = 'news:Article'
-      """, articleMapper, tagPath);
+      """, articleMapper, "content:" + tagPath);
   }
 }`,
   },
@@ -539,19 +541,21 @@ public class ArticleRepository {
     id: 'php',
     label: 'PHP / Laravel',
     language: 'php',
-    code: `// Laravel — uses standard PostgreSQL connection
-// config/database.php: 'driver' => 'pgsql'
+    code: `// Laravel: a standard PostgreSQL connection
+// config/database.php: 'driver' => 'pgsql',
+//   'username' => tenant, 'password' => API key, 'database' => repository
 
-$articles = RaisinQueryBuilder::query('content')
-    ->descendantOf('/articles')
-    ->whereNodeType('news:Article')
-    ->wherePropertyContains(['status' => 'published'])
-    ->orderByProperty('publishing_date', 'DESC')
-    ->limit(12)
-    ->get();
+$articles = DB::select("
+    SELECT id, path, properties FROM content
+    WHERE DESCENDANT_OF('/articles')
+      AND node_type = 'news:Article'
+      AND properties->>'status'::String = 'published'
+    ORDER BY properties->>'publishing_date' DESC
+    LIMIT 12
+");
 
-// Row-level security via middleware
-DB::statement('SET app.user = ?', [$accessToken]);
+// Row-level security: run as an identity user (JWT)
+DB::statement("SET app.user = '" . $accessToken . "'");
 $results = DB::select($sql, $params);
 DB::statement('RESET app.user');`,
   },
@@ -564,7 +568,9 @@ DB::statement('RESET app.user');`,
 # Any PostgreSQL library works — no special SDK
 conn = psycopg2.connect(
     host="localhost", port=5432,
-    user="admin", dbname="myrepo"
+    user="default",        # tenant
+    password="<api-key>",  # an API key, not a user password
+    dbname="myrepo"        # repository
 )
 cur = conn.cursor()
 cur.execute("""
@@ -580,8 +586,11 @@ articles = cur.fetchall()`,
     id: 'sdk',
     label: 'RaisinDB SDK',
     language: 'javascript',
-    code: `import { RaisinDB } from '@raisindb/client';
-const db = new RaisinDB('ws://localhost:8080');
+    code: `import { RaisinClient } from '@raisindb/client';
+const client = new RaisinClient('ws://localhost:8080/ws/myrepo');
+await client.connect();
+await client.authenticate({ username: 'admin', password: '...' });
+const db = client.database('myrepo');
 
 // Template literal SQL with auto-parameterization
 const articles = await db.sql\`
@@ -589,15 +598,16 @@ const articles = await db.sql\`
   WHERE node_type = \${'Article'}
 \`;
 
-// Real-time event subscriptions
-db.events.subscribe({ nodeType: 'Article' },
+// Real-time node subscriptions
+await db.workspace('content').events().subscribe(
+  { path: '/blog/**', event_types: ['node:updated'], include_node: true },
   (event) => console.log('Changed:', event)
 );
 
-// ACID transactions with commit messages
-const tx = await db.transaction();
+// Transactions with commit messages
+const tx = db.workspace('content').transaction();
 await tx.begin({ message: 'Publish batch' });
-await tx.nodes.update(id, { published: true });
+await tx.nodes().update(id, { properties: { published: true } });
 await tx.commit();`,
   },
 ];
@@ -614,7 +624,7 @@ function ConnectYourWay() {
             Use your existing tools
           </Heading>
           <p className={styles.sectionSubtitle}>
-            RaisinDB speaks PostgreSQL wire protocol. Connect with any standard library — no proprietary SDK required.
+            RaisinDB speaks the PostgreSQL wire protocol. Connect with any standard library, or use the JavaScript client for WebSocket subscriptions and chat.
           </p>
         </div>
 

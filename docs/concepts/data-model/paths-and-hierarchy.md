@@ -4,579 +4,187 @@ sidebar_position: 5
 
 # Paths and Hierarchy
 
-RaisinDB organizes nodes in a **hierarchical structure** using forward-slash paths, similar to file systems. This natural organization makes it easy to model content trees, navigation structures, and nested data while providing powerful SQL functions for hierarchical queries.
+Nodes in a workspace form a tree. Each node's `path` is its address in that tree, and the SQL layer offers functions for walking it. Sibling order is stored separately from paths, so editors can arrange children by hand.
 
-## Path Structure
-
-Paths are unique identifiers with hierarchical segments:
+## Path structure
 
 ```
-/content/blog/2024/january/my-first-post
-└─┬───┘ └─┬─┘ └─┬┘ └──┬──┘ └─────┬──────┘
-  │       │     │      │          │
-  Root    Category Year Month    Article
+/blog/2024/my-first-post
+ └─┬┘ └─┬┘ └─────┬─────┘
+  root  child    grandchild   (depth 1, 2, 3)
 ```
 
-### Path Rules
+- A path starts with `/` and is unique within its workspace.
+- Each segment is the slug of the node's `name`: lower-case, whitespace becomes `-`, and only `a-z`, `0-9`, `-`, `_` and `.` survive. A node named `My First Post` under `/blog` gets the path `/blog/my-first-post`. Names containing `/` are rejected.
+- Paths are case-sensitive, but slugs are always lower-case, so two names that differ only in case collide.
+- A node's `parent` field holds the parent's **name** (`"blog"`), or `"/"` for a root-level node. The full parent path is the path with the last segment removed.
 
-- Must start with `/`
-- Segments separated by `/`
-- Segments can contain: letters, numbers, hyphens, underscores
-- Paths are case-sensitive
-- Maximum depth: unlimited (practical limit ~50 levels)
-- Maximum length: 1024 characters
+## Path functions in SQL
 
-### Valid Paths
+All examples use a workspace called `nodes-a` with `/blog`, `/blog/first-post`, `/blog/second`, `/blog/first-post/jane2` and `/archive`.
 
-```
-/content
-/content/blog
-/content/blog/article-1
-/media/images/2024/header.jpg
-/users/jane-developer/profile
-/config/site-settings
-```
+### CHILD_OF(path)
 
-### Invalid Paths
-
-```
-content           -- Missing leading /
-/content//blog    -- Double slash
-/content/         -- Trailing slash
-/Content/Blog     -- Inconsistent casing (avoid for clarity)
-```
-
-## Hierarchical Relationships
-
-Paths create natural parent-child relationships:
-
-```
-/content                    -- Parent (depth 1)
-  /content/blog             -- Child of /content (depth 2)
-    /content/blog/post1     -- Child of /content/blog (depth 3)
-    /content/blog/post2
-  /content/pages            -- Sibling of /content/blog
-    /content/pages/about
-```
-
-## Path Functions
-
-RaisinDB provides SQL functions for working with hierarchical paths:
-
-### DEPTH()
-
-Returns the number of path segments:
+Direct children of a node:
 
 ```sql
-SELECT DEPTH('/content/blog/post1');
--- Returns: 3
-
-SELECT path, DEPTH(path) AS depth
-FROM default
-ORDER BY depth;
-
--- Find all top-level nodes
-SELECT * FROM default WHERE DEPTH(path) = 1;
-
--- Find nodes at specific depth (e.g., all articles)
-SELECT * FROM default
-WHERE DEPTH(path) = 4
-  AND path LIKE '/content/blog/%';
+SELECT path, name, node_type FROM 'nodes-a' WHERE CHILD_OF('/blog') ORDER BY path;
 ```
 
-### PARENT()
-
-Returns the immediate parent path:
-
-```sql
-SELECT PARENT('/content/blog/post1');
--- Returns: '/content/blog'
-
-SELECT PARENT('/content');
--- Returns: '/'
-
-SELECT PARENT('/');
--- Returns: NULL
-
--- Get all nodes with their parents
-SELECT
-  path,
-  PARENT(path) AS parent_path
-FROM default;
-
--- Find all children of a specific parent
-SELECT child.path
-FROM default child
-WHERE PARENT(child.path) = '/content/blog';
+```json
+{"rows":[{"path":"/blog/first-post","name":"first-post","node_type":"blog:Article"},
+         {"path":"/blog/second","name":"second","node_type":"blog:Article"}]}
 ```
 
-### ANCESTOR()
+### DESCENDANT_OF(path)
 
-Returns the ancestor at a specific depth:
+Every node below a path, at any depth. The planner turns this into a prefix scan:
 
 ```sql
-SELECT ANCESTOR('/content/blog/2024/post1', 1);
--- Returns: '/content'
-
-SELECT ANCESTOR('/content/blog/2024/post1', 2);
--- Returns: '/content/blog'
-
--- Get category for all articles
-SELECT
-  path,
-  ANCESTOR(path, 2) AS category
-FROM default
-WHERE DEPTH(path) = 4;
+SELECT path, node_type FROM 'nodes-a' WHERE DESCENDANT_OF('/blog');
 ```
 
-### PATH_STARTS_WITH()
-
-Check if a path starts with a prefix:
-
-```sql
-SELECT PATH_STARTS_WITH('/content/blog/post1', '/content');
--- Returns: true
-
-SELECT PATH_STARTS_WITH('/media/images/photo.jpg', '/content');
--- Returns: false
-
--- Get all blog content
-SELECT * FROM default
-WHERE PATH_STARTS_WITH(path, '/content/blog');
-
--- Get all 2024 content
-SELECT * FROM default
-WHERE PATH_STARTS_WITH(path, '/content/blog/2024');
+```json
+{"rows":[{"path":"/blog/second","node_type":"blog:Article"},
+         {"path":"/blog/first-post","node_type":"blog:Article"},
+         {"path":"/blog/first-post/jane2","node_type":"blog:Author"}]}
 ```
 
-### CHILD_OF()
-
-Check if a node is a direct child:
+Combine it with other predicates as usual:
 
 ```sql
--- Get direct children only
-SELECT * FROM default
-WHERE CHILD_OF('/content/blog');
+SELECT path FROM 'nodes-a'
+WHERE DESCENDANT_OF('/blog') AND node_type = 'blog:Article'
+ORDER BY __tree_order;
+```
 
--- Equivalent to:
-SELECT * FROM default
-WHERE PARENT(path) = '/content/blog';
+Use `DESCENDANT_OF` with a concrete path. `DESCENDANT_OF('/')` currently returns no rows; to scan a whole workspace, omit the predicate.
 
--- Count children per parent
-SELECT
-  PARENT(path) AS parent,
-  COUNT(*) AS child_count
-FROM default
-WHERE CHILD_OF('/content')
+### DEPTH(path), PARENT(path), ANCESTOR(path, n), PATH_STARTS_WITH(path, prefix)
+
+```sql
+SELECT path, DEPTH(path) AS depth, PARENT(path) AS parent FROM 'nodes-a' ORDER BY path;
+```
+
+```json
+{"rows":[{"path":"/archive","depth":1,"parent":"/"},
+         {"path":"/blog","depth":1,"parent":"/"},
+         {"path":"/blog/first-post","depth":2,"parent":"/blog"},
+         {"path":"/blog/second","depth":2,"parent":"/blog"}]}
+```
+
+```sql
+SELECT ANCESTOR('/a/b/c', 2) AS a, PATH_STARTS_WITH('/blog/x', '/blog') AS s;
+-- {"a":"/a/b","s":true}
+
+SELECT path FROM 'nodes-a' WHERE DEPTH(path) = 1;               -- root-level nodes
+SELECT path FROM 'nodes-a' WHERE PARENT(path) = '/blog';         -- same result as CHILD_OF
+SELECT path FROM 'nodes-a' WHERE PATH_STARTS_WITH(path, '/blog'); -- includes /blog itself
+SELECT path FROM 'nodes-a' WHERE path LIKE '/blog/%';            -- plain LIKE works too
+```
+
+`SELECT *` also exposes `depth` and `parent_name` as columns.
+
+### Aggregating over the tree
+
+```sql
+SELECT PARENT(path) AS parent, COUNT(*) AS n
+FROM 'nodes-a'
+WHERE node_type = 'blog:Article'
 GROUP BY PARENT(path);
 ```
 
-### DESCENDANT_OF()
+```json
+{"rows":[{"parent":"/archive","n":1},{"parent":"/blog","n":3}]}
+```
 
-Check if a node is a descendant (at any depth):
+## Reading the tree over HTTP
+
+```bash
+# root-level nodes
+GET /api/repository/docs-model/main/head/nodes-a/
+
+# direct children of /blog, in sibling order
+GET /api/repository/docs-model/main/head/nodes-a/blog?level=1
+
+# three levels, nested under "children"
+GET /api/repository/docs-model/main/head/nodes-a/blog?level=3
+
+# same, as a flat array
+GET /api/repository/docs-model/main/head/nodes-a/blog?level=3&flatten=true
+```
+
+`level` is capped at 10. Every node in a listing carries `has_children`, so a UI can decide whether to offer expansion before fetching the next level.
+
+## Sibling order
+
+Children of one parent have an explicit, editable order that is independent of their names. It is what a menu or a page's sections render from.
+
+- Each child carries an `order_key`, an opaque sortable string (a fractional index), so a node can be inserted between two siblings without renumbering the others. Listings with `?level=` return children in this order.
+- Order is stored per branch and travels with a branch merge.
+- SQL exposes it as `__order` (position among siblings) and `__tree_order` (position within a subtree, in document order, populated by tree traversals). Both work as keyset cursors.
 
 ```sql
--- Get all descendants (recursive)
-SELECT * FROM default
-WHERE DESCENDANT_OF('/content');
-
--- Includes:
--- /content/blog
--- /content/blog/post1
--- /content/blog/2024/post2
--- /content/pages/about
--- ... etc
-
--- Count all descendants
-SELECT COUNT(*) FROM default
-WHERE DESCENDANT_OF('/content/blog');
+SELECT name, __order FROM 'nodes-a' WHERE CHILD_OF('/blog') ORDER BY __order;
 ```
 
-## Common Hierarchical Queries
-
-### Get All Children
-
-```sql
--- Direct children only
-SELECT * FROM default
-WHERE PARENT(path) = '/content/blog'
-ORDER BY path;
-
--- All descendants (recursive)
-SELECT * FROM default
-WHERE PATH_STARTS_WITH(path, '/content/blog/')
-ORDER BY path;
+```json
+{"rows":[{"name":"second","__order":"7f80::1a0780319f80000000000000000"},
+         {"name":"first-post","__order":"80::1a078026f560000000000000000"}]}
 ```
 
-### Build a Tree Structure
+Reorder with the `reorder` command, giving the sibling to place the node next to:
 
-```sql
--- Get tree with depth indicators
-SELECT
-  REPEAT('  ', DEPTH(path) - 1) || path AS tree,
-  node_type,
-  properties->>'title' AS title
-FROM default
-WHERE PATH_STARTS_WITH(path, '/content')
-ORDER BY path;
-
--- Output:
--- /content                     | Folder | Content
---   /content/blog              | Folder | Blog
---     /content/blog/post1      | Article | My First Post
---     /content/blog/post2      | Article | Another Post
---   /content/pages             | Folder | Pages
---     /content/pages/about     | Page | About Us
+```bash
+curl -X POST localhost:8090/api/repository/docs-model/main/head/nodes-a/blog/second/raisin:cmd/reorder \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"targetPath": "/blog/first-post", "movePosition": "before"}'
 ```
 
-### Count Children Per Node
+`movePosition` is `before` or `after`. The JavaScript client wraps this as `reorder`, `moveChildBefore` and `moveChildAfter`; see [Node Operations](/docs/reference/javascript-client/node-operations#ordering).
 
-```sql
--- Count direct children
-SELECT
-  path,
-  (SELECT COUNT(*)
-   FROM default children
-   WHERE PARENT(children.path) = parent.path
-  ) AS child_count
-FROM default parent
-WHERE PATH_STARTS_WITH(path, '/content');
-```
+`path` and `__order` both sort parents before children, but `path` sorts siblings alphabetically while `__order` sorts them editorially. Do not page with a cursor on one and an `ORDER BY` on the other.
 
-### Find Leaf Nodes
-
-Nodes with no children:
-
-```sql
-SELECT path
-FROM default parent
-WHERE NOT EXISTS (
-  SELECT 1 FROM default child
-  WHERE PARENT(child.path) = parent.path
-);
-```
-
-### Get Breadcrumb Path
-
-```sql
--- Generate breadcrumbs for a specific path
-WITH RECURSIVE breadcrumbs AS (
-  SELECT path, DEPTH(path) AS level
-  FROM default
-  WHERE path = '/content/blog/2024/my-post'
-
-  UNION ALL
-
-  SELECT PARENT(b.path), DEPTH(PARENT(b.path))
-  FROM breadcrumbs b
-  WHERE PARENT(b.path) IS NOT NULL
-)
-SELECT path, properties->>'title' AS title
-FROM default
-WHERE path IN (SELECT path FROM breadcrumbs)
-ORDER BY DEPTH(path);
-
--- Results:
--- /content              | Content Root
--- /content/blog         | Blog
--- /content/blog/2024    | 2024 Posts
--- /content/blog/2024/my-post | My Post
-```
-
-### Get Siblings
-
-Nodes with the same parent:
-
-```sql
-SELECT sibling.path
-FROM default sibling
-WHERE PARENT(sibling.path) = (
-  SELECT PARENT(path)
-  FROM default
-  WHERE path = '/content/blog/post1'
-)
-AND sibling.path != '/content/blog/post1';
-```
-
-### Tree Aggregations
-
-```sql
--- Count articles per category
-SELECT
-  PARENT(path) AS category,
-  COUNT(*) AS article_count
-FROM default
-WHERE node_type = 'blog:Article'
-GROUP BY PARENT(path)
-ORDER BY article_count DESC;
-
--- Sum values up the tree
-SELECT
-  ANCESTOR(path, 2) AS top_category,
-  SUM((properties->>'views')::int) AS total_views
-FROM default
-WHERE node_type = 'blog:Article'
-GROUP BY ANCESTOR(path, 2);
-```
-
-## Path Design Patterns
-
-### Content Organization
-
-```
-/content
-  /content/blog
-    /content/blog/2024
-      /content/blog/2024/01
-        /content/blog/2024/01/my-post
-    /content/blog/categories
-      /content/blog/categories/technology
-      /content/blog/categories/design
-  /content/pages
-    /content/pages/about
-    /content/pages/contact
-```
-
-### Media Library
-
-```
-/media
-  /media/images
-    /media/images/2024
-      /media/images/2024/header.jpg
-      /media/images/2024/banner.png
-  /media/videos
-  /media/documents
-```
-
-### User Data
-
-```
-/users
-  /users/jane-developer
-    /users/jane-developer/profile
-    /users/jane-developer/settings
-    /users/jane-developer/posts
-      /users/jane-developer/posts/draft-1
-```
-
-### Configuration
-
-```
-/config
-  /config/site
-    /config/site/general
-    /config/site/appearance
-  /config/navigation
-    /config/navigation/main-menu
-    /config/navigation/footer-menu
-```
-
-### E-commerce
-
-```
-/products
-  /products/electronics
-    /products/electronics/laptops
-      /products/electronics/laptops/macbook-pro
-    /products/electronics/phones
-  /products/clothing
-    /products/clothing/mens
-    /products/clothing/womens
-```
-
-## Path Constraints
-
-Use allowed_children to enforce hierarchy:
-
-```sql
--- Define a Folder that can contain Articles or other Folders
-INSERT INTO raisin:system.node_types (name, allowed_children, properties) VALUES (
-  'content:Folder',
-  '["blog:Article", "content:Folder"]',
-  '{
-    "name": {"type": "string", "required": true}
-  }'
-);
-
--- Attempting to create invalid child fails
-INSERT INTO default (path, node_type, properties) VALUES (
-  '/content/blog/invalid-child',  -- Parent is content:Folder
-  'ecommerce:Product',            -- Not in allowed_children
-  '{}'
-);
--- Error: NodeType 'ecommerce:Product' not allowed as child of 'content:Folder'
-```
-
-## Moving Nodes
-
-Change a node's path to move it in the hierarchy:
-
-```sql
--- Move a blog post to a different category
-UPDATE default
-SET path = '/content/blog/technology/my-post'
-WHERE path = '/content/blog/general/my-post';
-
--- Move with all descendants (recursive)
-UPDATE default
-SET path = REPLACE(path, '/content/blog/old', '/content/blog/new')
-WHERE PATH_STARTS_WITH(path, '/content/blog/old');
-```
-
-**Warning**: Moving nodes with children requires careful handling to maintain referential integrity.
-
-## Child Ordering
-
-Sibling nodes under the same parent have an **explicit order** — not just
-alphabetical-by-path. This is what lets you arrange pages in a menu, sections on
-a page, or cards in a column exactly the way you want, regardless of their names.
-
-- **Stable and gap-friendly.** Each child gets an order key (a fractional index),
-  so a node can be inserted between any two siblings without renumbering the
-  rest. `listChildren()` and tree traversals return children in this order.
-- **Per-branch and versioned.** Order is stored per branch and tracked in history
-  like any other change — reordering on one branch does not affect another.
-- **Carried by merge.** When you [merge a branch](/docs/guides/branching/merging-changes),
-  the child order from the source branch travels with the merge.
-
-- **Queryable from SQL.** The order is exposed as `__order` (position among
-  siblings) and `__tree_order` (position within a subtree, in document order).
-  Both are sortable and work as keyset pagination cursors — see
-  [Editorial order](/docs/guides/querying/common-query-patterns#editorial-drag-and-drop-order).
-
-Reorder children with the JavaScript client (`reorder`, `moveChildBefore`,
-`moveChildAfter`), the HTTP API, or by dragging in the Admin Console — see
-[Node Operations → Ordering](/docs/reference/javascript-client/node-operations#ordering).
-
-:::tip Publishing order across branches
-If you promote content by **copying selected nodes** between branches (rather
-than a full branch merge — for example a `main` → `publish` publishing flow),
-copying a node carries its content but **not** its sibling order. Replay the
-order onto the target branch with
-[`applyChildOrder()`](/docs/reference/javascript-client/node-operations#applychildorder).
-A full branch merge already carries order, so it does not need this step.
+:::tip Copying nodes between branches
+A branch merge carries sibling order. Copying individual nodes to another branch carries the content only; replay the order on the target with `applyChildOrder()` in the JavaScript client.
 :::
 
-## Path Indexing
+## Moving and renaming
 
-Create indexes for efficient hierarchical queries:
+Moving and renaming are commands on the node. `targetPath` is the node's new full path:
 
-```sql
--- Index for path prefix queries
-CREATE INDEX idx_path_prefix ON default USING BTREE(path);
-
--- Index for parent lookups
-CREATE INDEX idx_parent ON default (PARENT(path));
-
--- Index for depth queries
-CREATE INDEX idx_depth ON default (DEPTH(path));
+```bash
+POST .../head/nodes-a/blog/pg/raisin:cmd/move      {"targetPath": "/archive/pg"}
+POST .../head/nodes-a/blog/second-post/raisin:cmd/rename  {"newName": "second"}
 ```
 
-## Virtual Hierarchies
+A move fails with `VALIDATION_FAILED` if a child with that name already exists at the destination. Descendants move with their parent and their paths are rewritten. In SQL, `UPDATE 'nodes-a' SET path = '/archive/sql-post' WHERE path = '/blog/sql-post'` does the same.
 
-Create logical hierarchies without path structure:
+## Allowed children
 
-```sql
--- Nodes reference their parent explicitly
+A NodeType's `allowed_children` lists the types that may be created directly beneath it; an empty list or `"*"` allows anything. The workspace adds its own limits with `allowed_node_types` and `allowed_root_node_types`:
+
+```json
 {
-  "path": "/content/article-123",
-  "properties": {
-    "title": "My Article",
-    "parent": "/content/category-tech"  -- Explicit reference
-  }
+  "code": "VALIDATION_FAILED",
+  "message": "Workspace 'nodes-a' does not allow root nodes of type 'blog:Article'. Allowed root types: [\"raisin:Folder\", \"raisin:Page\"]"
 }
-
--- Query logical hierarchy
-SELECT child.path
-FROM default child
-WHERE child.properties->>'parent' = '/content/category-tech';
 ```
 
-Use this when:
-- Nodes need multiple parents
-- Hierarchy changes frequently
-- Path-based hierarchy is too rigid
+The workspace rules apply on every write path. The parent's `allowed_children` rule is checked by the node service's create path; a `POST` to a node path over HTTP, which runs as a transaction, does not currently check it.
 
-## Performance Considerations
+## Designing paths
 
-### Efficient Queries
+Paths are addresses, not categories. A few patterns that work well:
 
-```sql
--- Good: Uses path index
-SELECT * FROM default
-WHERE PATH_STARTS_WITH(path, '/content/blog');
+- **Dated content**: `/blog/2024/01/my-post`. Query a month with `DESCENDANT_OF('/blog/2024/01')`.
+- **Containers as folders**: `raisin:Folder` nodes for structure, content types beneath them.
+- **Taxonomies as references**: keep a node in one place and link it to categories with a `Reference` property or a relation, rather than duplicating it under several paths. See [Graph Model](/docs/concepts/graph-model).
 
--- Bad: Full table scan
-SELECT * FROM default
-WHERE path LIKE '%/blog/%';
+Keep hierarchies shallow enough to be readable; `level` listings stop at 10.
 
--- Good: Depth index
-SELECT * FROM default
-WHERE DEPTH(path) = 3;
+## Next steps
 
--- Bad: Function on every row
-SELECT * FROM default
-WHERE DEPTH(path) BETWEEN 2 AND 4;
-```
-
-### Limiting Depth
-
-```sql
--- Get children up to 2 levels deep
-SELECT * FROM default
-WHERE PATH_STARTS_WITH(path, '/content/blog')
-  AND DEPTH(path) <= DEPTH('/content/blog') + 2;
-```
-
-## Best Practices
-
-1. **Use meaningful paths**: Paths should be human-readable and descriptive
-2. **Keep depth reasonable**: Avoid deeply nested hierarchies (>10 levels)
-3. **Use consistent naming**: kebab-case for segments
-4. **Index appropriately**: Add indexes for common path queries
-5. **Plan for growth**: Leave room in hierarchy for future expansion
-6. **Document conventions**: Establish path naming standards for your team
-7. **Consider alternatives**: Use graph edges for non-hierarchical relationships
-
-## Hierarchical Patterns
-
-### Date-Based Paths
-
-```sql
--- Year/Month/Day structure
-/content/blog/2024/01/15/my-post
-
--- Query by date range
-SELECT * FROM default
-WHERE PATH_STARTS_WITH(path, '/content/blog/2024/01');
-```
-
-### Taxonomy Paths
-
-```sql
--- Multi-level categorization
-/products/electronics/computers/laptops/gaming
-
--- Navigate taxonomy
-SELECT * FROM default
-WHERE PATH_STARTS_WITH(path, '/products/electronics')
-  AND DEPTH(path) = 4;  -- Get all categories
-```
-
-### Namespace Paths
-
-```sql
--- Separate concerns
-/system/config
-/system/cache
-/user-data/profiles
-/user-data/preferences
-```
-
-## Next Steps
-
-- **[Nodes](/docs/concepts/data-model/nodes)** - Create hierarchical content
-- **[Graph Model](/docs/concepts/graph-model)** - Build non-hierarchical relationships
-- **[Workspaces](/docs/concepts/workspaces)** - Organize content across namespaces
-- **[SQL Reference](/docs/reference/sql/functions/string-functions)** - Complete path function documentation
+- **[Nodes](/docs/concepts/data-model/nodes)** for the node JSON and write commands.
+- **[Workspaces](/docs/concepts/workspaces)** for `allowed_node_types` and root rules.
+- **[Editorial ordering](/docs/guides/querying/common-query-patterns#editorial-drag-and-drop-order)** for paging with `__order` and `__tree_order`.

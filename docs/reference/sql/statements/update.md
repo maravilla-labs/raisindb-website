@@ -4,273 +4,147 @@ sidebar_position: 3
 
 # UPDATE Statement
 
-The UPDATE statement modifies existing nodes in RaisinDB.
-
-:::info Workspace = Table Name
-The table name in UPDATE refers to the **workspace name**. For example, `UPDATE products` updates nodes in the `products` workspace.
-:::
+`UPDATE` changes existing nodes in a workspace.
 
 ## Syntax
 
 ```sql
-UPDATE workspace_name
-SET properties = new_value
-[ WHERE condition ]
+UPDATE 'workspace'
+SET column = expression [, ...]
+WHERE condition
 ```
 
-## Update Patterns
+The table name is the workspace. A `WHERE` clause is required; `UPDATE 'blog' SET ...` without one is rejected with `UPDATE requires a WHERE clause`. The result is one row with `affected_rows`.
 
-All node data is stored in the `properties` JSONB column. There are three patterns for updating properties:
+<!-- TODO(sql-ext): fill from engine report (RETURNING) -->
 
-### Replace Entire Properties
+## Updating properties
 
-Replace all properties with a new JSON object:
+All user data lives in the `properties` JSONB column, so most updates assign to it. Three patterns cover nearly every case.
+
+### Merge fields
+
+`properties || '{...}'` keeps every existing field and adds or overwrites the ones you name:
 
 ```sql
-UPDATE default
-SET properties = '{"title": "Updated Title", "status": "published", "content": "New content"}'
-WHERE path = '/content/blog/my-post';
+UPDATE 'blog'
+SET properties = properties || '{"views": 12, "reviewed": true}'
+WHERE path = '/hello';
 ```
 
-### Merge Properties
+```json
+{"columns":["affected_rows"],"rows":[{"affected_rows":1}],"row_count":1,"execution_time_ms":4}
+```
 
-Merge new fields into existing properties using the `||` operator. Existing fields are overwritten, new fields are added, and unmentioned fields are preserved:
+### Set one field, including nested ones
+
+`JSONB_SET(properties, '{key,subkey}', value)` writes a single path and creates intermediate objects as needed. The value is JSON text: quote a string as `'"text"'`, a number as `'11'`.
 
 ```sql
-UPDATE default
-SET properties = properties || '{"status": "published", "featured": true}'
-WHERE path = '/content/blog/my-post';
+UPDATE 'blog' SET properties = JSONB_SET(properties, '{views}', '11') WHERE path = '/hello';
+UPDATE 'blog' SET properties = JSONB_SET(properties, '{seo,title}', '"Hello again"') WHERE path = '/hello';
 ```
 
-### Update Specific Field
-
-Use `jsonb_set` to update a single field:
+### Remove a field
 
 ```sql
-UPDATE default
-SET properties = jsonb_set(properties, '{author}', '"John"')
-WHERE path = '/content/blog/my-post';
+UPDATE 'blog' SET properties = properties - 'reviewed' WHERE path = '/hello';
 ```
 
-Update a nested field:
+### Replace everything
+
+Assigning a literal replaces the whole object. The new value must still satisfy the NodeType's required properties.
 
 ```sql
-UPDATE default
-SET properties = jsonb_set(properties, '{metadata,color}', '"blue"')
-WHERE path = '/products/widget-1';
+UPDATE 'blog'
+SET properties = '{"title": "Hello", "views": 0}'::jsonb
+WHERE path = '/hello';
 ```
 
-## WHERE Clause
+A JSON literal on its own is TEXT; cast it with `::jsonb`. The `||` and `JSONB_SET` forms take the literal without a cast because their signatures already expect JSON.
 
-The WHERE clause filters which rows to update.
+## Updating other columns
 
-### Update by Path
+| Column | Effect |
+|--------|--------|
+| `name` | Renames the node. |
+| `path` | Changes this node's own path. Its children keep their old paths, so use [`MOVE`](./graph-dml.md) to relocate a subtree. |
+| `archetype` | Assigns an archetype; the name must exist, otherwise `Archetype not found`. |
+| `node_type` | Rejected: `Cannot change node_type after creation`. |
+| `id`, `created_at`, `created_by`, `version` | Server-managed; not assignable. |
 
 ```sql
-UPDATE default
-SET properties = properties || '{"status": "archived"}'
-WHERE path = '/content/blog/old-post';
+UPDATE 'blog' SET name = 'hello-world' WHERE path = '/hello';
+UPDATE 'blog' SET path = '/hello-world' WHERE path = '/hello';
 ```
 
-### Update by ID
+Each update stamps `updated_at` and `updated_by`.
+
+## How the WHERE clause is executed
+
+The shape of the `WHERE` clause decides whether the statement runs inline or as a job.
+
+**Fast path.** `WHERE id = '...'` or `WHERE path = '...'` with a literal (or a bound parameter) is a single point write and completes in the request:
 
 ```sql
-UPDATE default
-SET properties = properties || '{"title": "Updated Title"}'
-WHERE id = '01HQ3K9V5NWCR3KXM2Y7P8G6ZT';
+UPDATE 'blog' SET properties = properties || '{"views": 8}'
+WHERE id = 'b4363972-fe50-4fe7-8574-c29dd3fc6dfa';
 ```
 
-### Update by Property Value
+If no node matches, the statement fails with `Node at path '/x' not found` or `Node with id '...' not found`.
+
+**Bulk path.** Any other predicate (a property comparison, `DESCENDANT_OF`, `CHILD_OF`, `LIKE`, a combination with `AND`) is planned as a bulk operation and handed to the job queue. The response comes back immediately with a job id:
 
 ```sql
-UPDATE default
-SET properties = properties || '{"status": "archived"}'
-WHERE properties->>'status' = 'draft'
-  AND created_at < '2023-01-01';
+UPDATE 'blog'
+SET properties = properties || '{"seen": true}'
+WHERE properties->>'published' = 'true';
 ```
 
-### Hierarchical Updates
-
-```sql
--- Update all descendants
-UPDATE default
-SET properties = properties || '{"category": "legacy"}'
-WHERE DESCENDANT_OF(path, '/content/old');
-
--- Update direct children only
-UPDATE default
-SET properties = properties || '{"section": "documentation"}'
-WHERE CHILD_OF(path, '/content/docs');
+```json
+{"columns":["job_id","status","message"],"rows":[{"job_id":"ZvzWqGaT9NJuiaM5MbbEX","status":"accepted","message":"Bulk operation started. Poll /api/jobs/{job_id} for status."}],"row_count":1,"execution_time_ms":0}
 ```
 
-### Update Without WHERE
+Poll the job with `GET /management/jobs/{job_id}`:
 
-Updates all rows (use with caution):
-
-```sql
-UPDATE default
-SET properties = properties || '{"reviewed": true}';
+```json
+{"success":true,"data":"Completed","error":null}
 ```
 
-## Update JSON Columns
+`EXPLAIN UPDATE ...` shows which path a statement will take without running it:
 
-### Replace Entire JSON
-
-```sql
-UPDATE default
-SET properties = '{"color": "red", "size": "large", "price": 29.99}'
-WHERE path = '/products/widget-1';
+```
+=== UPDATE Plan ===
+Target workspace: blog
+Strategy: fast path
+PathIndexLookup: path='/x' (O(1) point write)
 ```
 
-### Update Specific JSON Field
-
-```sql
-UPDATE default
-SET properties = jsonb_set(properties, '{color}', '"blue"')
-WHERE properties->>'name' = 'Widget';
-```
-
-### Update Nested JSON
-
-```sql
-UPDATE default
-SET properties = jsonb_set(properties, '{metadata,weight}', '500')
-WHERE path = '/products/widget-1';
-```
-
-### Merge Multiple Fields
-
-```sql
-UPDATE default
-SET properties = properties || '{"color": "blue", "updated": true}'
-WHERE properties->>'name' = 'Widget';
-```
-
-## Update Timestamps in Properties
-
-```sql
-UPDATE default
-SET properties = jsonb_set(properties, '{event_time}', '"2024-06-15T10:00:00Z"')
-WHERE properties->>'name' = 'Product Launch';
-```
-
-## Update Arrays in Properties
-
-```sql
--- Replace array
-UPDATE default
-SET properties = jsonb_set(properties, '{tags}', '["sql", "database", "advanced"]')
-WHERE path = '/content/blog/sql-guide';
-```
-
-## Update to NULL
-
-Remove a field by setting it to JSON null or by removing the key:
-
-```sql
--- Set field to null
-UPDATE default
-SET properties = jsonb_set(properties, '{description}', 'null')
-WHERE properties->>'description' = '';
-
--- Remove a key entirely
-UPDATE default
-SET properties = properties #- '{old_field}'
-WHERE path = '/content/blog/my-post';
-```
-
-## Conditional Updates
-
-Using CASE expressions:
-
-```sql
-UPDATE default
-SET properties = CASE
-    WHEN (properties->>'view_count')::int > 1000
-        THEN properties || '{"tier": "popular"}'
-    WHEN (properties->>'view_count')::int > 100
-        THEN properties || '{"tier": "normal"}'
-    ELSE properties || '{"tier": "unpopular"}'
-END
-WHERE properties->>'status' != 'archived';
-```
+Bulk updates run in the background, so a `SELECT` issued straight after may still see the old values. Combine a point predicate with a property check only when you can accept the job round-trip: `WHERE path = '/news/first' AND properties->>'published'::String = 'false'` is a bulk operation, not a fast one.
 
 ## Examples
 
-### Update Single Node
-
 ```sql
-UPDATE default
-SET properties = properties || '{
-    "title": "Complete Guide to RaisinDB",
-    "status": "published"
-}'
-WHERE path = '/content/guides/raisindb';
+-- Publish one page
+UPDATE 'blog'
+SET properties = properties || '{"published": true, "published_on": "2026-09-06"}'
+WHERE path = '/news/first';
+
+-- Tag every page under a folder (bulk job)
+UPDATE 'blog'
+SET properties = properties || '{"section": "news"}'
+WHERE DESCENDANT_OF('/news');
+
+-- Bound parameters
+-- {"sql": "UPDATE 'blog' SET properties = properties || $1 WHERE path = $2",
+--  "params": [{"views": 100}, "/hello"]}
 ```
 
-### Update with Numeric Calculation
+## Targeting a branch
+
+Add `__branch = '...'` to the `WHERE` clause to update a node on another branch; the predicate is removed from the filter and selects the branch. Inside `BEGIN ... COMMIT` the branch is fixed at `BEGIN`.
 
 ```sql
-UPDATE default
-SET properties = jsonb_set(
-    properties,
-    '{price}',
-    TO_JSON((properties->>'price')::numeric * 1.1)
-)
-WHERE node_type = 'Product'
-  AND properties->>'category' = 'electronics';
+UPDATE 'blog' SET properties = properties || '{"title": "Draft 2"}'
+WHERE __branch = 'staging' AND path = '/draft';
 ```
-
-### Update JSON Metadata
-
-```sql
-UPDATE default
-SET properties = jsonb_set(
-    jsonb_set(properties, '{color}', '"blue"'),
-    '{updated}',
-    TO_JSON(NOW())
-)
-WHERE properties->>'category' = 'widgets';
-```
-
-### Batch Status Update
-
-```sql
-UPDATE default
-SET properties = properties || '{"status": "archived", "archived_reason": "Outdated content"}'
-WHERE created_at < '2022-01-01'
-  AND properties->>'status' = 'published';
-```
-
-### Update Based on Hierarchy
-
-```sql
-UPDATE default
-SET properties = properties || '{"section": "documentation"}'
-WHERE DESCENDANT_OF(path, '/content/docs')
-  AND properties->>'section' IS NULL;
-```
-
-### Complex Conditional Update
-
-```sql
-UPDATE default
-SET properties = properties || CASE
-    WHEN properties->>'status' = 'published'
-        AND (properties->>'view_count')::int > 1000
-        THEN '{"priority": "high"}'
-    WHEN properties->>'status' = 'published'
-        THEN '{"priority": "normal"}'
-    ELSE '{"priority": "low"}'
-END
-WHERE node_type = 'Article';
-```
-
-## Notes
-
-- System columns (`id`, `path`, `created_at`) cannot be updated
-- The `updated_at` column is automatically updated on each UPDATE
-- The `version` counter is automatically incremented
-- Updates without WHERE clause affect all rows
-- Invalid JSON in properties will cause an error
-- Failed updates (constraint violations) will roll back

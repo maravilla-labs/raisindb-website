@@ -5,16 +5,16 @@ slug: /
 
 # Welcome to RaisinDB
 
-**RaisinDB** is a multi-model database that combines the flexibility of document storage with the power of Git-like versioning. Build content-rich applications with schema-driven development, graph relationships, and full revision history.
+**RaisinDB** is a multi-model content database. Documents live as nodes in a path hierarchy, every change is recorded as a revision, and you can query the same data with SQL, graph queries, full-text search, or the REST and WebSocket APIs.
 
 ## Why RaisinDB?
 
-- **Git-like Version Control**: Every change is tracked. Branch, merge, and time-travel through your data.
-- **Schema-Driven Development**: Define NodeTypes with strong typing, validation, and inheritance.
-- **Multi-Model Queries**: Use SQL, GRAPH_TABLE (SQL/PGQ), or REST API to query documents, graphs, and full-text search.
-- **PostgreSQL Compatible**: Connect with any PostgreSQL client using the pgwire protocol.
-- **DCAD (Data-Centric Application Design)**: Let your schema drive the UI. Archetypes map data to UX patterns — change the archetype, transform the interface.
-- **Authentication & RBAC**: Pluggable auth strategies (Local, OIDC, API Key), workspace-scoped roles, and row-level security built in.
+- **Version control built in**: every write is a revision. Branch, merge, and read data as it was at any earlier revision.
+- **Schema-driven development**: define NodeTypes with typed properties, validation, and inheritance.
+- **Multi-model queries**: SQL, GRAPH_TABLE (SQL/PGQ), full-text and vector search, and a REST API over the same nodes.
+- **PostgreSQL wire protocol**: connect with `psql` or any PostgreSQL driver.
+- **DCAD (Data-Centric Application Design)**: archetypes and element types describe how content maps to UI, so the schema drives the app.
+- **Authentication and RBAC**: admin users, end-user identities (password, magic link, OIDC), workspace-scoped roles, and row-level security.
 
 ## Quick Links
 
@@ -25,7 +25,7 @@ slug: /
         <h3>Get Started</h3>
       </div>
       <div className="card__body">
-        <p>Set up RaisinDB and create your first content model in 5 minutes.</p>
+        <p>Install the CLI, start a server, and scaffold a project.</p>
       </div>
       <div className="card__footer">
         <a className="button button--primary" href="/docs/tutorials/quickstart">Quick Start Guide</a>
@@ -65,45 +65,48 @@ slug: /
 | Feature | Description |
 |---------|-------------|
 | **Nodes & NodeTypes** | Hierarchical content with schema definitions |
-| **Branching** | Git-like branches for parallel development |
-| **SQL Interface** | PostgreSQL-compatible queries with extensions |
+| **Branching** | Git-like branches for parallel work and publishing |
+| **SQL Interface** | SQL over workspaces, with JSON property operators and hierarchy predicates |
 | **Graph Queries** | SQL/PGQ (GRAPH_TABLE) for relationship traversal |
 | **Full-Text Search** | Tantivy-powered search with relevance ranking |
 | **Vector Search** | Semantic similarity with embeddings |
-| **Geospatial** | PostGIS-compatible location queries |
-| **Serverless Functions** | JavaScript functions and triggers |
-| **RAP Packages** | Installable extensions and content packages |
+| **Geospatial** | Location queries over geometry properties |
+| **Serverless Functions** | JavaScript, Starlark, and WebAssembly functions with triggers |
+| **RAP Packages** | Installable content and schema packages |
 | **DCAD** | Data-centric application design with archetypes and element types |
-| **Authentication & RBAC** | Pluggable auth, workspace-scoped roles, row-level security |
+| **Authentication & RBAC** | Admin and identity auth, workspace-scoped roles, row-level security |
 
 ## Connect Your Way
 
 ```bash
-# PostgreSQL wire protocol (psql, any PostgreSQL client)
-psql -h localhost -p 5432 -U admin -d myrepo
+# PostgreSQL wire protocol: user = tenant, database = repository, password = API key
+psql -h localhost -p 5432 -U default -d myrepo
 
 # HTTP REST API
-curl http://localhost:8080/api/repository/myrepo/main/head/default/
+curl http://localhost:8080/api/repository/myrepo/main/head/default/ \
+  -H "Authorization: Bearer $TOKEN"
+```
 
-# JavaScript Client
+```typescript
+// JavaScript client
 import { RaisinClient } from '@raisindb/client';
-const client = new RaisinClient('ws://localhost:8080');
+const client = new RaisinClient('ws://localhost:8080', { repository: 'myrepo' });
 ```
 
 ## Documentation Structure
 
 This documentation follows the [Diataxis](https://diataxis.fr) framework:
 
-- **[Tutorials](/docs/tutorials/quickstart)** - Learning-oriented guides to get you started
-- **[Concepts](/docs/concepts/overview)** - Understanding how RaisinDB works
-- **[Guides](/docs/guides/installation)** - How-to guides for specific tasks
-- **[Reference](/docs/reference/sql/overview)** - Technical reference for SQL, APIs, and CLI
+- **[Tutorials](/docs/tutorials/quickstart)**: learning-oriented, step by step
+- **[Concepts](/docs/concepts/overview)**: how RaisinDB works
+- **[Guides](/docs/guides/installation)**: how to do specific tasks
+- **[Reference](/docs/reference/sql/overview)**: lookup for SQL, APIs, and the CLI
 
 ### Additional Resources
 
-- **[AI & Agent Guides](/docs/guides/ai/agent-memory-with-branches)** - Branching memory, vector search, RAG patterns
-- **[Auth & RBAC Guides](/docs/guides/auth/authentication-setup)** - Authentication setup, roles, row-level security
-- **[DCAD Concepts](/docs/concepts/dcad)** - Data-centric application design
+- **[AI & Agent Guides](/docs/guides/ai/agent-memory-with-branches)**: branching memory, vector search, RAG patterns
+- **[Auth & RBAC Guides](/docs/guides/auth/authentication-setup)**: authentication setup, roles, row-level security
+- **[DCAD Concepts](/docs/concepts/dcad)**: data-centric application design
 
 ---
 

@@ -4,12 +4,13 @@ sidebar_position: 6
 
 # WebAssembly: Go
 
-Go guests are built with **TinyGo** — the standard Go compiler cannot target
-`wasip2`. Artifacts land around 1–3 MB.
+Go guests are built with TinyGo, because the standard Go compiler cannot target
+`wasip2`.
 
 ## Prerequisites
 
-- [TinyGo](https://tinygo.org/getting-started/install/) 0.34 or newer.
+- [TinyGo](https://tinygo.org/getting-started/install/) 0.34 or newer, plus a
+  regular Go toolchain (1.22 or newer) for `go test`.
 
 ## Scaffold
 
@@ -24,75 +25,106 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/maravilla-labs/raisindb/sdks/go/raisin"
 )
 
-type Input struct {
+type input struct {
 	Name string `json:"name"`
 }
 
 func init() {
-	raisin.HandleDefault(func(in json.RawMessage) (any, error) {
-		var input Input
-		if err := json.Unmarshal(in, &input); err != nil {
-			return nil, err
-		}
-
-		raisin.Log.Info("greeting " + input.Name)
-
-		children, err := raisin.Nodes.GetChildren("content", "/pages", 50)
-		if err != nil {
-			return nil, err
-		}
-
-		return map[string]any{
-			"greeting": "Hello, " + input.Name,
-			"pages":    len(children),
-		}, nil
-	})
+	raisin.HandleDefault(greet)
 
 	// More handlers in the same artifact:
-	raisin.Handle("shout", func(in json.RawMessage) (any, error) { /* ... */ })
+	// raisin.Handle("shout", shout)
 }
 
+// main is required by Go but never runs: the host calls the component
+// export, not a program entry point.
 func main() {}
+
+func greet(raw json.RawMessage) (any, error) {
+	var in input
+	if err := json.Unmarshal(raw, &in); err != nil {
+		return nil, fmt.Errorf("invalid input: %w", err)
+	}
+
+	raisin.Info("greeting %s", in.Name)
+
+	limit := uint32(50)
+	children, err := raisin.Nodes.GetChildren("content", "/pages", &limit)
+	if err != nil {
+		return nil, err
+	}
+	var pages []json.RawMessage
+	_ = json.Unmarshal(children, &pages)
+
+	return map[string]any{
+		"greeting": "Hello, " + in.Name,
+		"pages":    len(pages),
+	}, nil
+}
 ```
 
-Registration happens in `init` because a component has no long-running `main`;
-`main` stays empty and is never called for a handler invocation.
+Handlers are registered in `init` with `raisin.HandleDefault` (the handler
+named `default`) or `raisin.Handle(name, fn)`. A handler takes the input as
+`json.RawMessage` and returns any JSON-serialisable value. Logging is through
+package-level functions (`raisin.Debug`, `raisin.Info`, `raisin.Warn`,
+`raisin.Error`) with `Printf` formatting. The `raisin.*` API methods return
+`json.RawMessage`; decode what you need. Optional arguments are pointers, and
+`nil` means absent.
 
 ## Test without a server
 
 ```go
-func TestGreet(t *testing.T) {
-	raisintest.WithMock(t, func(m *raisintest.Mock) {
-		m.Expect("nodes_getChildren", `["content","/pages",50]`, `[]`)
+package main
 
-		out, err := raisin.Invoke("default", []byte(`{"name":"Ada"}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		// assert on out
-	})
+import (
+	"strings"
+	"testing"
+
+	"github.com/maravilla-labs/raisindb/sdks/go/raisin/raisintest"
+)
+
+func TestGreet(t *testing.T) {
+	mock := raisintest.New().
+		Expect("nodes_getChildren", `["content","/pages",50]`, `[]`)
+	defer mock.Install()()
+
+	out, err := raisintest.Invoke("default", map[string]string{"name": "Ada"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"greeting":"Hello, Ada"`) {
+		t.Fatalf("unexpected output %s", out)
+	}
 }
 ```
 
-`go test ./...` runs natively — the wasm bindings are behind a build tag.
+`raisintest.New()` builds a mock host; `Expect(method, args, result)` scripts
+one call, where `args` is the JSON argument array (an empty string matches any
+arguments) and `result` is the raw JSON the host would return. `Install()`
+activates it and returns the restore function. `raisintest.Invoke` dispatches by
+handler name exactly as the host does. An unscripted call fails the test, and
+`mock.Calls()`, `mock.Logs()` and `mock.Unmet()` are available for assertions.
+
+`go test ./...` runs natively; the wasm bindings are behind a build tag.
 
 ## Build, run, deploy
 
 ```bash
 raisindb function build wasm/demo/greet
 raisindb function test  wasm/demo/greet
-raisindb function run   wasm/demo/greet --input '{"name":"Ada"}'
-raisindb deploy . --install
+raisindb function run   wasm/demo/greet --input '{"name":"Ada"}' --repo myapp
+raisindb deploy . --repo myapp --install
 ```
 
 Under the hood:
 
 ```bash
-tinygo build -target=wasip2 --wit-package ./wit --wit-world function -o main.wasm .
+tinygo build -target=wasip2 -o main.wasm --wit-package ./wit --wit-world function .
 ```
 
 ## Depending on the SDK directly
@@ -102,7 +134,8 @@ go get github.com/maravilla-labs/raisindb/sdks/go/raisin@v0.5.0
 ```
 
 It is a subdirectory module of the main repository, published under
-path-prefixed tags (`sdks/go/raisin/v0.5.0`).
+path-prefixed tags (`sdks/go/raisin/v0.5.0`). The scaffold's `go.mod` requires
+that version.
 
 ## TinyGo caveats
 

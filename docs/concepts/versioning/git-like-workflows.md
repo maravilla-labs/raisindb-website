@@ -4,531 +4,158 @@ sidebar_position: 1
 
 # Git-Like Workflows
 
-RaisinDB brings Git's powerful version control model to your database. Every change is tracked, branches enable parallel development, and merges reconcile concurrent modifications. This enables collaborative workflows familiar to developers while making them accessible to content teams.
+RaisinDB versions content the way Git versions files. Every write is a revision, a branch is a pointer to a revision, branches fork and merge, and tags name revisions. If you know Git, the mapping is direct:
 
-## Draft vs Commit Model
+| Git | RaisinDB | Notes |
+|-----|----------|-------|
+| Commit | Revision | Created by every write; identified by an HLC value such as `1788719765785-0` |
+| Branch | Branch | A name pointing at its newest revision |
+| Fork / checkout -b | `CREATE BRANCH 'x' FROM 'main'` | Copies content and schema at the fork revision |
+| Checkout | Branch in the address | `USE BRANCH`, the `{branch}` URL segment, or `db.onBranch()` |
+| Log | Revision log, node history | Repository-wide commits, or one node's revisions |
+| Diff | `compare` / `diff` | Commits ahead and behind, or the changed nodes |
+| Merge | `MERGE BRANCH 'x' INTO 'main'` | Fast-forward or three-way with conflict detection |
+| Tag | Tag | An immutable name for one revision |
+| Reset | Set branch head | Moves the pointer; history is kept |
 
-RaisinDB distinguishes between two types of content operations:
+One difference from Git: there is no working directory or staging area. A write is committed the moment it happens, on the branch you addressed. A SQL transaction can group several writes into one revision with a message, but a plain `UPDATE` is a commit too, with a generated message.
 
-| Operation | Creates Revision | Use Case |
-|-----------|------------------|----------|
-| **Draft** (PUT/POST/DELETE) | No | Real-time editing, autosave, collaboration |
-| **Commit** (Transaction) | Yes | Releases, deployments, milestones |
+The examples below use SQL over HTTP. The same operations exist over the JavaScript client and the management API; see [Branches and Tags](./branches-and-tags).
 
-**Draft operations** update the workspace's current HEAD without creating a snapshot — like working directory changes in Git. They're fast and immediate.
+## Feature branch
 
-**Commit operations** create immutable, sequentially numbered revisions (1, 2, 3, ...) that snapshot the entire workspace state. Revisions can be tagged, branched from, or restored.
-
-## The Git Mental Model
-
-If you understand Git, you already understand RaisinDB versioning:
-
-| Git Concept | RaisinDB Equivalent | Description |
-|-------------|---------------------|-------------|
-| Working directory | Workspace HEAD (mutable) | Current draft state |
-| Repository | Repository | Container for all versioned data |
-| Branch | Branch | Named pointer to a revision |
-| Commit | Revision | Immutable snapshot of workspace state |
-| Tag | Tag | Immutable label for a specific revision |
-| Merge | Merge / Update branch pointer | Combine changes from different branches |
-| Checkout | SET BRANCH | Switch to a different branch |
-| Log | Revision history | View change timeline |
-
-## Core Workflow
-
-### 1. Main Branch Development
-
-Start with the main branch:
+Work in isolation, review, then merge.
 
 ```sql
--- Connect to repository
-\c blog
-
--- Check current branch
-SELECT CURRENT_BRANCH();
--- Returns: 'main'
-
--- Make changes directly on main
-INSERT INTO default (path, node_type, properties) VALUES (
-  '/content/blog/post1',
-  'blog:Article',
-  '{"title": "First Post", "published": false}'
-);
-
--- Each change creates a new revision automatically
-SELECT __revision, __timestamp, properties->>'title'
-FROM default
-WHERE path = '/content/blog/post1'
-ORDER BY __revision DESC;
+-- fork from main
+CREATE BRANCH 'feature/new-layout' FROM 'main';
 ```
 
-### 2. Feature Branch Development
-
-Create a branch for isolated work:
+Write on the branch by addressing it (`POST /api/sql/myapp/feature%2Fnew-layout`; a slash in a branch name is URL-encoded), or in one batch:
 
 ```sql
--- Create a feature branch
-CREATE BRANCH feature/new-design FROM main;
-
--- Switch to the branch
-SET BRANCH = 'feature/new-design';
-
--- Verify current branch
-SELECT CURRENT_BRANCH();
--- Returns: 'feature/new-design'
-
--- Make changes (isolated from main)
-UPDATE default
-SET properties = properties || '{"layout": "modern"}'
-WHERE node_type = 'blog:Article';
-
--- Switch back to main (changes are isolated)
-SET BRANCH = 'main';
-
--- Query main branch (no layout changes visible)
-SELECT properties FROM default WHERE path = '/content/blog/post1';
+USE BRANCH 'feature/new-layout';
+UPDATE 'content' SET properties = '{"title":"Hello","layout":"modern"}'::jsonb WHERE path = '/hello';
 ```
 
-### 3. Merge Changes
-
-Bring feature branch changes into main:
+`main` is unchanged until the merge:
 
 ```sql
--- Merge feature branch into main
-MERGE BRANCH feature/new-design INTO main;
+SHOW DIVERGENCE 'feature/new-layout' FROM 'main';
+-- branch | base | ahead | behind | common_ancestor
+-- feature/new-layout | main | 1 | 0 | 1788719729588-0
 
--- Changes from feature branch now in main
-SELECT properties->>'layout' FROM default
-WHERE path = '/content/blog/post1';
--- Returns: 'modern'
-
--- Delete feature branch (optional)
-DROP BRANCH feature/new-design;
+MERGE BRANCH 'feature/new-layout' INTO 'main' MESSAGE 'New layout';
+DROP BRANCH 'feature/new-layout';
 ```
 
-## Common Workflows
+## Environment branches
 
-### Editorial Workflow
-
-Content teams use branches for editorial stages:
+One branch per environment, promoted by merging in one direction.
 
 ```sql
--- Writer creates draft branch
-CREATE BRANCH draft/article-123 FROM main;
-SET BRANCH = 'draft/article-123';
-
--- Write content
-INSERT INTO default (path, node_type, properties) VALUES (
-  '/content/blog/new-article',
-  'blog:Article',
-  '{"title": "New Article", "body": "Draft content..."}'
-);
-
--- Editor creates review branch from draft
-CREATE BRANCH review/article-123 FROM draft/article-123;
-SET BRANCH = 'review/article-123';
-
--- Editor makes revisions
-UPDATE default
-SET properties = properties || '{"body": "Revised content..."}'
-WHERE path = '/content/blog/new-article';
-
--- Approve and merge to main
-MERGE BRANCH review/article-123 INTO main;
-
--- Publish
-SET BRANCH = 'main';
-UPDATE default
-SET properties = properties || '{"published": true, "publishedAt": NOW()}'
-WHERE path = '/content/blog/new-article';
+CREATE BRANCH 'staging' FROM 'main';
+CREATE BRANCH 'production' FROM 'main';
+ALTER BRANCH 'production' SET PROTECTED TRUE;
 ```
 
-### Environment Branches
-
-Separate development, staging, and production:
+Editors work on `main`. To release, merge `main` into `staging`, test against the `staging` branch address, then remove protection and merge into `production`:
 
 ```sql
--- Create environment branches
-CREATE BRANCH development FROM main;
-CREATE BRANCH staging FROM main;
-CREATE BRANCH production FROM main;
-
--- Develop on development branch
-SET BRANCH = 'development';
-INSERT INTO default (path, node_type, properties) VALUES (
-  '/config/feature-flags',
-  'config:Settings',
-  '{"newFeature": true}'
-);
-
--- Promote to staging
-MERGE BRANCH development INTO staging;
-
--- Test on staging
-SET BRANCH = 'staging';
--- ... run tests ...
-
--- Promote to production
-MERGE BRANCH staging INTO production;
+MERGE BRANCH 'main' INTO 'staging' MESSAGE 'Release candidate';
+ALTER BRANCH 'production' SET PROTECTED FALSE;
+MERGE BRANCH 'staging' INTO 'production' MESSAGE 'Release 2026-09-06';
+ALTER BRANCH 'production' SET PROTECTED TRUE;
 ```
 
-### Release Workflow
+If only part of `staging` should go live, copy the reviewed subtrees with `copyNodes` instead of merging the whole branch; see [Working with Branches](/docs/guides/branching/working-with-branches).
 
-Tag releases for version tracking:
+## Editorial review
+
+A writer drafts on a branch, an editor reviews the branch, and the approved result is merged.
 
 ```sql
--- Development on main
-SET BRANCH = 'main';
--- ... make changes ...
-
--- Create release branch
-CREATE BRANCH release/v1.0 FROM main;
-
--- Tag the release
-CREATE TAG v1.0 ON release/v1.0 AT HEAD;
-
--- Continue development on main
-SET BRANCH = 'main';
--- ... new features ...
-
--- Hotfix on release branch
-SET BRANCH = 'release/v1.0';
-UPDATE default SET properties = properties || '{"hotfix": true}';
-
--- Tag hotfix
-CREATE TAG v1.0.1 ON release/v1.0 AT HEAD;
-
--- Merge hotfix back to main
-MERGE BRANCH release/v1.0 INTO main;
+CREATE BRANCH 'draft/article-123' FROM 'main';
 ```
-
-### Collaborative Editing
-
-Multiple editors work simultaneously:
 
 ```sql
--- Editor 1: Create branch for section A
-CREATE BRANCH edit/section-a FROM main;
-SET BRANCH = 'edit/section-a';
-UPDATE default
-SET properties = properties || '{"sectionA": "Updated content"}'
-WHERE path = '/content/page';
-
--- Editor 2: Create branch for section B
-CREATE BRANCH edit/section-b FROM main;
-SET BRANCH = 'edit/section-b';
-UPDATE default
-SET properties = properties || '{"sectionB": "Updated content"}'
-WHERE path = '/content/page';
-
--- Merge Editor 1's changes
-MERGE BRANCH edit/section-a INTO main;
-
--- Merge Editor 2's changes (automatic merge if no conflicts)
-MERGE BRANCH edit/section-b INTO main;
-
--- Both edits now in main
-SET BRANCH = 'main';
-SELECT properties FROM default WHERE path = '/content/page';
--- Contains both sectionA and sectionB updates
+USE BRANCH 'draft/article-123';
+INSERT INTO 'content' (path, node_type, name, properties)
+VALUES ('/blog/article-123', 'raisin:Page', 'article-123', '{"title":"Draft"}'::jsonb);
 ```
 
-## Conflict Resolution
-
-When changes conflict, RaisinDB requires manual resolution:
+The editor reads the draft branch, sees exactly what changed, and merges:
 
 ```sql
--- Branch 1: Update title
-SET BRANCH = 'branch1';
-UPDATE default
-SET properties = properties || '{"title": "Title from Branch 1"}'
-WHERE path = '/content/blog/post1';
-
--- Branch 2: Update title differently
-SET BRANCH = 'branch2';
-UPDATE default
-SET properties = properties || '{"title": "Title from Branch 2"}'
-WHERE path = '/content/blog/post1';
-
--- Attempt merge
-MERGE BRANCH branch2 INTO branch1;
--- Error: Conflict on /content/blog/post1 property 'title'
-
--- View conflicts
-SELECT * FROM __conflicts__
-WHERE merge_id = LAST_MERGE_ID();
-
--- Resolve manually
-SET BRANCH = 'branch1';
-UPDATE default
-SET properties = properties || '{"title": "Resolved Title"}'
-WHERE path = '/content/blog/post1';
-
--- Mark conflict as resolved
-RESOLVE CONFLICT '/content/blog/post1' IN MERGE LAST_MERGE_ID();
-
--- Complete merge
-COMMIT MERGE LAST_MERGE_ID();
+SELECT path, properties->>'title' AS title FROM 'content' WHERE __branch = 'draft/article-123';
+MERGE BRANCH 'draft/article-123' INTO 'main' MESSAGE 'Publish article 123';
 ```
 
-### Automatic Merge Strategies
+Over HTTP the editor can call the `diff` endpoint for a per-node list of added, modified and deleted nodes before merging.
 
-RaisinDB uses intelligent merge strategies:
+## Releases with tags
+
+Tag the revision you shipped so it can be read, compared or forked later.
+
+```typescript
+const head = await db.branches().getHead('main');
+await db.tags().create('v1.0', head.revision, 'First release');
+
+// read content as it was at the release
+await db.executeSql("SELECT path, properties->>'title' AS title FROM 'content' WHERE __revision = '" + head.revision + "'");
+
+// hotfix on a branch forked at the release
+await db.branches().create('hotfix/v1.0.1', { fromBranch: 'main', fromRevision: head.revision });
+```
+
+## Concurrent edits and conflicts
+
+Two branches can change different nodes freely; a three-way merge combines them. When both change the **same node** since the fork, the merge stops and returns the conflicting nodes with their base, target and source properties:
 
 ```sql
--- Strategy 1: Non-overlapping properties (auto-merge)
--- Branch A: {"title": "New Title"}
--- Branch B: {"author": "Jane"}
--- Merged: {"title": "New Title", "author": "Jane"}
+MERGE BRANCH 'user/jane' INTO 'main';
+-- error: Merge has 1 conflict(s). Use SHOW CONFLICTS FOR MERGE 'user/jane' INTO 'main' to view details ...
 
--- Strategy 2: Array concatenation (auto-merge)
--- Branch A: {"tags": ["tag1", "tag2"]}
--- Branch B: {"tags": ["tag3"]}
--- Merged: {"tags": ["tag1", "tag2", "tag3"]}
-
--- Strategy 3: Same property, same value (auto-merge)
--- Branch A: {"status": "published"}
--- Branch B: {"status": "published"}
--- Merged: {"status": "published"}
-
--- Strategy 4: Same property, different values (conflict)
--- Branch A: {"title": "Title A"}
--- Branch B: {"title": "Title B"}
--- Conflict: Manual resolution required
+SHOW CONFLICTS FOR MERGE 'user/jane' INTO 'main';
+-- node_id | path | conflict_type | base_properties | target_properties | source_properties
+-- 260584c1-... |  | BothModified | {"title":"Hello v3"} | {"title":"Title from main"} | {"title":"Title from jane"}
 ```
 
-## Branch Management
+Conflicts are detected per node, not per property. The merge is completed by sending one resolution per conflicted node, each naming the final properties, to the `resolve-merge` endpoint:
 
-### List Branches
-
-```sql
--- Get all branches
-SELECT * FROM __branches__ ORDER BY created_at DESC;
-
--- Get current branch
-SELECT CURRENT_BRANCH();
-
--- Get branch information
-SELECT name, base_branch, created_at, head_revision
-FROM __branches__
-WHERE name = 'feature/new-design';
+```bash
+curl -X POST http://localhost:8080/api/management/repositories/default/myapp/branches/main/resolve-merge \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{
+    "source_branch": "user/jane",
+    "resolutions": [{
+      "node_id": "260584c1-...",
+      "resolution_type": "keep-theirs",
+      "resolved_properties": { "title": "Title from jane" }
+    }],
+    "message": "Merge jane",
+    "actor": "editor"
+  }'
 ```
 
-### Branch Comparison
+See [Merging Changes](/docs/guides/branching/merging-changes) for the SQL form and the response.
 
-```sql
--- See changes between branches
-SELECT path, properties
-FROM default
-WHERE __branch = 'feature/new-design'
-  AND path NOT IN (
-    SELECT path FROM default WHERE __branch = 'main'
-  );
+## Rolling back
 
--- Count changes per branch
-SELECT
-  'main' AS branch,
-  COUNT(*) AS node_count
-FROM default
-WHERE __branch = 'main'
-UNION ALL
-SELECT
-  'feature/new-design',
-  COUNT(*)
-FROM default
-WHERE __branch = 'feature/new-design';
+A branch head can be moved to any earlier revision. Nothing is deleted, so it can be moved forward again.
+
+```typescript
+const history = await db.workspace('content').nodes().historyByPath('/hello');
+await db.branches().updateHead('main', history[1].revision);   // main now reads as it did one revision ago
 ```
 
-### Branch Protection
+## Agents on branches
 
-Prevent accidental changes to important branches:
-
-```sql
--- Protect production branch
-ALTER BRANCH production SET PROTECTED = true;
-
--- Attempt to modify fails
-SET BRANCH = 'production';
-UPDATE default SET properties = '{}';
--- Error: Branch 'production' is protected
-
--- Unprotect (admin only)
-ALTER BRANCH production SET PROTECTED = false;
-```
-
-## Advanced Patterns
-
-### Cherry-Pick Changes
-
-Apply specific changes from one branch to another:
-
-```sql
--- Get a specific revision from another branch
-SET BRANCH = 'main';
-
-INSERT INTO default
-SELECT path, node_type, properties
-FROM default
-WHERE __branch = 'feature/redesign'
-  AND path = '/content/blog/specific-post'
-  AND __revision = 'HLC_TIMESTAMP_HERE';
-```
-
-### Rebase Branch
-
-Replay branch changes on top of updated base:
-
-```sql
--- Feature branch diverged from main
--- Main has new changes
--- Rebase feature on latest main
-
--- Create new branch from current main
-CREATE BRANCH feature/redesign-rebased FROM main;
-
--- Apply feature changes on top
-SET BRANCH = 'feature/redesign-rebased';
-
--- Manually replay changes (no automatic rebase in RaisinDB)
--- Apply each change from feature/redesign
-```
-
-### Stash Changes
-
-Temporarily save uncommitted work:
-
-```sql
--- Save current state
-CREATE BRANCH __stash__/temp-work FROM CURRENT_BRANCH();
-
--- Switch to other work
-SET BRANCH = 'other-branch';
--- ... do other work ...
-
--- Restore stashed changes
-MERGE BRANCH __stash__/temp-work INTO CURRENT_BRANCH();
-DROP BRANCH __stash__/temp-work;
-```
-
-### Branch Naming Conventions
-
-Follow these patterns for clarity:
-
-```sql
--- Feature branches
-feature/new-login-page
-feature/user-profiles
-
--- Bug fix branches
-fix/header-alignment
-fix/missing-images
-
--- Release branches
-release/v1.0
-release/v2.0
-
--- Hotfix branches
-hotfix/security-patch
-hotfix/critical-bug
-
--- User branches (collaborative editing)
-user/jane/draft-article
-user/john/review-edits
-
--- Environment branches
-development
-staging
-production
-```
-
-## Best Practices
-
-1. **Keep main stable**: Only merge tested, approved changes to main
-2. **Use descriptive branch names**: Clear purpose in the name
-3. **Delete merged branches**: Clean up after merging (unless tagged)
-4. **Merge frequently**: Avoid long-lived branches to reduce conflicts
-5. **Tag releases**: Mark important milestones with tags
-6. **Protect critical branches**: Use branch protection for production
-7. **Document merge conflicts**: Leave notes on complex resolutions
-8. **Test before merging**: Verify changes on branch before merging
-
-## Workflow Comparison
-
-### Centralized Workflow
-
-All work happens on main (simple, no branching):
-
-```sql
--- Everyone works on main
-SET BRANCH = 'main';
-
--- Make changes
-UPDATE default SET properties = '{}';
-
--- No branches, no merges
-```
-
-**Pros**: Simple, no merge complexity
-**Cons**: No isolation, changes immediately visible
-
-### Feature Branch Workflow
-
-Each feature gets its own branch:
-
-```sql
--- Create feature branch
-CREATE BRANCH feature/new-feature FROM main;
-SET BRANCH = 'feature/new-feature';
-
--- Develop feature
--- ... changes ...
-
--- Merge when ready
-MERGE BRANCH feature/new-feature INTO main;
-```
-
-**Pros**: Isolated work, clean main
-**Cons**: Requires merging, potential conflicts
-
-### Gitflow Workflow
-
-Structured branching for releases:
-
-```sql
--- Development branch
-CREATE BRANCH develop FROM main;
-
--- Feature branches from develop
-CREATE BRANCH feature/xyz FROM develop;
-
--- Release branches
-CREATE BRANCH release/v1.0 FROM develop;
-
--- Hotfix from main
-CREATE BRANCH hotfix/critical FROM main;
-```
-
-**Pros**: Organized, supports releases
-**Cons**: Complex, many branches
-
-## Time-Travel Within Workflow
-
-Combine branches with revision history:
-
-```sql
--- View historical state on a branch
-SET BRANCH = 'feature/redesign';
-SET __revision = '2024-01-14T10:00:00Z';
-
-SELECT * FROM default WHERE path = '/content/blog/post1';
-
--- Reset to current
-SET __revision = DEFAULT;
-```
+The same model gives an AI agent a private copy of the data to work in: fork a branch per task, let the agent write there, inspect the diff, and merge or drop the branch. See [Agent Memory with Branches](/docs/guides/ai/agent-memory-with-branches).
 
 ## Next Steps
 
-- **[Branches and Tags](/docs/concepts/versioning/branches-and-tags)** - Deep dive into branching
-- **[Revisions](/docs/concepts/versioning/revisions)** - Understand revision history
-- **[Branching Guide](/docs/guides/branching/working-with-branches)** - Practical branching scenarios
-- **[Access Control](/docs/concepts/access-control)** - Control who can create/merge branches
+- **[Branches and Tags](./branches-and-tags)** - The branch and tag model in detail
+- **[Revisions](./revisions)** - History, point-in-time reads and rollback
+- **[Working with Branches](/docs/guides/branching/working-with-branches)** - Step-by-step branch operations
+- **[Access Control](/docs/concepts/access-control)** - Who can read and write which content

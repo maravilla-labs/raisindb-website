@@ -4,101 +4,95 @@ sidebar_position: 1
 
 # Configuration Reference
 
-RaisinDB server configuration options.
+The server reads an optional TOML file (`--config <path>` or `RAISIN_CONFIG`). Command-line flags and their environment variables override values from the file. Every section is optional; omitted sections use the defaults shown here.
 
-## Configuration File
-
-Location: `~/.config/raisindb/config.toml`
-
-## Server Configuration
+## `[server]`
 
 ```toml
 [server]
-host = "0.0.0.0"
-http_port = 8080
-pgwire_port = 5432
+port = 8080
+bind_address = "127.0.0.1"
+data_dir = "./.data/rocksdb"
+initial_admin_password = "ChangeMe123!"      # used only when the admin user is first created
+anonymous_enabled = false                    # unauthenticated requests resolve to the "anonymous" role
+cors_allowed_origins = ["http://localhost:5173"]
 ```
 
-## Storage Configuration
+| Key | Flag / env | Default |
+|-----|------------|---------|
+| `port` | `--port` / `RAISIN_PORT` | `8080` |
+| `bind_address` | `--bind-address` / `RAISIN_BIND_ADDRESS` | `127.0.0.1` |
+| `data_dir` | `--data-dir` / `RAISIN_DATA_DIR` | `./.data/rocksdb` |
+| `initial_admin_password` | `--initial-admin-password` / `RAISIN_ADMIN_PASSWORD` | generated and printed on first start |
+| `anonymous_enabled` | none | `false` |
+| `cors_allowed_origins` | none | `[]` |
+
+## `[pgwire]`
+
+The PostgreSQL wire protocol listener is off by default in the binary; `raisindb server start` turns it on unless a `--config` file or `RAISIN_PGWIRE_ENABLED` decides otherwise.
+
+```toml
+[pgwire]
+enabled = true
+bind_address = "127.0.0.1"
+port = 5432
+max_connections = 100
+```
+
+Flags: `--pgwire-enabled true|false`, `--pgwire-bind-address`, `--pgwire-port`, `--pgwire-max-connections` (env `RAISIN_PGWIRE_*`). See [PostgreSQL Wire Protocol](../guides/connecting/pgwire.md).
+
+## `[replication]`
+
+Multi-node replication. Off by default.
+
+```toml
+[replication]
+enabled = true
+node_id = "node1"
+port = 9001
+bind_address = "127.0.0.1"
+
+[[replication.peers]]
+peer_id = "node2"
+address = "127.0.0.1"
+port = 9002
+```
+
+Flags: `--cluster-node-id`, `--replication-port`, `--replication-peers "node2=127.0.0.1:9002,node3=127.0.0.1:9003"`.
+
+## `[monitoring]`
+
+```toml
+[monitoring]
+enabled = true
+interval_secs = 30
+port = 9100          # optional; metrics are served on the main HTTP port when omitted
+```
+
+Flags: `--monitoring-enabled`, `--monitoring-interval-secs`, `--monitoring-port`.
+
+## `[storage]`
+
+RocksDB memory bounds. Both are unset by default, which keeps the built-in production tuning.
 
 ```toml
 [storage]
-type = "rocksdb"  # or "mongodb", "postgres", "memory"
-path = "/var/lib/raisindb/data"
+block_cache_size = 536870912        # bytes
+db_write_buffer_size = 268435456    # bytes
 ```
 
-## Authentication
+## `[secrets]`
 
 ```toml
-[auth]
-mode = "password"  # or "api_key", "oidc", "none"
-secret_key = "your-secret-key"
-token_expiry = 3600  # seconds
+[secrets]
+vaulting_enabled = true
 ```
 
-### OIDC Configuration
+When `true` (the default), a property declared `encrypted: true` in a schema is moved into the secret store on write and the node keeps a `secret://` reference. Setting it to `false` stores such properties as plaintext; the server logs a warning at startup and for every affected write.
 
-```toml
-[auth.oidc]
-enabled = true
-provider = "google"
-client_id = "your-client-id"
-client_secret = "your-client-secret"
-issuer_url = "https://accounts.google.com"
-```
+## `[locks]`
 
-## Tenants
-
-```toml
-[tenants.default]
-enabled = true
-max_repositories = 100
-
-[tenants.production]
-enabled = true
-max_repositories = 50
-```
-
-## Logging
-
-```toml
-[logging]
-level = "info"  # debug, info, warn, error
-format = "json"  # or "text"
-output = "stdout"  # or file path
-```
-
-## Performance
-
-```toml
-[performance]
-max_connections = 1000
-query_timeout = 30  # seconds
-max_query_results = 10000
-```
-
-## Vector Search Configuration
-
-```toml
-[embedding]
-# Distance metrics: "cosine", "l2", "inner_product", "hamming"
-distance_metric = "cosine"
-
-# Default max distance threshold for search results
-default_max_distance = 0.6
-
-# HNSW index parameters
-hnsw_m = 16                  # Bi-directional links per node
-hnsw_ef_construction = 200   # Candidate list size during index building
-hnsw_ef_search = 50          # Candidate list size during search
-
-# Vector quantization: "f32", "f16", "int8"
-quantization = "f32"
-```
-
-## Locks
-
-Enables the atomic [locks & inventory](../guides/coordination/locks-and-inventory.md) subsystem. Off by default.
+Enables the atomic [locks and inventory](../guides/coordination/locks-and-inventory.md) subsystem. Off by default.
 
 ```toml
 [locks]
@@ -119,16 +113,58 @@ namespace = "raisin:locks"
 | `redis.url` | `redis://127.0.0.1:6379/0` | Redis connection URL. |
 | `redis.namespace` | `raisin:locks` | Key prefix on the Redis instance. |
 
-:::warning
-The `inprocess` backend does **not** coordinate across servers. In a multi-node cluster use `backend = "redis"`, or locks/inventory will oversell. The `redis` backend requires a server built with the `locks-redis` feature.
-:::
+The `inprocess` backend coordinates within one server only. A multi-node cluster needs `backend = "redis"` and a server built with the `locks-redis` feature.
 
-## Environment Variables
+## `[mcp_client]`
 
-Override config with environment variables:
+Outbound MCP connections (RaisinDB calling other servers' tools). The defaults refuse loopback and private addresses.
 
-- `RAISINDB_HTTP_PORT` - HTTP port
-- `RAISINDB_PGWIRE_PORT` - PostgreSQL port
-- `RAISINDB_STORAGE_PATH` - Data directory
-- `RAISINDB_AUTH_MODE` - Authentication mode
-- `RAISINDB_LOG_LEVEL` - Log level
+```toml
+[mcp_client]
+allowed_hosts = []                 # empty = any public host; entries are exact or "*.example.com"
+allow_private_addresses = false    # local development only
+max_response_bytes = 8388608
+default_timeout_ms = 30000
+```
+
+## `[trigger_safety]`
+
+Rate limits for trigger functions, on by default. Keys: `enabled`, `rate_limit_per_window`, `rate_limit_hard_ceiling`, `node_fire_budget`, `window_secs`.
+
+## `[platform.hooks.<name>]`
+
+Named endpoints that server-side functions may call with `raisin.platform.hook('<name>', payload)`. This is the supported way for a function to reach a service on a loopback or private address, which `raisin.http.fetch` refuses.
+
+```toml
+[platform.hooks.studio_update]
+url = "http://127.0.0.1:8080/internal/studio/update"
+token_env = "STUDIO_INTERNAL_TOKEN"     # or token = "..."
+token_header = "x-studio-internal-token"
+timeout_ms = 120000
+```
+
+## `[functions.wasm]`
+
+Settings for WebAssembly component functions. Keys and defaults: `enabled = true`, `max_artifact_bytes = 33554432`, `compiled_cache_bytes = 268435456`, `max_wasm_stack_bytes = 1048576`, `epoch_tick_ms = 10`, `allocation = "on-demand"` (or `"pooling"`), `max_instances = 15`, `stdout_capture_bytes = 1048576`.
+
+## Other keys
+
+- `max_active_jobs_per_tenant` (top level): cap on concurrently running jobs per tenant.
+- `[system_definitions]`: overlay directory for built-in node types and packages.
+
+## Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| `RAISIN_CONFIG` | Path to the TOML file |
+| `RAISIN_PORT`, `RAISIN_BIND_ADDRESS`, `RAISIN_DATA_DIR` | HTTP listener and storage |
+| `RAISIN_ADMIN_PASSWORD` | Initial admin password |
+| `RAISIN_PGWIRE_ENABLED`, `RAISIN_PGWIRE_PORT`, `RAISIN_PGWIRE_BIND_ADDRESS`, `RAISIN_PGWIRE_MAX_CONNECTIONS` | pgwire listener |
+| `RAISIN_CLUSTER_NODE_ID`, `RAISIN_REPLICATION_PORT`, `RAISIN_REPLICATION_PEERS` | Replication |
+| `RAISIN_DEV_MODE` | Development mode (insecure default secrets) |
+| `JWT_SECRET` | Token signing secret; required unless in dev mode |
+| `RAISINDB_SIGNING_SECRET` | Signed asset URL secret; required unless in dev mode |
+| `RAISIN_MASTER_KEY` | Encryption key for the secret store |
+| `RUST_LOG` | Log filter, default `info` (for example `warn,raisin_server=info`) |
+
+A complete, tested example lives in the repository at `examples/cluster/node1.toml`.

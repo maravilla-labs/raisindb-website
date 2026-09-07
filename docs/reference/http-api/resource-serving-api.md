@@ -4,77 +4,59 @@ sidebar_position: 10
 
 # Resource Serving API
 
-Serve a subtree of nodes like a static file server — HTML, CSS, JS, images, PDFs — over a clean path-shaped URL. This backs [MCP-UI interactive widgets](../../guides/mcp/interactive-widgets.md) (`mode: uri-list`) but is useful on its own for any small static site: a public docs page, a status widget, a customer-facing microsite.
-
-Unlike the [signed-URL asset endpoint](./nodes-api.md), this route uses the **same authentication and row-level security** as the rest of the API. It is also **deny-by-default**: a path is served only when a [`raisin:StaticSiteFolder` ancestor covers it](#what-is-servable), otherwise `404`. Underneath that gate it resolves nodes through the RLS-enforced service layer and **fails closed** — a folder is reachable exactly when the caller (or the [anonymous principal](../../guides/auth/authentication-setup.md)) is permitted to read it. No new auth mode; a folder is "public" precisely when the anonymous role already has read access via `raisin:access_control`.
+Serve a subtree of nodes like a static file server: HTML, CSS, JavaScript, images and PDFs over a path-shaped URL. This backs [MCP-UI interactive widgets](../../guides/mcp/interactive-widgets.md) and works on its own for any small static site: a docs page, a status widget, a customer-facing microsite.
 
 ## Endpoint
 
-Served at the **site root** (not under `/api`), like the [MCP endpoint](./mcp-api.md):
-
-```bash
-GET /resources/{repo}/{branch}/{ws}/{*path}
+```
+GET /resources/{repo}/{branch}/{workspace}/{path}
 ```
 
-- `{ws}` — the workspace the content lives in.
-- `{*path}` — the full node path within that workspace (arbitrary depth: `widgets/order-card/img/logo.png`).
-- Authentication is optional: send `Authorization: Bearer <token>` for authenticated reads, or omit it to resolve as the anonymous principal.
+- `{path}` is the node path inside the workspace, at any depth (`site/index.html`, `widgets/order-card/img/logo.png`).
+- Authentication is optional. Send `Authorization: Bearer <token>` to read as that user, or omit it to read as the anonymous principal.
 
-### Resolution behavior
+Example, after uploading `index.html` under a `raisin:StaticSiteFolder` named `site`:
 
-All rows below assume the path is [servable](#what-is-servable) — i.e. a `raisin:StaticSiteFolder` ancestor covers it. Without one, every request returns `404` regardless of what the node is.
+```bash
+curl -i http://localhost:8080/resources/myapp/main/content/site/index.html \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```
+HTTP/1.1 200 OK
+content-type: text/html
+content-length: 54
+cache-control: public, max-age=60
+
+<html><body><h1>Hello from RaisinDB</h1></body></html>
+```
+
+## What is served
+
+A path is served only when a `raisin:StaticSiteFolder` sits at or above it. Marking a folder with that type is what publishes the subtree; retyping or deleting the folder unpublishes it. There is no separate flag or allowlist.
+
+Underneath that gate, the normal row-level security applies: the caller (or the anonymous role) must be allowed to read the specific node. A subtree is therefore public exactly when the `anonymous` role can read it via `raisin:access_control`.
 
 | Resolved node | Response |
 |---|---|
-| `raisin:Asset` | Streams the `file` bytes with the stored/guessed MIME type, inline. |
-| `raisin:Folder` / `raisin:StaticSiteFolder`, or trailing-slash / empty path | Serves the folder's **index document** (`index.html` by default) if present. |
-| No `raisin:StaticSiteFolder` ancestor covers the path | `404` (deny-by-default — the subtree is not published as a static site). |
-| Not readable by the caller | `404` (fails closed — indistinguishable from "not found"). |
+| `raisin:Asset` | Streams the `file` bytes with the stored MIME type |
+| A folder, or a path ending in `/` | Serves the folder's index document (`index.html` by default) |
+| No covering `raisin:StaticSiteFolder` | `404` |
+| Not readable by the caller | `404` |
 
-Relative references inside a served HTML file (`./style.css`, `./img/logo.png`) resolve as ordinary path lookups against the same subtree — no special handling needed.
+Both denial cases return `404` so that existence is not revealed. Relative references inside a served HTML file (`./style.css`, `./img/logo.png`) resolve as ordinary path lookups in the same subtree.
 
-### Caching
+The "is this subtree published" decision is resolved with system auth and cached for about 60 seconds, so creating or retyping a `raisin:StaticSiteFolder` takes effect within a minute. Put the folder at a named path such as `/site`; a `raisin:StaticSiteFolder` at the bare workspace root `/` is not discovered.
 
-- **Assets** carry an `ETag` derived from the asset's `content_hash` and are cacheable; conditional requests (`If-None-Match`) get `304`.
-- **The index document** defaults to `Cache-Control: no-cache` so a stale cached `index.html` never keeps serving an old SPA route table. Override per subtree with `serving_config.cache_control`.
+## Caching
 
-## What is servable
-
-`/resources` is **deny-by-default**. A path is served **only when a [`raisin:StaticSiteFolder`](#the-raisinstaticsitefolder-nodetype) ancestor covers it**. If no folder up the path is a `raisin:StaticSiteFolder`, the request returns **`404`** — even for a node the caller could otherwise read. Placing (or retyping) a `raisin:StaticSiteFolder` over a subtree is what publishes it as a static site.
-
-- **The folder's presence *is* the allowlist.** There is no `servable`/`enabled` flag and no path-glob list to maintain. You mark a subtree servable by having a `raisin:StaticSiteFolder` somewhere at or above it; you unpublish it by deleting or retyping that folder.
-- **ACL/RLS still governs per-asset reads underneath.** The gate is a coarse layer *on top of* row-level security, not a replacement for it. The order is: gate first (is this subtree published as a static site?), then RLS (may *this* caller read *this* specific node?). A published subtree is not automatically public — the anonymous or authenticated caller still needs read access via `raisin:access_control`.
-- **The gate decision is the same for everyone.** It is resolved with **system auth**, so anonymous and authenticated callers get the identical published/not-published answer (RLS then differentiates who may read what underneath).
-- **Bounded staleness (~60s).** The gate is **cached ~60s** (the same TTL as the CORS resolver), so creating, deleting, or retyping a `raisin:StaticSiteFolder` takes effect within about a minute — like the existing repo-level CORS config.
-- **Whole workspace** servable = put a `raisin:StaticSiteFolder` at a **named** folder near the workspace root (e.g. `/site`); everything under it is then gated in. **Finer scoping** = deeper `raisin:StaticSiteFolder` folders plus ACL. Note: a `raisin:StaticSiteFolder` at the *bare* workspace root path `/` is **not discovered** — always use a named path.
-
-### Configuring the gate through a package
-
-Because a `raisin:StaticSiteFolder` is an ordinary content node, a **raisin package can ship it** at a fixed authoring path — the same way a package ships any other config node (an `raisin:Integration`, an `raisin:McpServer`, …). Installing the package makes that subtree servable via `/resources`; there is no server config or admin API involved.
-
-```yaml
-# content/<encoded-workspace>/<folder>/.node.yaml
-node_type: raisin:StaticSiteFolder
-properties:
-  serving_config:
-    index_document: index.html
-    frame_ancestors: ["https://host.example.com"]
-    cors_allowed_origins: ["https://host.example.com"]
-    cache_control: "public, max-age=3600"
-```
-
-## Response headers
-
-Headers depend on the **nearest ancestor folder** of the resolved path:
-
-- A plain `raisin:Folder` ancestor → **no** `Content-Security-Policy: frame-ancestors` and no extra CORS headers. Safe default: the content is **not embeddable** cross-origin.
-- A `raisin:StaticSiteFolder` ancestor → its [`serving_config`](#serving_config) drives the response headers for everything under it.
-
-This is an explicit, visible opt-in per subtree rather than a capability silently present on every folder.
+- The index document is served with `Cache-Control: no-cache` unless `serving_config.cache_control` overrides it, so a cached `index.html` never keeps an old SPA route table alive.
+- Other assets default to `Cache-Control: public, max-age=3600`.
+- If the asset node has a `content_hash` string property, it is sent as the `ETag` and `If-None-Match` requests get `304`.
 
 ## The `raisin:StaticSiteFolder` NodeType
 
-`raisin:StaticSiteFolder extends raisin:Folder` — a narrow, opt-in subtype. It does double duty: its presence is what makes a subtree [servable at all](#what-is-servable) (deny-by-default gate), and its [`serving_config`](#serving_config) drives embeddability and cross-origin behavior for everything under it. A subtree with **no** `raisin:StaticSiteFolder` ancestor is not served — every path under it returns `404`. Plain `raisin:Folder` nodes *below* a `raisin:StaticSiteFolder` still serve (the gate only needs *some* `raisin:StaticSiteFolder` ancestor); [response headers](#response-headers), however, come from the nearest ancestor folder, so a plain `raisin:Folder` nearest the path adds no header overrides of its own.
+`raisin:StaticSiteFolder` extends `raisin:Folder`. Its presence publishes the subtree, and its optional `serving_config` property drives response headers for everything beneath it. Plain `raisin:Folder` nodes below it still serve; headers come from the nearest `raisin:StaticSiteFolder` ancestor.
 
 ```yaml
 node_type: raisin:StaticSiteFolder
@@ -90,45 +72,43 @@ properties:
     index_document: index.html
 ```
 
+Because it is an ordinary node, a package can ship it at a fixed path (`content/<workspace>/<folder>/.node.yaml`), so installing the package publishes the subtree. Over HTTP:
+
+```bash
+curl -X POST http://localhost:8080/api/repository/myapp/main/head/content/ \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name":"site","node_type":"raisin:StaticSiteFolder","properties":{"serving_config":{"index_document":"index.html","cache_control":"public, max-age=60"}}}'
+```
+
 ### `serving_config`
 
-An optional `Object` property. All fields are optional.
+All fields are optional.
 
 | Field | Type | Effect |
 |---|---|---|
-| `frame_ancestors` | `string[]` | Origins allowed to iframe this subtree's pages. Emitted as `Content-Security-Policy: frame-ancestors …` (no `X-Frame-Options`, so CSP governs). **Absent ⇒ no header ⇒ not embeddable** (deny-by-default). |
-| `cors_allowed_origins` | `string[]` | Origins permitted to make cross-origin fetch/XHR calls to RaisinDB from a page in this subtree. Extends the existing hierarchical CORS resolution one level deeper (folder → repo → tenant → global). See [CORS and credentials](#cors-and-credentials) for how `"*"` is handled. |
-| `cache_control` | `string` | Overrides the default `Cache-Control` for this subtree, including the index document (which is otherwise `no-cache`). |
-| `index_document` | `string` | Filename served for a folder/trailing-slash request. Default `index.html`. |
+| `frame_ancestors` | `string[]` | Origins allowed to embed pages from this subtree in an iframe. Emitted as `Content-Security-Policy: frame-ancestors ...`. When absent no header is sent and browsers refuse cross-origin framing. |
+| `cors_allowed_origins` | `string[]` | Origins allowed to make cross-origin requests to these resources. Extends the hierarchical CORS resolution (folder, then repo, then tenant, then server config). |
+| `cache_control` | `string` | Overrides `Cache-Control` for the subtree, including the index document. |
+| `index_document` | `string` | File served for a folder or trailing-slash request. Default `index.html`. |
 
-:::info Two mechanisms, two problems
-`frame_ancestors` controls **embeddability** (may a host origin iframe these pages at all). `cors_allowed_origins` controls **cross-origin script calls** (may client-side JS on the page call back into RaisinDB from another origin). A widget iframed cross-origin that also calls RaisinDB APIs needs **both** configured.
-:::
-
-:::warning Deny-by-default
-With no `serving_config` (or no `frame_ancestors`), **no** `frame-ancestors` header is emitted and the content is not embeddable cross-origin. Cross-origin framing always requires explicit origins.
+:::info Two settings, two questions
+`frame_ancestors` answers "may a host page iframe this?". `cors_allowed_origins` answers "may script on that page call back into RaisinDB from another origin?". A widget that is iframed cross-origin and also calls the API needs both.
 :::
 
 ### CORS and credentials
 
-For `cors_allowed_origins`, a wildcard `"*"` and credentialed requests are **mutually exclusive** — the endpoint never sends both:
+- An explicitly listed origin is reflected in `Access-Control-Allow-Origin`, with `Access-Control-Allow-Credentials: true` and `Vary: Origin`. Use this for a widget that sends cookies or a bearer token.
+- `"*"` sends `Access-Control-Allow-Origin: *` without the credentials header. Browsers do not allow a wildcard with credentials, so a wildcard is only useful for content that is readable anonymously.
 
-- **An explicitly-listed origin** → the response **reflects that origin** in `Access-Control-Allow-Origin`, adds `Access-Control-Allow-Credentials: true`, and sets `Vary: Origin`. This is the mode you want for a widget that makes credentialed calls back into RaisinDB.
-- **`"*"`** → the response sends `Access-Control-Allow-Origin: *` **without** `Access-Control-Allow-Credentials`. Browsers reject `*` combined with credentials, and reflecting an arbitrary origin *with* credentials would let any site make credentialed cross-origin reads against RLS-gated content — so a wildcard is deliberately anonymous-only.
-
-List the specific origins whenever the page needs to send cookies or an `Authorization` header cross-origin; reserve `"*"` for content that is safe to read anonymously.
-
-## Relationship to other byte-serving routes
+## Related routes
 
 | Route | Auth model | Use for |
 |---|---|---|
-| `GET /resources/{repo}/{branch}/{ws}/{*path}` | Session / bearer / anonymous → **RLS** | Serving a static-site / widget subtree like a file server. |
-| `GET /api/repository/{repo}/{branch}/head/{ws}/{*node_path}` (`@property`, `?command=download`) | Session / bearer / anonymous → RLS | CRUD-shaped single-node byte reads / downloads. |
-| Signed-URL asset endpoint (`raisin:download` / `raisin:display?sig=&exp=`) | **HMAC signature** (bypasses RLS) | Short-lived shareable / expiring links. |
-
-The signed-URL endpoint is a deliberately different trust model and stays orthogonal to the static endpoint.
+| `GET /resources/{repo}/{branch}/{ws}/{path}` | Bearer token or anonymous, then row-level security | Serving a static-site or widget subtree |
+| `GET /api/repository/{repo}/{branch}/head/{ws}/{path}?command=download` (or `@file`) | Bearer token or anonymous, then row-level security | Single-node byte reads and downloads |
+| `.../{path}/raisin:download?sig=&exp=` from `raisin:sign` | HMAC signature, no token | Short-lived shareable links |
 
 ## See also
 
-- [Interactive Widgets (MCP-UI)](../../guides/mcp/interactive-widgets.md) — the guide that puts this endpoint to work.
-- [MCP API](./mcp-api.md) — the `ui` binding and `resources/read` blob reads.
+- [Interactive Widgets (MCP-UI)](../../guides/mcp/interactive-widgets.md)
+- [MCP API](./mcp-api.md)

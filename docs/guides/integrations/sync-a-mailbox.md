@@ -4,149 +4,190 @@ sidebar_position: 2
 
 # Sync a mailbox
 
-This guide mounts an email inbox into a workspace as a stream of short-lived
-nodes, then fires an agent on each new message — the flagship **"agents work the
-inbox"** pattern. For the concepts, see
-**[Virtual Nodes](../../concepts/virtual-nodes.md)**.
-
-## What you'll build
+This guide mounts an IMAP inbox into a workspace as a stream of short-lived
+`raisin:Mail` nodes and runs a function on each new message. Once a message
+has been handled its node expires, so the mounted inbox stays a rolling
+working set rather than an archive. For the concepts see
+[Virtual Nodes](../../concepts/virtual-nodes.md).
 
 ```mermaid
 flowchart LR
-    M[IMAP mailbox] --> D["raisin.imap delta (UID cursor)"]
-    D --> N["Ephemeral nodes under /inbox"]
-    N --> T[node.created trigger]
-    T --> A[Agent triages the message]
+    M[IMAP mailbox] --> D["raisin.imap.fetchSince (UID cursor)"]
+    D --> N["Ephemeral raisin:Mail nodes under /mail/inbox"]
+    N --> T[node_event trigger]
+    T --> F[Your function]
 ```
-
-New mail materializes as a `raisin:Node` under a mount path. A trigger dispatches
-an agent per message; once handled, the node expires on its TTL — so the inbox
-stays a **rolling working set**, not an ever-growing archive.
 
 ## How the adapter talks to IMAP
 
-This adapter speaks **real IMAP (RFC 3501)** — the protocol your mail server
-already runs on port `993`. It does *not* need a JMAP proxy or any HTTP gateway.
+IMAP is a persistent TLS connection, not HTTP, so the adapter uses the native
+`raisin.imap` binding: `listMailboxes(conn)` enumerates folders,
+`fetchSince(conn, sinceUid, { mailbox, limit })` returns messages with a UID
+above the cursor, and `fetchMessage(conn, uid, { mailbox })` fetches one
+message with its body. The binding owns the protocol in Rust; the adapter
+maps its results onto the adapter contract. A message's IMAP UID is the item's
+identity and the highest UID seen is the sync cursor, together with the
+mailbox's `UIDVALIDITY`, so a reset mailbox forces a full resync.
 
-IMAP needs a persistent, line-oriented TLS/TCP connection, which the function
-sandbox's `raisin.http` binding cannot express. RaisinDB closes that gap with a
-**native IMAP binding**, `raisin.imap.*`: the protocol lives in Rust and the
-adapter calls high-level operations against it. See
-[how a connector reaches a service](../../concepts/virtual-nodes.md#how-a-connector-reaches-a-service)
-for why a wire protocol like this is a database feature rather than something you
-hand-roll in a function.
+Two consequences shape the mount layout:
 
-The binding maps cleanly onto the adapter contract: `raisin.imap.fetchSince`
-returns messages after a UID cursor (the delta feed), the mailbox's `highestUid`
-is the sync cursor, and each message's stable IMAP **UID** is the `external_id`.
-`UIDVALIDITY` is returned alongside so the adapter can detect a mailbox reset and
-force a full resync.
+- `list` enumerates mailboxes, not messages. Messages arrive through the delta
+  feed, and the shipped mount configuration sets `reconcile_deletes: false`
+  so a full walk does not prune them.
+- The delta feed only reports new messages. A message deleted on the server
+  stays in the workspace until the mount's TTL expires it, which is why the
+  inbox mount is ephemeral.
 
-## Step 1 — Install the adapter
+## Step 1: Install the adapter
 
 ```bash
 raisindb package install imap-adapter --repo myapp
 ```
 
-This deploys the IMAP adapter (`/adapters/imap`), a default mapper
-(`/mappers/imap-default`), and a **disabled** connector template
-(`/integrations/imap`) carrying no credentials. The adapter is read-only:
-`can_read: true`, `supports_changes: true` (UID-based delta), everything else
-`false`; its `default_ttl` is `86400` (one day).
+This deploys the adapter (`/adapters/imap`), the inbox mapper
+(`/mappers/imap-default`), the outbox mapper (`/mappers/imap-outbox`), the
+`imap:ConnectionConfig` node type, and two connector templates in
+`raisin:system`: `/connectors/imap` for any IMAP server with an app password,
+and `/connectors/gmail` for Gmail over OAuth (see
+[Connect Gmail](connect-gmail.md)).
 
-## Step 2 — Connect an account
+The adapter's capabilities are `can_read: true`, `supports_changes: true`,
+and `default_ttl: 86400`. It declares no update or delete operation; the
+inbox is read-only. `can_submit` becomes `true` when the outbox can resolve a
+sender (below).
 
-In the admin console → **Connectors** → **IMAP Mailbox**, fill in the server
-coordinates and credentials:
+## Step 2: Add the connector and a connection
 
-- **Host / port / TLS.** Your provider's IMAP hostname and port — for example
-  `imap.gmail.com:993` or `imap.fastmail.com:993` — with TLS on (implicit TLS on
-  993 is the default and recommended).
-- **Username.** The full mailbox address.
-- **App password.** In your provider's security settings create an
-  **app-specific password** for mail access and paste it. Most providers require
-  an app password rather than your account password when 2FA is on. The password
-  is stored AES-256-GCM encrypted and decrypted only in Rust, immediately before
-  the connection — it never appears in logs or in the function sandbox.
+In the admin console open **Connectors**, click **Add connector**, and choose
+the **IMAP Mailbox** template. The connector needs no OAuth client for the
+app-password path. Enable it and save.
 
-You must **allowlist the server** in the adapter function's
-`network_policy.allowed_urls` — the native binding enforces the same egress
-policy as `raisin.http`, so a host that matches no pattern is refused **before
-any socket is opened**. Add an `imaps://` entry for your server, e.g.:
+Then click **Add connection**. The form comes from `imap:ConnectionConfig`:
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | `imap.gmail.com` | Your provider's IMAP host. |
+| `port` | `993` | |
+| `tls` | `true` | Implicit TLS. `false` is only for trusted or loopback hosts. |
+| `mailbox` | `INBOX` | Default mailbox for mounts on this connection. |
+| `username` | | The full mailbox address. Passed to the adapter in the credential. |
+| `password` | | An app-specific password. Stored encrypted with `RAISIN_MASTER_KEY`, decrypted only for the adapter call, never shown again. |
+
+Over HTTP the same connection is one request:
+
+```bash
+curl -s -X POST localhost:8090/api/integrations/myapp/connections \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"integration_path":"/integrations/imap","label":"support",
+       "config":{"host":"imap.fastmail.com","port":993,"tls":true,"username":"support@example.com"},
+       "secrets":{"password":"<app password>"}}'
+```
+
+```json
+{"id":"C84dv6-Ceo70bUJKCjlb6","label":"support","auth_kind":"config",
+ "config":{"host":"imap.fastmail.com","port":993,"tls":true,"username":"support@example.com"},
+ "secret_fields":["password"],"created_at":"2026-09-06T18:42:16Z"}
+```
+
+One connector can hold several connections, one per mailbox. A mount then
+names the connection it uses in `account_ref`.
+
+The binding checks the host against the adapter function's `network_policy`
+before opening a socket, using a synthetic `imaps://<host>:<port>` URL. The
+shipped adapter allows `imap.gmail.com`, `imap.fastmail.com`,
+`outlook.office365.com` and `imap.mail.me.com` on port 993. For another
+server, add it to `allowed_urls` on `/adapters/imap`:
 
 ```yaml
 network_policy:
+  http_enabled: true
   allowed_urls:
-    - imaps://imap.gmail.com:993
+    - imaps://mail.example.com:993
 ```
 
-Then **enable** the connector.
+Run **Test connection** with the connection selected. It logs in and lists
+the mailboxes.
 
-:::note Authentication
-The binding supports two mechanisms. **App password** (the default) uses plain
-`LOGIN` — set the account's `password`. **XOAUTH2** uses OAuth2 bearer tokens for
-providers that require them (e.g. Gmail, Outlook) — set `auth: "xoauth2"` on the
-connection and pass the OAuth access token as the `password`; the adapter also
-selects XOAUTH2 automatically when the credential carries an `access_token` and no
-static password. Connections use implicit TLS on port 993 by default; `tls: false`
-allows a plaintext connection for trusted or loopback hosts only.
-:::
+## Step 3: Mount the inbox
 
-:::tip Test connection
-Use **Test connection** before mounting — it runs `capabilities` and a small
-`list` probe against your mailbox and confirms the host, credentials, and
-allowlist in one click. See
-**[Build a connector → Test the connection](build-a-custom-adapter.md#test-the-connection-before-you-mount)**.
-:::
+The connector template carries a **mount bundle**, so the Mounts page offers
+**Add bundle** next to **New Mount**. The bundle asks for the connection,
+the target workspace and a root folder, then creates two mounts:
 
-## Step 3 — Mount the inbox (the ephemeral pattern)
+| Mount | Path | Mapper | Mode |
+|-------|------|--------|------|
+| Inbox | `<root>/inbox` | `/mappers/imap-default` | read-only, ephemeral, 24 hour TTL |
+| Outbox | `<root>/outbox` | `/mappers/imap-outbox` | `submit` |
 
-The `ephemeral` + `ttl_seconds` settings are what make the mount a rolling queue:
+The bundle also asks which mailbox to sync and whether to sync only that
+folder (`folder_scope: folder`) or every folder beneath it (`tree`). The
+target workspace must allow `raisin:Mail`, `raisin:Folder` and
+`raisin:Asset`, and `raisin:OutboundMail` for the outbox; the repository's
+`default` workspace does.
+
+The inbox mount as a node, if you prefer to create it yourself:
 
 ```yaml
 node_type: raisin:VirtualMount
 properties:
   title: Support Inbox
   integration_ref: /integrations/imap
-  account_ref: "<connected_accounts[].id>"
+  account_ref: "<connection id>"
   target_workspace: default
-  target_branch: main            # branch the message nodes are written to
-  mount_path: /inbox
-  remote_root: inbox             # mailbox role, id, or name (defaults to inbox)
+  target_branch: main
+  mount_path: /mail/inbox
+  remote_root: INBOX
+  mapping_function: /mappers/imap-default
   sync_config:
     mode: poll
-    interval_seconds: 60
-    max_items_per_sync: 200
-    ephemeral: true              # auto-delete synced nodes past their TTL
-    ttl_seconds: 86400           # 1 day — matches the adapter default
+    interval_seconds: 300
+    ephemeral: true
+    ttl_seconds: 86400
+    reconcile_deletes: false
   enabled: true
 ```
 
-`remote_root` selects the mailbox to sync (defaults to `inbox`). The connection
-coordinates — host, port, TLS, username, app password — come from the connected
-account, not the mount.
+Each message becomes a `raisin:Mail` node named after its subject, with
+`subject`, `from`, `from_address`, `to`, `cc`, `bcc`, `reply_to`, `date`,
+`received_at`, `snippet`, `message_id`, `in_reply_to`, `references`,
+`thread_id`, `unread`, `flags`, `has_attachments`, `size` and `folder`,
+plus the reserved `__mount_id` and `__external_id`. Attachments become
+`raisin:Asset` children with their name, mime type and size; their bytes are
+fetched on demand through
+`POST /api/integrations/content/{repo}/{branch}/{ws}/by-id/{node_id}` when
+someone opens them. Mailboxes come through as `raisin:Folder`.
 
-Each message becomes a `raisin:Node` carrying `title` (subject), `from`, `to`,
-`date`, `snippet`, `message_id`, and an `unread` flag, plus the reserved
-`__virtual` / `__mount_id` / `__external_id` metadata. Mailboxes come through as
-`raisin:Folder`.
+## Step 4: Run a function per message
 
-## Step 4 — Fire an agent per message
+A `node_event` trigger scoped to the inbox path runs your function for each
+new message:
 
-Because synced messages are ordinary nodes, a standard `node_event` trigger reacts
-to each new one. Scope it to `node.created` under the mount path:
+```yaml
+node_type: raisin:Trigger
+properties:
+  title: Triage incoming mail
+  enabled: true
+  trigger_type: node_event
+  config:
+    event_kinds: [created]
+  filters:
+    workspaces: [default]
+    paths: ["**/mail/inbox/**"]
+    node_types: [raisin:Mail]
+  function_path: /lib/triage-mail
+```
 
 ```javascript
-// Trigger: on node.created under /inbox where node_type == raisin:Node
 function handler(input) {
-  const msg = input.event.node;
+  const { event, workspace } = input.flow_input;
+  const msg = raisin.nodes.get(workspace, event.node_path);
   const p = msg.properties;
-  if (p.unread !== true) return;          // skip already-handled mail
+  if (p.unread !== true) return { skipped: true };
 
-  // One dispatch per message — never fan out per-item work in the sync loop.
-  raisin.agents.dispatch("support-triage", {
-    subject: p.title,
-    from: p.from,
+  // hand the message to a workflow, an agent, or your own code
+  return raisin.flows.run("/flows/support-triage", {
+    subject: p.subject,
+    from: p.from_address,
     snippet: p.snippet,
     message_id: p.message_id,
     node_path: msg.path,
@@ -154,45 +195,51 @@ function handler(input) {
 }
 ```
 
-The flow is: **new mail → IMAP UID delta → materialized node → `node.created` →
-agent**. When the agent finishes and the TTL lapses, the ephemeral node is
-reaped, keeping `/inbox` a live queue rather than an archive.
+New mail arrives on the poll interval, becomes a node, fires the trigger, and
+is expired by the mount's TTL a day later.
 
-Use your deployment's actual agent-dispatch and trigger-registration APIs; the
-load-bearing guarantee is that each new message arrives as a `raisin:Node` under
-`mount_path` with the properties above.
+## Sending from the outbox
+
+IMAP has no way to send. The outbox mount sends through the tenant's
+configured email provider instead: create a `raisin:OutboundMail` node under
+`/mail/outbox` with `action: send` (or `reply`, `reply_all`, `forward` with
+`in_reply_to_external_id` set to the inbox message's `__external_id`), `to`,
+`subject` and `body_text` or `body_html`, then set its `status` to `queued`.
+The next drain sends it once and marks it `sent`, `failed`, or `unknown` if
+the outcome could not be determined.
+
+For that to work the adapter function `/adapters/imap` needs
+`email_policy.enabled: true` with an `allowed_recipients` list (it ships with
+`enabled: false`), the tenant needs an enabled sender on its
+`raisin:EmailConfig` node at `/config/email`, and the mount names the sender in
+`sync_config.email_provider` when more than one is configured. Until those
+resolve, the connector's capabilities report `can_submit: false` with the
+reason in `submit_unavailable_reason`.
 
 ## Refreshing on a webhook
 
-Polling every 60 seconds is fine for most inboxes, but if your provider can push
-a notification, refresh on demand instead of waiting for the interval:
+Any function can enqueue a run:
 
 ```javascript
-raisin.integrations.sync_now(mountId);
-// → { job_id: "…" | null, status: "queued" | "already_running" }
+raisin.integrations.syncNow(mountId);
+// { job_id: "...", status: "queued" } or { job_id: null, status: "already_running" }
 ```
 
-`already_running` means a sync is already in flight and the call was a safe
-no-op — so it is safe to call on every webhook. Set the mount's
-`sync_config.mode` to `webhook` to take it off the periodic driver entirely and
-drive it only from `sync_now`.
+Gmail can also push through Cloud Pub/Sub; see
+[Real-time sync with webhooks](realtime-sync-webhooks.md).
 
 ## Running in production
 
-- **Ephemeral cleanup is automatic** — nodes past `ttl_seconds` are reaped; you
-  do not delete them yourself.
-- **Auth expiry pauses the mount.** On `401`/`403` the adapter throws
-  `auth_expired`; the engine refreshes (OAuth) or sets the mount `auth_required`
-  until you reconnect. On `429` it throws `rate_limited` and backs off.
-- **Multi-node clusters need the Redis locks backend**, or two nodes can sync the
-  same mailbox at once.
-- **`RAISIN_MASTER_KEY` must be set and backed up** — the account token is stored
-  encrypted with it.
+- Expired nodes are removed by the engine; nothing else needs to delete them.
+- A rejected login makes the adapter throw `auth_expired`, which pauses the
+  mount with status `auth_required` until the connection is fixed.
+- Every binding call opens its own connection, so `folder_scope: tree` costs
+  one login per mailbox per poll.
+- Replicated clusters need the `redis` locks backend.
+- `RAISIN_MASTER_KEY` must be set and backed up.
 
 ## Next steps
 
-- **[Build a connector](build-a-custom-adapter.md)** — the full adapter contract.
-- **[Sync a Google Drive folder](sync-google-drive.md)** — the persistent
-  (non-ephemeral) counterpart.
-- **[Adapter reference](../../reference/virtual-node-adapters.md)** — full field
-  tables.
+- [Connect Gmail](connect-gmail.md): the same adapter over OAuth.
+- [Build a connector](build-a-custom-adapter.md): the adapter contract.
+- [Adapter reference](../../reference/virtual-node-adapters.md).

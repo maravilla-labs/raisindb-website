@@ -4,382 +4,111 @@ sidebar_position: 1
 
 # String Functions
 
-String manipulation and utility functions.
+The string functions implemented today, plus the `||` operator and `LIKE` / `ILIKE`. All of them return NULL when given NULL.
+
+<!-- TODO(sql-ext): fill from engine report (CONCAT, SUBSTRING/SUBSTR, TRIM family, REPLACE, POSITION/STRPOS, LEFT/RIGHT, LPAD/RPAD, SPLIT_PART, REGEXP_*, INITCAP, MD5, LENGTH, ...) -->
 
 ## UPPER
-
-Convert text to uppercase.
-
-### Syntax
 
 ```sql
 UPPER(text) → TEXT
 ```
 
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| text | TEXT | Input string |
-
-### Return Value
-
-TEXT - Input string converted to uppercase.
-
-### Examples
-
 ```sql
-SELECT UPPER('hello world');
--- Result: 'HELLO WORLD'
-
-SELECT UPPER(title) FROM pages;
-
-SELECT UPPER(status) AS status_upper FROM nodes;
+SELECT UPPER('héllo') AS u, UPPER(name) AS n FROM 'blog' WHERE path = '/hello';
+-- {"u":"HÉLLO","n":"HELLO"}
 ```
 
-### Notes
-
-- Returns NULL if input is NULL
-- Uses Unicode case mapping
-- Handles multi-byte UTF-8 characters correctly
-
----
+Unicode case mapping; multi-byte characters are handled.
 
 ## LOWER
-
-Convert text to lowercase.
-
-### Syntax
 
 ```sql
 LOWER(text) → TEXT
 ```
 
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| text | TEXT | Input string |
-
-### Return Value
-
-TEXT - Input string converted to lowercase.
-
-### Examples
-
 ```sql
-SELECT LOWER('HELLO WORLD');
--- Result: 'hello world'
-
-SELECT LOWER(title) FROM pages;
-
-SELECT slug, LOWER(slug) AS normalized FROM pages;
+SELECT LOWER('HÉLLO') AS l;
+-- {"l":"héllo"}
 ```
 
-### Notes
-
-- Returns NULL if input is NULL
-- Uses Unicode case mapping
-- Handles multi-byte UTF-8 characters correctly
-
----
-
-## LENGTH
-
-Return the number of characters in a text string.
-
-### Syntax
+A common use is case-insensitive matching, though `ILIKE` does the same without a function call:
 
 ```sql
-LENGTH(text) → INT
+SELECT name FROM 'blog' WHERE LOWER(properties->>'title') LIKE '%first%';
+SELECT name FROM 'blog' WHERE properties->>'title' ILIKE '%FIRST%';
+-- both: first
 ```
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| text | TEXT | Input string |
-
-### Return Value
-
-INT - Number of characters in the string.
-
-### Examples
-
-```sql
-SELECT LENGTH('hello');
--- Result: 5
-
-SELECT LENGTH('');
--- Result: 0
-
-SELECT title, LENGTH(title) AS title_length
-FROM pages
-ORDER BY title_length DESC;
-
--- Filter by length
-SELECT * FROM codes
-WHERE LENGTH(code) = 6;
-```
-
-### Notes
-
-- Returns NULL if input is NULL
-- Counts characters, not bytes (handles multi-byte UTF-8 correctly)
-- Empty string returns 0
-
----
 
 ## COALESCE
 
-Return the first non-NULL argument.
-
-### Syntax
+Return the first argument that is not NULL. Any number of arguments; all must share a type.
 
 ```sql
-COALESCE(value1, value2 [, ...]) → ANY
+COALESCE(value1, value2 [, ...]) → type of the arguments
 ```
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| value1, value2, ... | ANY | Values to check for NULL |
-
-### Return Value
-
-Returns the type of the first non-NULL argument.
-
-### Examples
 
 ```sql
-SELECT COALESCE(NULL, 'default', 'other');
--- Result: 'default'
-
-SELECT COALESCE(description, summary, 'No content') FROM pages;
-
-SELECT
-    title,
-    COALESCE(author, 'Anonymous') AS author
-FROM articles;
-
-SELECT
-    name,
-    COALESCE(price, 0.0) AS price
-FROM products;
+SELECT COALESCE(NULL, 'default', 'other') AS c,
+       COALESCE(properties->>'summary', properties->>'title') AS text
+FROM 'blog' WHERE path = '/hello';
+-- {"c":"default","text":"Hello"}
 ```
 
-### Notes
-
-- Returns NULL if all arguments are NULL
-- All arguments must be compatible types
-- Commonly used for default values
-- Type coercion follows common type rules
-
----
+A missing JSON key reads as NULL through `->>`, so `COALESCE(properties->>'nickname', name)` is the idiom for "use the property if the node has one".
 
 ## NULLIF
 
-Return NULL if two expressions are equal, otherwise return the first expression.
-
-### Syntax
+Return NULL when the two arguments are equal, otherwise the first argument.
 
 ```sql
-NULLIF(value1, value2) → ANY
+NULLIF(value1, value2) → type of value1
 ```
 
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| value1 | ANY | First value |
-| value2 | ANY | Second value to compare |
-
-### Return Value
-
-Returns NULL if value1 equals value2, otherwise returns value1.
-
-### Examples
-
 ```sql
-SELECT NULLIF('hello', 'hello');
--- Result: NULL
+SELECT NULLIF('a', 'a') AS same, NULLIF('a', 'b') AS different;
+-- {"same":null,"different":"a"}
 
-SELECT NULLIF('hello', 'world');
--- Result: 'hello'
+-- treat an empty string as missing
+SELECT COALESCE(NULLIF(properties->>'subtitle', ''), 'untitled') AS subtitle FROM 'blog';
 
--- Convert empty strings to NULL
-SELECT NULLIF(description, '') FROM pages;
-
--- Avoid division by zero
-SELECT total / NULLIF(count, 0) AS average FROM stats;
-
-SELECT
-    title,
-    NULLIF(status, 'unknown') AS status
-FROM pages;
+-- avoid division by zero
+SELECT (properties->>'total')::DOUBLE / NULLIF((properties->>'count')::INT, 0) AS average FROM 'blog';
 ```
 
-### Notes
+## Concatenation with `||`
 
-- Returns NULL if both values are NULL
-- Both arguments must be compatible types
-- Useful for converting specific values to NULL
-- Commonly used to prevent division by zero
-
----
-
-## String Concatenation
-
-Concatenate strings using the `||` operator.
-
-### Syntax
+`||` joins TEXT values. NULL in either operand makes the result NULL.
 
 ```sql
-text1 || text2 → TEXT
+SELECT name || ' (' || path || ')' AS label FROM 'blog' WHERE path = '/hello';
+-- {"label":"hello (/hello)"}
+
+SELECT 'a' || NULL AS n;
+-- {"n":null}
+
+SELECT properties->>'title' || COALESCE(' - ' || properties->>'subtitle', '') AS heading FROM 'blog';
 ```
 
-### Examples
+`||` between two JSONB values is a merge, not a concatenation; see [Operators](../operators.md#json-operators).
+
+## LIKE and ILIKE
+
+`%` matches any run of characters, `_` exactly one. `LIKE` is case-sensitive, `ILIKE` is not; `NOT LIKE` negates.
 
 ```sql
-SELECT 'Hello' || ' ' || 'World';
--- Result: 'Hello World'
-
-SELECT title || ' - ' || author FROM articles;
-
-SELECT
-    first_name || ' ' || last_name AS full_name
-FROM users;
-
--- NULL concatenation returns NULL
-SELECT 'Hello' || NULL || 'World';
--- Result: NULL
-
--- Use COALESCE to handle NULLs
-SELECT 'Hello' || COALESCE(middle_name || ' ', '') || 'World';
+SELECT name FROM 'blog' WHERE name LIKE 'h_llo';          -- hello
+SELECT name FROM 'blog' WHERE name NOT LIKE 'h%';          -- news, first, second
+SELECT name FROM 'blog' WHERE properties->>'title' ILIKE '%post%';   -- first
 ```
 
-### Notes
+Regular-expression operators are not available today; use `LIKE` / `ILIKE` or full-text search (`FULLTEXT_MATCH`, [Full-text functions](./fulltext-functions.md)).
 
-- NULL concatenated with any string results in NULL
-- Use COALESCE to handle NULL values in concatenation
-- All operands are converted to TEXT
+## Comparison and sorting
 
----
-
-## Pattern Matching with LIKE
-
-Match text patterns using wildcards.
-
-### Syntax
+Text compares and sorts by Unicode code point, case-sensitively (`'Z' < 'a'`). `MIN` and `MAX` over text follow the same order:
 
 ```sql
-text LIKE pattern → BOOLEAN
-```
-
-### Wildcards
-
-- `%` - Matches any sequence of characters (including empty)
-- `_` - Matches exactly one character
-
-### Examples
-
-```sql
--- Starts with 'Guide'
-SELECT * FROM pages WHERE title LIKE 'Guide%';
-
--- Ends with 'Tutorial'
-SELECT * FROM pages WHERE title LIKE '%Tutorial';
-
--- Contains 'Database'
-SELECT * FROM pages WHERE title LIKE '%Database%';
-
--- Exactly 5 characters
-SELECT * FROM codes WHERE code LIKE '_____';
-
--- Starts with 'A' and ends with 'Z'
-SELECT * FROM words WHERE word LIKE 'A%Z';
-
--- Second character is 'a'
-SELECT * FROM names WHERE name LIKE '_a%';
-```
-
-### Notes
-
-- Case-sensitive by default
-- Use UPPER/LOWER for case-insensitive matching:
-  ```sql
-  WHERE UPPER(title) LIKE UPPER('%guide%')
-  ```
-- For complex patterns, consider full-text search
-- Patterns starting with `%` cannot use indexes efficiently
-
----
-
-## Examples
-
-### Case Normalization
-
-```sql
--- Normalize status values
-SELECT
-    __id,
-    UPPER(status) AS normalized_status
-FROM pages
-WHERE LOWER(status) IN ('draft', 'published', 'archived');
-```
-
-### Default Values
-
-```sql
--- Provide defaults for missing data
-SELECT
-    title,
-    COALESCE(author, 'Unknown Author') AS author,
-    COALESCE(description, excerpt, 'No description') AS description
-FROM articles;
-```
-
-### Clean Empty Strings
-
-```sql
--- Convert empty strings to NULL
-UPDATE pages
-SET
-    description = NULLIF(description, ''),
-    summary = NULLIF(summary, '');
-```
-
-### Build Full Names
-
-```sql
--- Concatenate name parts with proper spacing
-SELECT
-    COALESCE(
-        first_name || ' ' || NULLIF(middle_name, '') || ' ' || last_name,
-        first_name || ' ' || last_name
-    ) AS full_name
-FROM users;
-```
-
-### Search with Patterns
-
-```sql
--- Find pages with 'SQL' in title
-SELECT title, slug
-FROM pages
-WHERE UPPER(title) LIKE '%SQL%'
-ORDER BY title;
-```
-
-### Conditional String Building
-
-```sql
--- Build display name with optional prefix
-SELECT
-    COALESCE(
-        NULLIF(prefix, '') || ' ' || name,
-        name
-    ) AS display_name
-FROM contacts;
+SELECT MIN(name) AS first_name, MAX(name) AS last_name FROM 'blog';
+-- {"first_name":"first","last_name":"second"}
 ```

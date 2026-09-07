@@ -4,168 +4,239 @@ sidebar_position: 1
 
 # Creating Functions
 
-Create serverless functions to extend RaisinDB with custom logic.
+A function is server-side code that RaisinDB runs on demand: when you call it
+over HTTP or SQL, when a trigger fires, or when an AI agent uses it as a tool.
+It runs in a sandbox with a `raisin` API for reading and writing nodes, running
+SQL, calling external services and sending email.
 
-## What are Functions?
+## Runtimes
 
-Functions in RaisinDB run in a sandboxed environment with configurable resource limits. Supported runtimes:
+| Runtime | `language` | `--lang` | Build step |
+|---------|------------|----------|------------|
+| QuickJS (JavaScript) | `javascript` | `js` | none, the source ships |
+| Starlark (Python-like) | `starlark` | `starlark` | none, the source ships |
+| [WebAssembly](./wasm-functions.md) | `wasm` | `rust`, `go`, `assemblyscript`, `ts` | compiled to a component |
 
-| Runtime | Language | `--lang` | Build step |
-|---------|----------|----------|------------|
-| QuickJS | JavaScript | `js` | none — source ships |
-| Starlark | Python-like | `starlark` | none — source ships |
-| [WebAssembly](./wasm-functions.md) | Rust, Go, AssemblyScript | `rust`, `go`, `assemblyscript` | compiled to a component |
-| SQL | SQL | — | none |
+JavaScript is the quickest to iterate on. WebAssembly is the choice for
+CPU-bound work or when you want to reuse Rust or Go libraries. Starlark suits
+small, deterministic data transformations.
 
-Whichever you choose, the CLI starts it the same way:
+## What a function is made of
 
-```bash
-raisindb create function send-welcome-email --lang js
-raisindb create function price-quote        --lang rust
-raisindb create function resize-batch       --lang assemblyscript
+A function is a `raisin:Function` node in the `functions` workspace, with its
+code stored in a child asset node. Two properties tie them together:
+
+- `language` selects the runtime.
+- `entry_file` is `<file>:<handler>`: the asset beside the node and the
+  function inside it to call. The default is `index.js:handler`.
+
+```yaml
+# content/functions/lib/docs/greet/.node.yaml
+node_type: raisin:Function
+properties:
+  title: greet
+  name: greet                 # used in URLs and SQL calls
+  language: javascript
+  entry_file: index.js:handler
+  execution_mode: both        # async (default), sync, or both
+  enabled: true
+  resource_limits:
+    timeout_ms: 30000
+    max_memory_bytes: 134217728
+  network_policy:
+    http_enabled: false
 ```
-
-That scaffolds the `raisin:Function` node and its source (or its toolchain
-project), ready to deploy.
-
-Where the code lives depends on whether it needs building:
-
-| `--lang` | what the scaffold writes | what the `.rap` ships |
-|---|---|---|
-| `js`, `starlark` | `.node.yaml` + the source, together under `content/` | both — the source **is** the deliverable |
-| `rust`, `go`, `assemblyscript` | `.node.yaml` under `content/`, the project under `wasm/` | `.node.yaml` + the built `main.wasm` only |
-
-For a compiled language the guest source stays out of `content/` (where `sync`
-would upload it as an asset) and out of the package (`.rapignore` excludes
-`wasm/`). The artifact is what ships; the source stays in your repository. See
-[WebAssembly functions](./wasm-functions.md) for the full layout. [WebAssembly](./wasm-functions.md) is the fastest
-option and the one to reach for when you want existing Rust or Go libraries;
-JavaScript is the quickest to iterate on.
-
-Functions can:
-- Process data
-- Integrate with external APIs (allowlisted endpoints)
-- Respond to triggers (events, HTTP, schedule, SQL)
-- Handle webhooks
-
-## Create a Function
-
-Functions are stored as `raisin:Function` nodes in the `functions` workspace.
-
-### Via Admin Console
-
-1. Navigate to **Functions**
-2. Click **Create Function**
-3. Enter function details:
-   - **Name**: `send-welcome-email`
-   - **Description**: `Send welcome email to new users`
-4. Add code in the editor
-5. Click **Save**
-
-### Via API
-
-```bash
-curl -X POST \
-  http://localhost:8080/api/repository/myapp/main/head/functions/send-welcome-email \
-  -H "Authorization: Bearer TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "node_type": "raisin:Function",
-    "properties": {
-      "code": "export async function handler(event) { ... }",
-      "runtime": "node20",
-      "timeout": 30
-    }
-  }'
-```
-
-## Function Code
-
-Functions have access to the sandboxed `raisin` API:
-
-| API | Operations |
-|-----|------------|
-| `raisin.nodes` | `get`, `getById`, `getChildren`, `create`, `createDeep`, `upsertDeep`, `update`, `delete`, `query` |
-| `raisin.sql` | `query`, `execute` |
-| `raisin.http` | `get`, `post`, `put`, `delete` (allowlisted endpoints) |
-| `raisin.imap` | `fetchSince`, `listMailboxes`, `fetchMessage`, `search` (native IMAP protocol; host allowlisted like `raisin.http`) |
-| `raisin.events` | `emit` (publish events) |
-| `raisin.locks` | `acquire`, `release`, `renew` (atomic [lease-locks](../coordination/locks-and-inventory.md)) |
-| `raisin.inventory` | `claim`, `release` (counting reservations) |
 
 ```javascript
-async function handler(input) {
-  // Read a node
-  const user = await raisin.nodes.get("default", input.path);
-
-  // Update properties
-  await raisin.nodes.update("default", input.path, {
-    properties: { ...user.properties, status: "processed" }
-  });
-
-  // Execute SQL queries
-  const results = await raisin.sql.query(
-    "SELECT * FROM 'default' WHERE node_type = 'blog:Article'"
-  );
-
-  // Make HTTP requests (allowlisted)
-  const response = await raisin.http.post("https://api.example.com/notify", {
-    body: { user_id: input.user_id }
-  });
-
-  return { success: true, count: results.length };
+// content/functions/lib/docs/greet/index.js
+export function handler(input) {
+  console.log(`greeting ${input.name}`);
+  const children = raisin.nodes.getChildren('content', '/pages', 50);
+  return { greeting: `Hello, ${input.name}`, pages: children.length };
 }
 ```
 
-## Invoke a Function
+`execution_mode` decides how the function may be called. `async` (the default)
+runs it as a background job. `sync` runs it inline and returns the result in
+the response. `both` allows either.
 
-### Via HTTP API
+By convention application functions live under `/lib/<namespace>/<name>`, and
+the built-in ones under `/lib/raisin/...`.
+
+## Create a function with the CLI
+
+Inside a package directory (one that has a `manifest.yaml` and a `content/`
+folder), scaffold the node and its source in one step:
 
 ```bash
-curl -X POST \
-  http://localhost:8080/api/functions/myapp/send-welcome-email/invoke \
-  -H "Authorization: Bearer TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "user_id": "user-123",
-    "email": "user@example.com"
-  }'
+raisindb create function greet --lang js --ns docs --description "Greets by name"
 ```
 
-### Via JavaScript Client
+This writes the two files shown above under `content/functions/lib/docs/greet/`.
+Use `--lang starlark` for a `main.star` handler instead, or one of the
+WebAssembly languages (see [WebAssembly functions](./wasm-functions.md) for the
+project layout they add).
+
+Deploy the package and install it into a repository:
+
+```bash
+raisindb deploy . --repo myapp --install
+```
+
+Every function under `content/functions/` in the package becomes a node in the
+repository's `functions` workspace.
+
+## Create a function over HTTP
+
+The same two nodes can be created with the repository API. First the function
+node under `/lib`, then its code as a child asset with an inline `code`
+property:
+
+```bash
+curl -X POST http://localhost:8090/api/repository/myapp/main/head/functions/lib \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"node":{"name":"greet","node_type":"raisin:Function","properties":{
+        "title":"Greet","name":"greet","language":"javascript",
+        "entry_file":"index.js:handler","execution_mode":"both","enabled":true}}}'
+
+curl -X POST http://localhost:8090/api/repository/myapp/main/head/functions/lib/greet \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"node":{"name":"index.js","node_type":"raisin:Asset","properties":{
+        "title":"index.js","file":"",
+        "code":"export function handler(input) { return { greeting: \"Hello, \" + input.name }; }"}}}'
+```
+
+## Function code
+
+The handler receives the caller's input as a plain object and returns a
+JSON-serialisable value. In JavaScript the `raisin.*` calls are synchronous:
+you can write `await` in front of them, but you do not need to.
+
+```javascript
+export function handler(input) {
+  // Read a node (workspace, path)
+  const page = raisin.nodes.get('content', input.path);
+
+  // Merge properties into it; keys you do not name are kept
+  raisin.nodes.update('content', input.path, {
+    properties: { status: 'processed' },
+  });
+
+  // SQL with bound parameters; query returns an array of row objects
+  const rows = raisin.sql.query(
+    "SELECT path, name FROM 'content' WHERE node_type = $1",
+    ['blog:Article']
+  );
+
+  // Outbound HTTP, allowed by the function's network_policy
+  const res = raisin.http.fetch('https://api.example.com/notify', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: { page: page.id },
+  });
+
+  return { ok: res.status === 200, count: rows.length };
+}
+```
+
+Every function sees the same API. The main namespaces:
+
+| Namespace | Methods |
+|-----------|---------|
+| `raisin.nodes` | `get`, `getById`, `getChildren`, `create`, `createDeep`, `upsertDeep`, `update`, `updateProperty`, `delete`, `move`, `history`, `beginTransaction` |
+| `raisin.sql` | `query`, `execute` |
+| `raisin.http` | `fetch(url, options)`; the global `fetch()` is also available in JavaScript |
+| `raisin.events` | `emit(type, data)` |
+| `raisin.secrets`, `raisin.email` | read vaulted secrets, send [email](../../reference/function-api/email.md) |
+| `raisin.locks`, `raisin.inventory` | [lease locks and counting reservations](../coordination/locks-and-inventory.md) |
+| `raisin.imap`, `raisin.ai`, `raisin.assets`, `raisin.functions` | IMAP, model calls, asset processing, calling other functions |
+| `raisin.context` | `{ tenant_id, repo_id, branch, workspace_id, actor, execution_id }` |
+
+Outbound HTTP is off until the node declares a `network_policy` with
+`http_enabled: true` and an `allowed_urls` list of glob patterns (`*` matches
+within one path segment, `**` across segments). A request to a URL outside the
+list comes back with `status: 0` and an `error` message rather than leaving the
+server. Email and secrets are gated the same way by `email_policy` and
+`secret_policy`.
+
+In JavaScript, most `raisin.*` calls report failure through their return value
+instead of throwing: `sql.query` returns `{ error, rows: [] }`, `sql.execute`
+returns `-1`, `events.emit` returns `false` and `http.fetch` returns
+`{ error, status: 0, ok: false }`. Check for `error` when it matters.
+
+In Starlark the same methods use snake_case names and errors stop the handler:
+
+```python
+def handler(input):
+    print("greeting " + input["name"])
+    rows = raisin.sql.query("SELECT path FROM 'content'", [])
+    return {"greeting": "Hello, " + input["name"], "rows": len(rows)}
+```
+
+## Invoke a function
+
+Over HTTP, send the input under `input`. Add `"sync": true` to run inline and
+get the result back (the function's `execution_mode` must be `sync` or `both`):
+
+```bash
+curl -X POST http://localhost:8090/api/functions/myapp/greet/invoke \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"input":{"name":"Ada"},"sync":true}'
+```
+
+```json
+{
+  "execution_id": "BCCB5m3jkMBLtUBsJlA3N",
+  "sync": true,
+  "result": { "greeting": "Hello, Ada" },
+  "duration_ms": 9,
+  "logs": ["[info] greeting Ada"],
+  "status": "completed",
+  "completed": true,
+  "timed_out": false,
+  "waited": true
+}
+```
+
+Without `sync` the call queues a job and returns `execution_id` and `job_id`
+immediately. See the [Functions API](../../reference/http-api/functions-api.md)
+for the full request and response shapes.
+
+From the [JavaScript client](../../reference/javascript-client/functions.md):
 
 ```typescript
-const result = await client.functions.invoke('send-welcome-email', {
-  user_id: 'user-123',
-  email: 'user@example.com'
-});
+const db = client.database('myapp');
+const { result } = await db.functions().invokeSync('greet', { name: 'Ada' });
 ```
 
-## Next Steps
+From SQL:
 
-- [Triggers](./triggers.md)
-- [Execution Logs](./execution-logs.md)
+```sql
+SELECT INVOKE_SYNC('greet', '{"name":"Ada"}'::jsonb);
+```
 
 ## Testing a function
 
 ```bash
-raisindb function test wasm/demo/greet             # native tests, no server
-raisindb function test wasm/demo/greet --server    # scenarios against a server
-raisindb function run  wasm/demo/greet --input '{"name":"Ada"}'
+raisindb function doctor content/functions/lib/docs/greet
+raisindb function run    content/functions/lib/docs/greet --input '{"name":"Ada"}' --repo myapp
+raisindb function test   content/functions/lib/docs/greet --server --repo myapp
 ```
 
-A compiled function has **native** tests: `cargo test` or `go test ./...` run
-against a mock host, so they need no server at all. With `--server` the
-scenarios in `tests/server.json` are invoked for real.
-
-JavaScript and Starlark functions have no native test step — there is nothing
-to compile and no mock host — so they need `--server`. Their scenarios live in
-a hidden `.tests.json` beside the node:
+`doctor` checks that the handler named in `entry_file` exists in the source.
+`run` executes the local file on the server and prints the result and logs,
+without deploying it. `test --server` replays the scenarios in a hidden
+`.tests.json` beside the node (hidden so `sync` does not upload it as content):
 
 ```json
 [{ "input": { "name": "Ada" }, "expect": { "greeting": "Hello, Ada" } }]
 ```
 
-It is hidden because everything else under `content/` is uploaded; a visible
-`tests/server.json` there would become a node. An object in `expect` is matched
-as a subset, so a case asserts the fields it names and ignores the rest.
+An object in `expect` is matched as a subset, so a case asserts only the fields
+it names. WebAssembly projects additionally have native tests that run with no
+server at all; see [WebAssembly functions](./wasm-functions.md).
+
+## Next steps
+
+- [Triggers](./triggers.md): run a function on node changes, a schedule or an HTTP request
+- [Execution logs](./execution-logs.md): inspect past runs

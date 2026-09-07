@@ -4,213 +4,195 @@ sidebar_position: 6
 
 # Time-Travel Queries
 
-RaisinDB's git-like versioning system lets you query the state of your data at any point in history. Every commit creates an immutable revision, and you can read from any past revision using SQL.
+Every write to a branch produces a new **revision**, and older revisions stay
+readable. You can run any query as of a past revision, read a deleted node
+back, tag a revision with a name, or move a branch's head to an earlier
+revision.
 
-## How Revisions Work
+## Revisions
 
-When you commit changes, RaisinDB creates a numbered **revision** — an immutable snapshot of the entire workspace state:
-
-```
-Revision 1  →  Initial content
-Revision 2  →  Added blog posts
-Revision 3  →  Updated homepage
-Revision 4  →  Deleted old pages (current HEAD)
-```
-
-Revisions are sequential, immutable, and permanent. Revision 2 always returns exactly the same data, no matter what happens later.
-
-## Querying Historical State
-
-### SET __revision
-
-Use `SET __revision` to pin all subsequent queries to a specific revision:
-
-```sql
--- Pin to revision 2
-SET __revision = 2;
-
--- All queries now return state as of revision 2
-SELECT * FROM 'default'
-WHERE node_type = 'blog:Article';
-
--- This also sees revision 2 state
-SELECT * FROM 'default'
-WHERE path = '/content/blog/post1';
-```
-
-### Return to Current State
-
-Reset to the latest state by setting revision to `NULL` or starting a new session:
-
-```sql
-SET __revision = NULL;
-
--- Back to current HEAD
-SELECT * FROM 'default' WHERE node_type = 'blog:Article';
-```
-
-### Query a Specific Revision Inline
-
-You can also filter by the `__revision` column directly:
-
-```sql
-SELECT * FROM 'default'
-WHERE __revision = 100;
-```
-
-## Comparing Across Revisions
-
-### See What Changed
-
-Query the same data at two different revisions to compare:
-
-```sql
--- State before the update
-SET __revision = 5;
-SELECT path, properties->>'title'::String AS title
-FROM 'default'
-WHERE node_type = 'blog:Article';
-
--- State after the update
-SET __revision = 6;
-SELECT path, properties->>'title'::String AS title
-FROM 'default'
-WHERE node_type = 'blog:Article';
-```
-
-### Find Deleted Content
-
-If a node was deleted after revision 10, you can still read it:
-
-```sql
--- Travel back to before the delete
-SET __revision = 10;
-
-SELECT * FROM 'default'
-WHERE path = '/content/blog/old-post';
--- Returns the node as it existed at revision 10
-```
-
-## Tag-Based Time Travel
-
-Tags are immutable labels that point to specific revisions. They make time travel more readable than raw revision numbers.
-
-### Creating Tags
-
-Tags are created via the HTTP API:
+A revision is identified by a hybrid logical clock value written as
+`"<milliseconds>-<counter>"`, for example `1788720201397-0`. Revisions are
+ordered, so a later write always has a larger value. A branch's current
+revision is its **head**:
 
 ```bash
-# Tag revision 100 as a production release
-POST /api/management/repositories/default/myrepo/branches/main/tags
-{
-  "name": "v1.0.0",
-  "revision": 100
-}
+GET /api/management/repositories/{tenant}/{repo}/branches/main/head
 ```
 
-### Using Tags
-
-Once tagged, you can reference that point in time by looking up the tag's revision:
-
-```bash
-# Get the revision for a tag
-GET /api/management/repositories/default/myrepo/branches/main/tags/v1.0.0
-# → {"name": "v1.0.0", "revision": 100}
+```json
+{"revision": "1788720201397-0"}
 ```
 
-Then query at that revision:
+A node's own revisions are listed by the history API. From the JavaScript
+client:
+
+```typescript
+const nodes = client.database('myrepo').workspace('blog').nodes();
+const history = await nodes.historyByPath('/posts/post-1');
+// [
+//   { revision: '1788720151444-0', updated_at: '…', updated_by: 'system', deleted: false, message: 'SQL UPDATE', … },
+//   { revision: '1788719850630-0', updated_at: '…', updated_by: 'system', deleted: false, message: 'SQL INSERT', … }
+// ]
+```
+
+Newest first. `nodes.history(id)` does the same by node id.
+
+## Querying a past revision in SQL
+
+Add `__revision = …` to the `WHERE` clause. The whole query then reads the
+workspace as it was at that revision:
 
 ```sql
-SET __revision = 100;
-
-SELECT * FROM 'default'
-WHERE node_type = 'blog:Article'
-  AND properties->>'status'::String = 'published';
+SELECT path, properties->>'title' AS title
+FROM 'blog'
+WHERE path = '/posts/post-1'
+  AND __revision = '1788720151444-0';
 ```
 
-Tags never move — `v1.0.0` always points to revision 100, even after hundreds of subsequent commits.
+The value is the revision string, or just its millisecond part as a number
+(`__revision = 1788720151444`), which reads the state as of that instant.
+`__revision` combines with any other predicate; it is stripped from the
+filter and applied to the scan.
+
+`__revision IS NULL`, or leaving it out, reads the current head.
+
+`SET`-style session pinning is not available; put `__revision` in each query.
+
+### Reading a deleted node
+
+A node deleted after a revision is still there at that revision:
+
+```sql
+DELETE FROM 'blog' WHERE path = '/posts/post-6';
+
+SELECT path, properties->>'title' AS title
+FROM 'blog'
+WHERE path = '/posts/post-6' AND __revision = '1788720201397-0';
+-- returns the node as it was before the delete
+```
+
+### Comparing two revisions
+
+Run the same query twice with different revisions:
+
+```sql
+SELECT path, properties->>'title' AS title FROM 'blog'
+WHERE node_type = 'raisin:Page' AND __revision = '1788719850630-0';
+
+SELECT path, properties->>'title' AS title FROM 'blog'
+WHERE node_type = 'raisin:Page' AND __revision = '1788720151444-0';
+```
+
+## Reading a past revision over REST
+
+The `rev/{revision}` routes mirror the `head` routes:
+
+```bash
+# a node at a revision
+GET /api/repository/{repo}/{branch}/rev/1788720201397-0/{workspace}/posts/post-6
+
+# a node by id
+GET /api/repository/{repo}/{branch}/rev/1788720201397-0/{workspace}/$ref/{id}
+
+# children of a folder at a revision
+GET /api/repository/{repo}/{branch}/rev/1788720201397-0/{workspace}/posts/
+```
+
+The revision must be a full `"<ms>-<counter>"` string; anything else is
+rejected with `Invalid revision`.
+
+The JavaScript client has the same idea as a scoped database:
+
+```typescript
+const past = client.database('myrepo').atRevision('1788720201397-0');
+const node = await past.workspace('blog').nodes().getByPath('/posts/post-6');
+```
+
+## Tags
+
+A tag is a name for a revision. Tags are repository-wide.
+
+```bash
+POST /api/management/repositories/{tenant}/{repo}/tags
+{"name": "v1.0.0", "revision": "1788720201397-0"}
+```
+
+```json
+{"name":"v1.0.0","revision":"1788720201397-0","created_at":"2026-09-06T18:43:21Z","created_by":"system","message":null,"protected":false}
+```
+
+`GET …/tags` lists them, `GET …/tags/v1.0.0` returns one, `DELETE
+…/tags/v1.0.0` removes it. To query at a tag, look up its revision and use it
+in `__revision`:
+
+```sql
+SELECT path FROM 'blog'
+WHERE node_type = 'raisin:Page'
+  AND properties->>'status'::String = 'published'
+  AND __revision = '1788720201397-0';
+```
 
 ## Rollback
 
-If you need to restore content to a previous state, update the branch HEAD:
+Move a branch head back to an earlier revision:
 
 ```bash
-# Current HEAD is revision 50, but revision 45 was the last good state
-PUT /api/management/repositories/default/myrepo/branches/main/head
-{
-  "head": 45
-}
+PUT /api/management/repositories/{tenant}/{repo}/branches/main/head
+{"revision": "1788720201397-0"}
 ```
 
-After rollback:
-- HEAD now points to revision 45
-- Revisions 46–50 still exist in history
-- All queries return revision 45 state by default
-- You can still time-travel to revisions 46–50
+The response is `204 No Content`. Queries without `__revision` now see that
+revision's state. Later revisions are not deleted and remain readable with
+`__revision`.
 
-## Branches and Time Travel
+## Branches
 
-Different branches can point to different revisions:
-
-```
-main       → revision 50
-staging    → revision 48
-feature-x  → revision 42
-```
-
-Connect to a specific branch via pgwire to query its current state:
+Each branch has its own head. Create one from a revision:
 
 ```bash
-psql -h 127.0.0.1 -p 5432 -U tenant1/repo1/main
-psql -h 127.0.0.1 -p 5432 -U tenant1/repo1/staging
+POST /api/management/repositories/{tenant}/{repo}/branches
+{"name": "preview", "from_revision": "1788720201397-0"}
 ```
 
-Combine with `SET __revision` to time-travel within any branch.
+```json
+{"name":"preview","head":"1788720201397-0","created_at":"…","created_by":"system","created_from":"1788720201397-0","upstream_branch":null,"protected":false,"description":null}
+```
 
-## Use Cases
+Query another branch from SQL by naming it in the URL or in the statement:
 
-### Audit Trail
-
-See exactly what content looked like at a specific deployment:
+```bash
+POST /api/sql/{repo}/preview
+```
 
 ```sql
-SET __revision = 200;
-SELECT path, properties->>'title'::String AS title, properties->>'status'::String AS status
-FROM 'default'
-WHERE node_type = 'blog:Article';
+SELECT path, properties->>'title' AS title
+FROM 'blog'
+WHERE path = '/posts/post-6' AND __branch = 'preview';
 ```
 
-### Debugging Content Issues
+Over the PostgreSQL wire protocol, switch the session's branch with
+`USE BRANCH 'preview'` (or `SET app.branch = 'preview'`). `__revision` works
+on any branch.
 
-If a user reports that content was correct yesterday but wrong today, check recent revisions:
+## Use cases
+
+**Audit a deployment.** Tag the revision you shipped, then query content as
+of that tag whenever a question comes up.
+
+**Debug "it was right yesterday".** Read the node's history, pick the
+revision from yesterday, and compare its properties with the head:
 
 ```sql
--- Check yesterday's state
-SET __revision = 155;
-SELECT properties FROM 'default' WHERE path = '/content/homepage';
-
--- Check today's state
-SET __revision = NULL;
-SELECT properties FROM 'default' WHERE path = '/content/homepage';
+SELECT properties FROM 'blog' WHERE path = '/homepage' AND __revision = '1788633600000';
+SELECT properties FROM 'blog' WHERE path = '/homepage';
 ```
 
-### Safe Previews
-
-Use branches to preview changes without affecting production:
-
-```bash
-# Create a preview branch from current main
-POST /api/repository/myrepo/branches
-{
-  "name": "preview",
-  "from_revision": 50
-}
-```
-
-Make changes on the preview branch, then merge to main when ready.
+**Safe previews.** Fork a `preview` branch, edit there, and merge to `main`
+when ready. See [Branches and Tags](/docs/concepts/versioning/branches-and-tags).
 
 ## Next Steps
 
-- [Common Query Patterns](./common-query-patterns.md) — SQL recipe cookbook
-- [Filtering Data](./filtering-data.md) — Advanced filters
-- [Branches and Tags](/docs/concepts/versioning/branches-and-tags) — Version management
+- [Common Query Patterns](./common-query-patterns.md)
+- [Filtering Data](./filtering-data.md)
+- [Branches and Tags](/docs/concepts/versioning/branches-and-tags)

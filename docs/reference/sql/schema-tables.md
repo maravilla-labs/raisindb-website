@@ -4,70 +4,62 @@ sidebar_position: 4
 
 # Schema Tables
 
-Four reserved table names read the **type registry** rather than content nodes.
-They are how you ask RaisinDB about its own schema from SQL — which node types
-exist, what fields an archetype has, what a workspace permits.
+Four reserved table names read the type registry instead of content nodes. They are how you ask RaisinDB about its own schema from SQL: which node types exist, what fields an archetype declares, what a workspace permits.
 
 | Table | Contents | Writes |
 |-------|----------|--------|
-| `NodeTypes` | Registered node types | DDL only — `CREATE/ALTER/DROP NODETYPE` |
-| `Archetypes` | Page templates | DDL only — `CREATE/ALTER/DROP ARCHETYPE` |
-| `ElementTypes` | Content blocks | DDL only — `CREATE/ALTER/DROP ELEMENTTYPE` |
-| `Workspaces` | Workspace definitions | **None — read-only** |
+| `NodeTypes` | Registered node types (mixins appear here too) | DDL only: `CREATE / ALTER / DROP NODETYPE`, `CREATE / ALTER / DROP MIXIN` |
+| `Archetypes` | Page templates | DDL only: `CREATE / ALTER / DROP ARCHETYPE` |
+| `ElementTypes` | Content blocks | DDL only: `CREATE / ALTER / DROP ELEMENTTYPE` |
+| `Workspaces` | Workspace definitions | none, read-only |
 
 ```sql
-SELECT name, base_node_type, extends, title, fields, meta FROM Archetypes
-SELECT name, allowed_children FROM NodeTypes
-SELECT name, extends, description, fields, meta FROM ElementTypes
-SELECT name, allowed_node_types, allowed_root_node_types FROM Workspaces
+SELECT name, extends, description, properties, allowed_children FROM NodeTypes;
+SELECT name, base_node_type, extends, title, fields, meta FROM Archetypes;
+SELECT name, extends, description, fields, meta FROM ElementTypes;
+SELECT name, allowed_node_types, allowed_root_node_types FROM Workspaces;
 ```
 
-These names are reserved: a content workspace cannot be called `nodetypes`,
-`archetypes`, `elementtypes`, or `workspaces`, because the schema table shadows
-it.
+```sql
+SELECT name, extends, properties, allowed_children FROM NodeTypes WHERE name LIKE 'docs:%';
+```
 
-:::info Why this matters in server-side functions
-Inside a [server-side function](../../guides/functions/creating-functions.md), `raisin.sql`
-is the **only** route to schema information — the function runtime has no
-workspaces or types binding, and `raisin.asAdmin()` re-exposes only nodes and
-SQL. A function that needs to answer "what may be created here?" reads these
-tables.
+```json
+{"name":"docs:Article","extends":"raisin:Page","properties":[{"name":"summary","type":"String","index":["Fulltext"],"meta":{"label":"Summary"}},{"name":"slug","type":"String","unique":true},{"name":"status","type":"String","default":"draft"}],"allowed_children":["raisin:Asset"]}
+```
+
+The names are matched case-insensitively (`nodetypes` and `NodeTypes` are the same table) and they are reserved: a content workspace called `nodetypes`, `archetypes`, `elementtypes` or `workspaces` would be shadowed by the schema table and could not be queried.
+
+A DML statement against a schema table is rejected with a message pointing at the DDL form:
+
+```
+INSERT INTO NodeTypes (name, description) VALUES ('docs:X', 'test')
+-- Direct DML operations on 'NodeTypes' are not allowed. Use DDL syntax instead: CREATE/ALTER/DROP NODETYPE
+```
+
+Nothing is cached. A type created with DDL or a package install is visible to the next query.
+
+:::info Inside server-side functions
+A function's `raisin.sql` binding is the route to schema information: the function runtime has no workspaces or types binding. A function that needs to answer "what may be created here?" reads these tables.
 :::
 
-Nothing is cached. Deploy a new archetype and it is visible to the next query,
-with no catalog to rebuild.
+## Columns
 
-## Three rules
+### `NodeTypes`
 
-### Full-table SELECTs only
+`id`, `name`, `strict`, `extends`, `mixins`, `overrides`, `description`, `icon`, `version`, `properties`, `allowed_children`, `required_nodes`, `initial_structure`, `versionable`, `publishable`, `auditable`, `indexable`, `index_types`, `created_at`, `updated_at`, `published_at`, `published_by`, `previous_version`, `__branch`.
 
-An equality filter on the primary key plans a point-lookup that bypasses the
-schema-table read path and silently returns **no rows**. Read the table and
-filter in your own code.
+`properties` is a JSON array of property definitions (`name`, `type`, `required`, `default`, `unique`, `index`, `items`, `structure`, `meta`). `mixins` lists the mixin names applied to the type.
 
-```sql
--- WRONG — returns nothing, with no error
-SELECT fields FROM Archetypes WHERE name = 'news:ArticlePage'
+### `Archetypes`
 
--- RIGHT — read all, filter client-side
-SELECT name, fields FROM Archetypes
-```
+`id`, `name`, `extends`, `icon`, `title`, `description`, `base_node_type`, `fields`, `initial_content`, `view`, `meta`, `version`, `created_at`, `updated_at`, `published_at`, `published_by`, `publishable`, `previous_version`, `__branch`.
 
-### `ElementTypes` has no `title` column
+### `ElementTypes`
 
-Selecting it errors the whole query. Use `name` and `description`.
+`id`, `name`, `extends`, `icon`, `description`, `fields`, `meta`, `initial_content`, `layout`, `view`, `version`, and the same timestamp and branch columns. There is no `title` column; selecting one fails the query with `Column not found: ElementTypes.title`. Use `name` and `description`.
 
-### `fields` and `meta` are raw, not merged
-
-The stored `fields` plus `extends` are exposed as-is. If you need the
-inheritance-merged schema, walk the `extends` chain yourself, or use the
-resolved-archetype endpoint in the HTTP API.
-
-## `Workspaces`
-
-Read-only, and **repo-scoped rather than branch-scoped** — workspaces are shared
-across branches and carry no revision history, so time-travel and branch filters
-do not apply to this table.
+### `Workspaces`
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -78,46 +70,47 @@ do not apply to this table.
 | `depends_on` | JSONB | Workspaces this one depends on |
 | `initial_structure` | JSONB | Nodes seeded when the workspace is created |
 | `config` | JSONB | Workspace configuration (default branch, node type pins) |
-| `created_at` | TEXT | Creation timestamp |
-| `updated_at` | TEXT | Last modification timestamp |
+| `created_at`, `updated_at` | TEXT | Timestamps |
 
-Writes are rejected. Creating a workspace also builds its nodes table, seeds
-`initial_structure` and registers it in the SQL catalog — a row write would do
-none of that, so define workspaces in your package's `workspaces/*.yaml` and
-install it, or use the management API.
+`Workspaces` is repository-scoped rather than branch-scoped: workspaces are shared across branches and carry no revision history, so branch filters do not apply. Creating a workspace also builds its table, seeds `initial_structure` and registers it in the SQL catalog, which is why it is done through a package's `workspaces/*.yaml` or the workspace API rather than an SQL row:
 
-```sql
--- Rejected:
+```
 INSERT INTO Workspaces (name) VALUES ('reports')
--- 'Workspaces' is read-only: workspaces are defined by package install
--- (workspaces/*.yaml) or the management API, not by SQL.
+-- 'Workspaces' is read-only: workspaces are defined by package install (workspaces/*.yaml)
+-- or the management API, not by SQL. SELECT here to read allowed_node_types / allowed_root_node_types.
 ```
 
-### Answering "what can be created here?"
+## Filtering schema tables
 
-`allowed_node_types` / `allowed_root_node_types` are the coarse,
-**server-enforced** containment rule. Combined with `NodeTypes.allowed_children`
-— structural composition, which applies to a *typed* parent — they are what an
-admin UI's create menu is built from:
+Read the whole table, or filter with `LIKE`. An equality filter on `name` is planned as a point lookup that bypasses the schema-table read path and returns no rows without an error:
+
+```sql
+-- returns nothing
+SELECT fields FROM Archetypes WHERE name = 'news:ArticlePage';
+
+-- works
+SELECT name, fields FROM Archetypes;
+SELECT name, fields FROM Archetypes WHERE name LIKE 'news:%';
+```
+
+`fields` and `properties` are stored as declared: `extends` is a name, not a merged result. To see the inheritance-merged schema, walk the `extends` chain yourself or use the resolved-archetype endpoint of the HTTP API.
+
+:::note FIELDS declared with DDL
+`CREATE ARCHETYPE ... FIELDS (...)` and `CREATE ELEMENTTYPE ... FIELDS (...)` are accepted, but the field list is not stored: `Archetypes.fields` reads back as NULL and `ElementTypes.fields` as `[]`. Archetype and element type fields defined in package YAML are stored in full.
+:::
+
+## Answering "what can be created here?"
+
+`Workspaces.allowed_node_types` and `allowed_root_node_types` are the workspace-wide containment rule the server enforces on every write. `NodeTypes.allowed_children` is structural composition for a typed parent. A create menu in an admin UI is built from both:
 
 ```sql
 -- What may exist in this workspace at all, and at its root?
-SELECT name, allowed_node_types, allowed_root_node_types FROM Workspaces
+SELECT name, allowed_node_types, allowed_root_node_types FROM Workspaces;
 
 -- What does a given parent type accept as children?
-SELECT name, allowed_children FROM NodeTypes
+SELECT name, allowed_children FROM NodeTypes;
 ```
 
-The two answer different questions and both apply:
+The two answer different questions and both apply. A generic folder type has no opinion of its own (the same folder holds tags in one workspace and pages in another), so only the workspace can say what belongs inside it; `allowed_children` constrains a type that genuinely limits its children regardless of workspace.
 
-- **Workspace** — scope-wide containment. A generic folder has no opinion of its
-  own (the same folder type holds tags in one workspace and pages in another),
-  so only the workspace can answer what belongs inside it.
-- **`allowed_children`** — structural composition for a type that genuinely
-  constrains its children regardless of workspace.
-
-:::note An empty `allowed_children` means "no constraint" to the server
-The server skips the check when the list is empty. UIs that *offer* choices
-often read empty as "this type is a leaf" instead — if you are building an
-offering menu, decide which reading you want and be explicit about it.
-:::
+An empty `allowed_children` means "no constraint" to the server, which skips the check. A UI that offers choices may prefer to read an empty list as "this type is a leaf"; decide which reading you want and be explicit about it.

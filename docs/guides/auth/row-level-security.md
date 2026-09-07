@@ -1,336 +1,222 @@
 ---
 sidebar_position: 3
 title: Row-Level Security
-description: Enforce fine-grained access control at query time with REL conditions and field-level filtering
+description: Restrict which nodes a user can see or change with REL conditions, and which properties are returned with field filtering
 ---
 
 # Row-Level Security
 
-RaisinDB enforces permissions at query time through the RLS (Row-Level Security) filter. Every node read from storage passes through this filter before being returned to the caller. This means access control is enforced consistently regardless of whether data is accessed via REST, SQL, WebSocket, or PGWire.
+A permission grant can carry a condition that is evaluated per node, and a
+list of properties that may be returned. Together they let one role see only
+its own drafts, another only published content, and a third only three
+fields of a profile. The checks run in the storage layer, so they apply the
+same way to REST, SQL, WebSocket subscriptions and `psql`.
 
-## How the RLS Filter Works
+## What happens on a read
 
-```
-Node from storage
-        │
-        ▼
-  System context? ──── yes ──→ Return node (bypass)
-        │ no
-        ▼
-  Permissions resolved? ──── no ──→ Deny
-        │ yes
-        ▼
-  is_system_admin? ──── yes ──→ Return node (bypass)
-        │ no
-        ▼
-  Find matching permission
-  (scope + path + operation + node_type)
-        │
-  ┌─────┴─────┐
-  │ no match  │ match found
-  │           │
-  ▼           ▼
- Deny    Evaluate REL condition
-              │
-        ┌─────┴─────┐
-        │  false    │ true
-        │           │
-        ▼           ▼
-       Deny    Apply field filtering
-                    │
-                    ▼
-              Return filtered node
-```
+For every node that a query or a read touches:
 
-The filter evaluates permissions in order: scope match, path match, operation match, node type match, then condition evaluation. Among all matching permissions, the most specific path pattern wins.
+1. Callers with a system context or the `system_admin` role get the node
+   unchanged.
+2. The caller's grants are matched on workspace, path, operation and node
+   type, most specific path first.
+3. For each matching grant, its `condition` (if any) is evaluated against
+   the node and the caller. The first grant whose condition holds allows the
+   read. If none does, the node is left out of the result. A path read
+   returns `404`; a query simply has fewer rows.
+4. The `fields` or `except_fields` of the grant that allowed the read decide
+   which properties are returned.
 
-## REL Conditions
+Writes use the same matching for `update`, `delete`, `relate`, `unrelate` and
+`translate`. A `create` is checked against the target path and node type,
+since the node does not exist yet: a condition on a `create` grant sees only
+`node.path`, `node.name` and `node.node_type`, so keep `create` grants free of
+conditions on properties or on `created_by`. A denied write fails with
+`Permission denied: Cannot create raisin:Page at path '/carol'` or
+`Cannot update node at path '/hello'`.
 
-REL (Raisin Expression Language) conditions are string expressions attached to permissions that must evaluate to true for the permission to apply. They enable dynamic, runtime access control.
+## Conditions
 
-### Available Variables
+A condition is a [REL](/docs/reference/rel) expression. It has two objects in
+scope.
 
-Two objects are available in REL conditions:
-
-**`auth.*` — the authenticated user:**
+**`auth`, the caller:**
 
 | Variable | Type | Description |
 |----------|------|-------------|
-| `auth.user_id` | String | Global identity ID |
-| `auth.local_user_id` | String | Workspace-specific user node ID |
-| `auth.email` | String | User's email address |
-| `auth.is_anonymous` | Boolean | Whether this is an anonymous request |
-| `auth.roles` | Array | Effective role IDs |
-| `auth.groups` | Array | Group IDs |
-| `auth.home` | String | User's home path in the repository |
+| `auth.user_id` | String | Global identity id |
+| `auth.local_user_id` | String | Id of the caller's `raisin:User` node in this repository |
+| `auth.home` | String | Path of that node |
+| `auth.email` | String | Email address |
+| `auth.roles` | Array | Effective role ids |
+| `auth.groups` | Array | Group ids |
+| `auth.is_anonymous` | Boolean | True for the anonymous user |
+| `auth.is_system` | Boolean | True for internal system calls |
 
-**`node.*` — the node being accessed:**
+**`node`, the node being checked:**
 
 | Variable | Type | Description |
 |----------|------|-------------|
-| `node.id` | String | Node UUID |
+| `node.id` | String | Node id |
 | `node.name` | String | Node name |
-| `node.path` | String | Full path in the hierarchy |
-| `node.node_type` | String | Node type (e.g., `blog:Article`) |
-| `node.created_by` | String | Identity ID of the creator |
-| `node.updated_by` | String | Identity ID of the last updater |
-| `node.owner_id` | String | Node owner identity ID |
-| `node.workspace` | String | Workspace the node belongs to |
-| `node.<property>` | Any | Any node property, accessed by key |
+| `node.path` | String | Full path |
+| `node.node_type` | String | Node type, e.g. `blog:Article` |
+| `node.created_by`, `node.updated_by` | String | Actor ids |
+| `node.owner_id` | String | Owner id, if set |
+| `node.workspace` | String | Workspace name |
+| `node.<property>` | Any | Every node property by key, e.g. `node.status` |
 
-Node properties are automatically converted to REL values: strings, numbers, booleans, arrays, and objects are all supported.
+Syntax:
 
-### REL Syntax
+- Comparison `==`, `!=`, `<`, `<=`, `>`, `>=`; logic `&&`, `||`, `!`
+- String literals in single or double quotes, numbers, `true`, `false`,
+  `null`, arrays
+- Methods on strings and arrays: `contains()`, `startsWith()`, `endsWith()`,
+  `length()`, `isEmpty()`, `toLowerCase()`, `indexOf()`, `first()`, `last()`
+- Path helpers on strings: `descendantOf(p)`, `childOf(p)`, `parent()`,
+  `depth()`
+- Graph: `<a> RELATES <b> VIA 'TYPE' [DEPTH n | min..max] [DIRECTION OUTGOING|INCOMING|ANY]`
 
-REL supports standard expression syntax:
+A condition that does not parse, or that fails to evaluate (for example a
+missing property), is treated as false. A misconfigured grant therefore
+denies rather than allows.
 
-- **Comparison:** `==`, `!=`, `>`, `<`, `>=`, `<=`
-- **Logical:** `&&`, `||`, `!`
-- **Property access:** `node.status`, `auth.email`
-- **Array indexing:** `node.tags[0]`
-- **Functions:** `contains()`, `startsWith()`, `endsWith()`
+## Common patterns
 
-### Fail-Closed Evaluation
+Each example is one grant inside a role's `PERMISSIONS (...)` list, or the
+equivalent object in a role node's `permissions` property.
 
-If a REL condition fails to parse or evaluate (e.g., referencing a non-existent variable), the result is `false` — access is **denied**. This is a deliberate security choice to ensure misconfigurations never result in open access.
+### Only published content
 
-## Common Patterns
-
-### Users Can Only See Their Own Content
-
-```json
-{
-  "path": "posts/**",
-  "operations": ["read", "update", "delete"],
-  "condition": "node.created_by == auth.user_id"
-}
+```sql
+CREATE ROLE 'article-reader' PERMISSIONS (
+  ALLOW READ ON 'articles' PATH '**' WHERE node.status == 'published'
+);
 ```
 
-With this permission, a user can only read, update, or delete posts they created.
+With two pages in `articles`, one `published` and one `draft`:
 
-### Editors See Everything, Viewers See Published Only
-
-Define two roles:
-
-```json
-{
-  "name": "editor",
-  "permissions": [
-    {
-      "path": "articles/**",
-      "operations": ["read", "update", "create", "delete"]
-    }
-  ]
-}
-
-{
-  "name": "viewer",
-  "permissions": [
-    {
-      "path": "articles/**",
-      "operations": ["read"],
-      "condition": "node.status == 'published'"
-    }
-  ]
-}
+```sql
+-- as a user holding article-reader
+SELECT path, properties->>'status'::String AS status FROM 'articles';
+-- /hello | published
 ```
 
-Editors see all articles. Viewers only see articles where `status` is `published`.
+### Own content only
 
-### Ownership OR Admin Access
-
-```json
-{
-  "path": "content/**",
-  "operations": ["update", "delete"],
-  "condition": "node.created_by == auth.user_id || auth.roles.contains('admin')"
-}
+```sql
+ALLOW READ, UPDATE, DELETE ON 'content' PATH 'posts/**'
+  WHERE node.created_by == auth.user_id
 ```
 
-Users can modify their own content, and admins can modify anything.
+### Ownership or a role
 
-### Group-Based Access
-
-```json
-{
-  "path": "projects/**",
-  "operations": ["read", "update"],
-  "condition": "auth.groups.contains('engineering')"
-}
+```sql
+ALLOW UPDATE, DELETE ON 'content' PATH '**'
+  WHERE node.created_by == auth.user_id || auth.roles.contains('admin')
 ```
 
-Only members of the `engineering` group can access project content.
+### Group membership
 
-### Home Directory Access
-
-```json
-{
-  "path": "users/**",
-  "operations": ["read", "update"],
-  "condition": "node.path.startsWith(auth.home)"
-}
+```sql
+ALLOW READ, UPDATE ON 'projects' PATH '**'
+  WHERE auth.groups.contains('engineering')
 ```
 
-Users can access content under their own home path.
+### Under the caller's home path
 
-### Property-Based Restrictions
-
-```json
-{
-  "path": "documents/**",
-  "operations": ["read"],
-  "condition": "node.classification != 'confidential' || auth.roles.contains('security-cleared')"
-}
+```sql
+ALLOW READ, UPDATE ON 'raisin:access_control' PATH 'users/**'
+  WHERE node.path.startsWith(auth.home)
 ```
 
-Confidential documents are only visible to users with the `security-cleared` role.
+### Property-based restriction
 
-## Field-Level Filtering
-
-After a matching permission is found and the REL condition passes, field-level filtering controls which properties are visible.
-
-### Field Whitelist
-
-Only the listed fields are returned — all others are stripped:
-
-```json
-{
-  "path": "users/**",
-  "operations": ["read"],
-  "fields": ["display_name", "avatar_url", "bio"]
-}
+```sql
+ALLOW READ ON 'documents' PATH '**'
+  WHERE node.classification != 'confidential' || auth.roles.contains('security-cleared')
 ```
 
-A viewer with this permission can see user profiles but only the `display_name`, `avatar_url`, and `bio` fields. Sensitive fields like `email`, `phone`, or `internal_notes` are hidden.
+### Graph relationship
 
-### Field Blacklist
-
-All fields are returned except the listed ones:
-
-```json
-{
-  "path": "articles/**",
-  "operations": ["read"],
-  "except_fields": ["internal_notes", "admin_comments"]
-}
+```sql
+ALLOW READ ON 'raisin:access_control' PATH 'users/**/profile'
+  WHERE node.created_by RELATES auth.local_user_id VIA 'FRIENDS_WITH' DEPTH 2
 ```
 
-Everything is visible except `internal_notes` and `admin_comments`.
+## Field-level filtering
 
-If both `fields` and `except_fields` are somehow set, the whitelist takes precedence.
+After a grant allows a read, `fields` keeps only the listed properties and
+`except_fields` removes the listed ones. If both are set, `fields` wins.
 
-## Structured Conditions
-
-In addition to REL string expressions, RaisinDB supports structured conditions for programmatic use:
-
-| Condition Type | Example |
-|---------------|---------|
-| `PropertyEquals` | `author == $auth.user_id` |
-| `PropertyIn` | `status IN ['draft', 'review']` |
-| `PropertyGreaterThan` | `priority > 5` |
-| `PropertyLessThan` | `age < 18` |
-| `UserHasRole` | Check if user has a specific role |
-| `UserInGroup` | Check if user is in a specific group |
-| `All` | AND composition of sub-conditions |
-| `Any` | OR composition of sub-conditions |
-
-Condition values can be literals or auth variable references (`$auth.user_id`, `$auth.email`).
-
-## Write Operation Checks
-
-The RLS filter also applies to write operations. Before a node can be created, updated, or deleted, the system checks:
-
-- **Update/Delete:** `can_perform(node, operation, auth)` — same matching logic as read filtering but for the requested operation
-- **Create:** `can_create_at_path(path, node_type, auth)` — checks permissions against the target path and node type (since no node exists yet)
-
-## Putting It All Together
-
-Here's a complete example of a multi-role setup:
-
-```json
-[
-  {
-    "name": "viewer",
-    "permissions": [
-      {
-        "path": "**",
-        "operations": ["read"],
-        "condition": "node.status == 'published' || node.created_by == auth.user_id"
-      }
-    ]
-  },
-  {
-    "name": "author",
-    "inherits": ["viewer"],
-    "permissions": [
-      {
-        "path": "articles/**",
-        "operations": ["create", "update"],
-        "condition": "node.created_by == auth.user_id",
-        "except_fields": ["featured", "editor_pick"]
-      },
-      {
-        "path": "articles/**",
-        "operations": ["delete"],
-        "condition": "node.created_by == auth.user_id && node.status == 'draft'"
-      }
-    ]
-  },
-  {
-    "name": "editor",
-    "inherits": ["author"],
-    "permissions": [
-      {
-        "path": "articles/**",
-        "operations": ["create", "read", "update", "delete"]
-      },
-      {
-        "path": "users/*/profile",
-        "operations": ["read"],
-        "fields": ["display_name", "avatar_url", "bio"]
-      }
-    ]
-  }
-]
+```sql
+CREATE ROLE 'title-only' PERMISSIONS (
+  ALLOW READ ON 'articles' PATH '**' FIELDS (title)
+);
 ```
 
-This setup provides:
-
-- **Viewers** can read published content and their own drafts
-- **Authors** inherit viewer access, can create and edit their own articles (but not set `featured` or `editor_pick`), and can only delete their own drafts
-- **Editors** inherit everything, can manage all articles, and can view basic user profile info
-
-## Security Configuration
-
-The `raisin:SecurityConfig` controls the default security posture:
-
-```yaml
-security:
-  workspace: "*"              # Applies to all workspaces
-  default_policy: "deny"      # Deny when no permission matches
-  anonymous_enabled: false     # No unauthenticated access
+```sql
+-- as a user holding title-only
+SELECT path, properties FROM 'articles';
+-- /hello | {"title":"Hello"}
+-- /draft | {"title":"Draft"}
 ```
 
-Per-interface overrides let you allow anonymous REST access (for a public website) while requiring authentication for PGWire (internal analytics):
-
-```yaml
-security:
-  workspace: "content"
-  default_policy: "deny"
-  anonymous_enabled: true
-  anonymous_role: "anonymous"
-  interfaces:
-    rest:
-      anonymous_enabled: true
-    pgwire:
-      anonymous_enabled: false
-    websocket:
-      anonymous_enabled: false
+```sql
+ALLOW READ ON 'articles' PATH '**' EXCEPT FIELDS (internal_notes, admin_comments)
 ```
 
-The default out-of-the-box configuration is deny-all with no anonymous access, ensuring a secure starting point.
+Field filtering applies to reads. Whether a write is allowed is decided by
+the grant as a whole, not per property.
 
-## Next Steps
+## A complete setup
 
-- [Roles and Permissions](./roles-and-permissions.md) — set up RBAC with inheritance and groups
-- [Authentication Setup](./authentication-setup.md) — configure authentication strategies
+```sql
+CREATE ROLE 'viewer-published' PERMISSIONS (
+  ALLOW READ ON 'articles' PATH '**'
+    WHERE node.status == 'published' || node.created_by == auth.user_id
+);
+
+CREATE ROLE 'author' INHERITS ('viewer-published') PERMISSIONS (
+  ALLOW CREATE ON 'articles' PATH '**',
+  ALLOW UPDATE ON 'articles' PATH '**'
+    WHERE node.created_by == auth.user_id,
+  ALLOW DELETE ON 'articles' PATH '**'
+    WHERE node.created_by == auth.user_id && node.status == 'draft'
+);
+
+CREATE ROLE 'editor' INHERITS ('author') PERMISSIONS (
+  ALLOW CREATE, READ, UPDATE, DELETE ON 'articles' PATH '**',
+  ALLOW READ ON 'raisin:access_control' PATH 'users/*/profile'
+    FIELDS (display_name, avatar_url, bio)
+);
+```
+
+- Viewers read published articles and their own.
+- Authors additionally create articles, edit their own, and delete only
+  their own drafts.
+- Editors manage every article and can read three fields of any profile.
+
+## Anonymous access and defaults
+
+With no matching grant the answer is always deny; there is no allow-by-default
+mode. Unauthenticated requests are either denied outright or run as the
+anonymous user (`/users/system/anonymous`, role `anonymous`), depending on
+whether anonymous access is enabled:
+
+1. per repository, by `anonymous_enabled` on a `raisin:RepoAuthConfig` node at
+   `/config/repos/{repo}` in the `raisin:system` workspace;
+2. otherwise per tenant, by `anonymous_enabled` in
+   `PUT /api/tenants/{tenant}/auth/config`;
+3. otherwise by the server configuration.
+
+The `raisin:SecurityConfig` node at `/config/default` in
+`raisin:access_control` (managed with `ALTER SECURITY CONFIG` and
+`SHOW SECURITY CONFIG`) records a `default_policy` and `anonymous_enabled`,
+but in this release those values are not consulted by the enforcement path
+described above.
+
+## Next steps
+
+- [Roles and Permissions](./roles-and-permissions.md)
+- [Authentication Setup](./authentication-setup.md)

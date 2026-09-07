@@ -4,432 +4,209 @@ sidebar_position: 2
 
 # Using Archetypes
 
-Archetypes provide reusable element type collections that can be composed into NodeTypes.
+An archetype gives nodes of one NodeType a set of editor fields, a layout, and a list of allowed element types. This guide creates one, extends it, and writes nodes against it. Concepts are on the [Archetypes](/docs/concepts/data-model/archetypes) page.
 
-## What are Archetypes?
-
-Archetypes are collections of related element types that can be mixed into NodeTypes, similar to mixins or traits in programming. They promote:
-- Code reuse across NodeTypes
-- Consistent property definitions
-- Modular schema design
-
-## Creating Archetypes
-
-### Via HTTP API
+All examples use repository `docs-model`, branch `main`, and these shell variables:
 
 ```bash
-curl -X POST \
-  http://localhost:8080/api/management/myapp/main/archetypes \
-  -H "Authorization: Bearer YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Publishable",
-    "label": "Publishable Content",
-    "description": "Common properties for published content",
-    "element_types": {
-      "status": {
-        "type": "select",
-        "label": "Status",
-        "options": ["draft", "review", "published", "archived"],
-        "default": "draft"
-      },
-      "published_date": {
-        "type": "date",
-        "label": "Published Date"
-      },
-      "author": {
-        "type": "text",
-        "label": "Author"
-      }
-    }
-  }'
+TOKEN=$(curl -s -X POST localhost:8090/api/raisindb/sys/default/auth \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"AdminPassword123!"}' | jq -r .token)
+H="Authorization: Bearer $TOKEN"; J="content-type: application/json"
+B=localhost:8090/api/management/docs-model/main
 ```
 
-### Via Package (YAML)
+They assume a published NodeType `blog:Article` with a required `title` property, and two element types `arch:Hero` and `arch:TextBlock` (see [Defining Element Types](./defining-elements.md)).
 
-Create `archetypes/Publishable.yaml`:
+## 1. Create the archetype
 
-```yaml
-name: Publishable
-label: Publishable Content
-description: Common properties for published content
-
-element_types:
-  status:
-    type: select
-    label: Status
-    options:
-      - draft
-      - review
-      - published
-      - archived
-    default: draft
-
-  published_date:
-    type: date
-    label: Published Date
-
-  author:
-    type: text
-    label: Author
-```
-
-## Using Archetypes in NodeTypes
-
-### Single Archetype
-
-```yaml
-name: Article
-label: Article
-archetypes:
-  - Publishable
-
-element_types:
-  title:
-    type: text
-    required: true
-  content:
-    type: richtext
-    required: true
-```
-
-The `Article` NodeType now has all properties from `Publishable` plus its own.
-
-### Multiple Archetypes
-
-```yaml
-name: BlogPost
-label: Blog Post
-archetypes:
-  - Publishable
-  - Searchable
-  - Taggable
-
-element_types:
-  title:
-    type: text
-    required: true
-  content:
-    type: richtext
-```
-
-## Built-in Archetypes
-
-RaisinDB provides common archetypes out of the box:
-
-### Searchable
-
-Full-text search support:
-
-```yaml
-name: Searchable
-element_types:
-  search_keywords:
-    type: text
-    label: Search Keywords
-    array: true
-  search_boost:
-    type: number
-    label: Search Boost
-    default: 1.0
-```
-
-### Taggable
-
-Tagging support:
-
-```yaml
-name: Taggable
-element_types:
-  tags:
-    type: text
-    label: Tags
-    array: true
-  categories:
-    type: reference
-    label: Categories
-    node_type: Category
-    array: true
-```
-
-### Timestamped
-
-Automatic timestamps (usually built-in):
-
-```yaml
-name: Timestamped
-element_types:
-  created_at:
-    type: date
-    label: Created At
-    include_time: true
-    auto: true
-  updated_at:
-    type: date
-    label: Updated At
-    include_time: true
-    auto: true
-```
-
-### Versioned
-
-Version tracking:
-
-```yaml
-name: Versioned
-element_types:
-  version:
-    type: number
-    label: Version
-    default: 1
-  revision_message:
-    type: text
-    label: Revision Message
-```
-
-## Common Archetype Patterns
-
-### SEO Metadata
-
-```yaml
-name: SEOMetadata
-label: SEO Metadata
-description: Search engine optimization fields
-
-element_types:
-  meta_title:
-    type: text
-    label: Meta Title
-    max_length: 60
-
-  meta_description:
-    type: text
-    label: Meta Description
-    max_length: 160
-
-  og_image:
-    type: reference
-    label: Social Share Image
-    node_type: Image
-
-  canonical_url:
-    type: text
-    label: Canonical URL
-```
-
-### Geographic Location
-
-```yaml
-name: Geolocated
-label: Geographic Location
-
-element_types:
-  latitude:
-    type: number
-    label: Latitude
-    min: -90
-    max: 90
-
-  longitude:
-    type: number
-    label: Longitude
-    min: -180
-    max: 180
-
-  address:
-    type: object
-    label: Address
-    properties:
-      street:
-        type: text
-      city:
-        type: text
-      state:
-        type: text
-      postal_code:
-        type: text
-      country:
-        type: text
-```
-
-### Social Media
-
-```yaml
-name: SocialMedia
-label: Social Media Links
-
-element_types:
-  twitter_handle:
-    type: text
-    label: Twitter Handle
-    pattern: ^@?[A-Za-z0-9_]+$
-
-  linkedin_url:
-    type: text
-    label: LinkedIn URL
-
-  facebook_url:
-    type: text
-    label: Facebook URL
-
-  instagram_handle:
-    type: text
-    label: Instagram Handle
-```
-
-### E-commerce Product
-
-```yaml
-name: Purchasable
-label: Purchasable Item
-
-element_types:
-  price:
-    type: number
-    label: Price
-    required: true
-    min: 0
-    decimal: true
-
-  sale_price:
-    type: number
-    label: Sale Price
-    min: 0
-    decimal: true
-
-  currency:
-    type: select
-    label: Currency
-    options: [USD, EUR, GBP, JPY]
-    default: USD
-
-  in_stock:
-    type: boolean
-    label: In Stock
-    default: true
-
-  inventory_count:
-    type: number
-    label: Inventory Count
-    min: 0
-    default: 0
-```
-
-## Archetype Composition Example
-
-```yaml
-# Article NodeType using multiple archetypes
-name: Article
-label: Article
-archetypes:
-  - Publishable
-  - Searchable
-  - Taggable
-  - SEOMetadata
-
-element_types:
-  title:
-    type: text
-    label: Title
-    required: true
-    max_length: 200
-
-  slug:
-    type: text
-    label: URL Slug
-    required: true
-    unique: true
-    pattern: ^[a-z0-9-]+$
-
-  content:
-    type: richtext
-    label: Content
-    required: true
-
-  featured_image:
-    type: reference
-    label: Featured Image
-    node_type: Image
-```
-
-This results in an Article with:
-- `title`, `slug`, `content`, `featured_image` (own properties)
-- `status`, `published_date`, `author` (from Publishable)
-- `search_keywords`, `search_boost` (from Searchable)
-- `tags`, `categories` (from Taggable)
-- `meta_title`, `meta_description`, etc. (from SEOMetadata)
-
-## Overriding Archetype Properties
-
-You can override properties from archetypes:
-
-```yaml
-name: SpecialArticle
-archetypes:
-  - Publishable
-
-element_types:
-  # Override status from Publishable
-  status:
-    type: select
-    label: Status
-    options: [draft, published]  # Fewer options
-    required: true                # Make required
-
-  title:
-    type: text
-    required: true
-```
-
-## Publishing Archetypes
-
-Like NodeTypes, archetypes must be published:
+The body wraps the definition in `archetype`. `base_node_type` ties it to a NodeType; `fields` use the same `$type` schema as element types; a `SectionField` lists which element types may be placed in that field.
 
 ```bash
-curl -X POST \
-  http://localhost:8080/api/management/myapp/main/archetypes/Publishable/publish \
-  -H "Authorization: Bearer YOUR_TOKEN"
+curl -s -X POST $B/archetypes -H "$H" -H "$J" -d '{
+  "archetype": {
+    "name": "arch:LandingPage",
+    "title": "Landing Page",
+    "base_node_type": "blog:Article",
+    "fields": [
+      { "$type": "TextField", "name": "title", "required": true },
+      { "$type": "TextField", "name": "subtitle" },
+      { "$type": "SectionField", "name": "sections",
+        "allowed_element_types": ["arch:Hero", "arch:TextBlock"] }
+    ],
+    "layout": [
+      { "type": "container", "direction": "Vertical", "children": [
+        { "type": "field", "name": "title" },
+        { "type": "field", "name": "subtitle", "width": "50%" },
+        { "type": "field", "name": "sections" }
+      ] }
+    ]
+  }
+}'
 ```
 
-## Best Practices
+Response (`201 Created`):
 
-### Keep Archetypes Focused
+```json
+{"id":"Jy0EAuM50N9as-hj","name":"arch:LandingPage","title":"Landing Page","base_node_type":"blog:Article",
+ "fields":[{"$type":"TextField","name":"title","required":true},{"$type":"TextField","name":"subtitle"},
+           {"$type":"SectionField","name":"sections","allowed_element_types":["arch:Hero","arch:TextBlock"]}],
+ "layout":[{"type":"container","direction":"Vertical","children":[{"type":"field","name":"title"},
+           {"type":"field","name":"subtitle","width":"50%"},{"type":"field","name":"sections"}]}],
+ "version":1,"created_at":"2026-09-06T18:37:57.126397Z","updated_at":"2026-09-06T18:37:57.126397Z",
+ "published_at":null,"published_by":null,"publishable":null,"previous_version":null}
+```
+
+## 2. Publish
+
+```bash
+curl -s -X POST $B/archetypes/arch:LandingPage/publish -H "$H"
+```
+
+The response is the archetype with `version: 2`, `published_at`, `published_by` and `publishable: true` set. Publishing is not a gate: nodes can reference an unpublished archetype. It marks the archetype as ready for editors and lists it under `/archetypes/published`.
+
+The other verbs are `GET`, `PUT` (same body; `name` must match the path), `DELETE` (`204`), `POST .../unpublish`, and `GET .../resolved`. Writes accept an optional `"commit": {"message": "..."}` next to `archetype`.
+
+## 3. Write a node with the archetype
+
+Set `archetype` on the node. The workspace must allow the base NodeType.
+
+```bash
+R=localhost:8090/api/repository/docs-model/main/head/arch-pages
+curl -s -X POST $R/ -H "$H" -H "$J" -d '{
+  "name": "spring",
+  "node_type": "blog:Article",
+  "archetype": "arch:LandingPage",
+  "properties": {
+    "title": "Spring sale",
+    "subtitle": "Save big",
+    "sections": [
+      { "element_type": "arch:Hero", "uuid": "hero-1", "heading": "Welcome", "align": "center" },
+      { "element_type": "arch:TextBlock", "body": "<p>Hi</p>" }
+    ]
+  }
+}'
+```
+
+```json
+{"id":"sG6ZNYAkwFm4LlqpZFUJj","name":"spring","path":"/spring","node_type":"blog:Article","archetype":"arch:LandingPage",
+ "properties":{"title":"Spring sale","subtitle":"Save big",
+   "sections":[{"element_type":"arch:Hero","uuid":"hero-1","heading":"Welcome","align":"center"},
+               {"element_type":"arch:TextBlock","body":"<p>Hi</p>"}],
+   "$mixins":[],"$supertypes":["blog:Article"]},
+ "children":[],"order_key":"","parent":"/","version":1,"workspace":"arch-pages", ...}
+```
+
+The same works from SQL; `archetype` is a column:
+
+```sql
+INSERT INTO 'arch-pages' (path, node_type, archetype, name, properties)
+VALUES ('/summer', 'blog:Article', 'arch:LandingPage', 'summer',
+        '{"title":"Summer","sections":[{"element_type":"arch:Hero","heading":"Sun"}]}'::jsonb);
+
+SELECT path, archetype, properties->>'sections' AS sections FROM 'arch-pages';
+```
+
+```json
+{"columns":["path","archetype","sections"],
+ "rows":[{"path":"/summer","archetype":"arch:LandingPage","sections":"[{\"element_type\":\"arch:Hero\",\"heading\":\"Sun\"}]"}]}
+```
+
+## 4. What gets rejected
+
+| Situation | Error |
+|---|---|
+| `node_type` differs from `base_node_type` | `Archetype 'arch:LandingPage' is only valid for node type 'blog:Article', but node '' uses 'blog:Author'` |
+| Element type not in the section's list | `Element type 'blog:Nope' is not allowed in field 'archetype 'arch:LandingPage'.sections'` |
+| Required field missing in an element | `Missing required field 'heading' at archetype 'arch:LandingPage'.sections[0]` |
+| Extra key in a strict element type | `Undefined property 'extra' in strict element type 'arch:TextBlock' at path '...sections[0]'` |
+| Archetype does not exist | `Failed to resolve archetype 'arch:Missing' for node '': Not found: Archetype not found: arch:Missing` |
+
+These come back as `{"code":"VALIDATION_FAILED","message":"..."}` over HTTP and as `Validation failed: ...` from SQL. NodeType rules (required properties, `unique`, NodeType `strict`) still apply on top.
+
+:::note About `strict: true` on an archetype
+A strict archetype rejects any node property not named in its resolved fields. The server stamps `$mixins` and `$supertypes` on every node before this check and does not exempt them, so a strict archetype currently rejects every REST write with `Undefined property '$mixins' in strict archetype ...`. Prefer `strict` on element types until this is fixed.
+:::
+
+## 5. Extend an archetype
+
+A child archetype inherits fields, layout and `strict` from its parent, adds fields, and may redefine a field by name:
+
+```bash
+curl -s -X POST $B/archetypes -H "$H" -H "$J" -d '{
+  "archetype": {
+    "name": "arch:CampaignPage",
+    "extends": "arch:LandingPage",
+    "fields": [
+      { "$type": "DateField", "name": "ends_on", "config": { "date_mode": "Date" } },
+      { "$type": "TextField", "name": "subtitle", "required": true }
+    ]
+  }
+}'
+curl -s $B/archetypes/arch:CampaignPage/resolved -H "$H"
+```
+
+```json
+{"archetype":{"name":"arch:CampaignPage","extends":"arch:LandingPage", ...},
+ "resolved_fields":[{"$type":"DateField","name":"ends_on","config":{"date_mode":"Date"}},
+                    {"$type":"SectionField","name":"sections","allowed_element_types":["arch:Hero","arch:TextBlock"]},
+                    {"$type":"TextField","name":"subtitle","required":true},
+                    {"$type":"TextField","name":"title","required":true}],
+ "resolved_layout":[{"type":"container","direction":"Vertical","children":[...]}],
+ "inheritance_chain":["arch:CampaignPage","arch:LandingPage"],
+ "resolved_strict":false}
+```
+
+`base_node_type` is not inherited. Set it on the child too if you want the NodeType check to apply.
+
+## 6. Switch a node's archetype
+
+Update the node with a different `archetype`. The properties stay; the next write is validated against the new archetype's resolved fields. This is how one stored article can be edited as a landing page in one context and a campaign page in another.
+
+## Other ways to define archetypes
+
+**Package YAML.** One file per archetype under `package/archetypes/`, installed with `raisindb package create`, `upload` and `install`:
 
 ```yaml
-# Good: Focused on one concern
-name: Commentable
-element_types:
-  comments_enabled:
-    type: boolean
-    default: true
-  comments_count:
-    type: number
-    default: 0
-
-# Bad: Too many unrelated concerns
-name: Everything
-element_types:
-  comments_enabled: ...
-  price: ...
-  location: ...
-  social_links: ...
+name: events:LandingPage
+title: Landing Page
+base_node_type: events:Page
+fields:
+  - $type: TextField
+    name: title
+    title: Title
+    required: true
+    translatable: true
+  - $type: SectionField
+    name: content
+    title: Content
+    allowed_element_types:
+      - events:HeroBlock
+      - events:TextBlock
+publishable: true
 ```
 
-### Use Descriptive Names
+**JavaScript client.**
 
-- `Publishable` not `Status`
-- `Geolocated` not `Location`
-- `SEOMetadata` not `Meta`
+```javascript
+import { RaisinHttpClient } from '@raisindb/client';
 
-### Version Archetypes Carefully
+const client = new RaisinHttpClient('http://localhost:8090');
+await client.authenticate({ username: 'admin', password: 'AdminPassword123!' });
+const db = client.database('docs-model');
 
-When updating published archetypes:
-1. Consider impact on existing NodeTypes
-2. Add new properties with defaults
-3. Avoid removing properties
-4. Use new archetype version if breaking changes needed
+await db.archetypes().create('arch:Post', {
+  base_node_type: 'blog:Article',
+  fields: [{ $type: 'TextField', name: 'title', required: true }],
+});
+await db.archetypes().publish('arch:Post', { message: 'publish post' });
+const resolved = await db.archetypes().getResolved('arch:Post');
+```
 
-## Next Steps
+**SQL.** `CREATE ARCHETYPE 'arch:Post' BASE_NODE_TYPE 'blog:Article' TITLE 'Post' PUBLISHABLE` creates a published archetype record and `DROP ARCHETYPE 'arch:Post'` removes it. A `FIELDS (...)` clause is parsed but not stored, so add fields over HTTP, the client or YAML.
 
-- [Defining Element Types](./defining-elements.md) for custom property types
-- [Creating NodeTypes](./creating-nodetypes.md) using archetypes
+## Next steps
+
+- [Defining Element Types](./defining-elements.md) for the blocks an archetype allows
+- [Creating NodeTypes](./creating-nodetypes.md) for the base NodeType
+- [Archetypes](/docs/concepts/data-model/archetypes) for the concept and the resolved view

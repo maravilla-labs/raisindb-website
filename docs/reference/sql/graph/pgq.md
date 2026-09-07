@@ -4,565 +4,396 @@ sidebar_position: 1
 
 # Graph Queries (GRAPH_TABLE)
 
-RaisinDB supports SQL/PGQ (Property Graph Queries), part of the SQL:2023 standard, for graph pattern matching within SQL queries.
+`GRAPH_TABLE` is RaisinDB's implementation of SQL/PGQ (SQL:2023 property graph
+queries). It matches a pattern against the relations of a repository and
+returns the matches as a table that the rest of the query can filter, sort,
+group and join.
 
-## Overview
-
-SQL/PGQ extends SQL with graph pattern matching capabilities using the GRAPH_TABLE syntax. It allows you to query graph structures using SQL while leveraging familiar SQL constructs.
-
-## GRAPH_TABLE Syntax
-
-The GRAPH_TABLE function creates a table from graph pattern matching.
-
-### Basic Syntax
+## Syntax
 
 ```sql
 SELECT *
-FROM GRAPH_TABLE (
-    MATCH pattern
-    COLUMNS ( column_list )
-)
+FROM GRAPH_TABLE(
+    [graph_name]
+    MATCH pattern [, pattern ...]
+    [WHERE condition]
+    COLUMNS ( expression [AS alias] [, ...] )
+) [AS alias]
 ```
 
-## Pattern Matching
+Write `GRAPH_TABLE(` with no space before the parenthesis. `graph_name` is
+optional and is ignored for scoping; relations of every workspace on the
+current branch are searched. Give the expression an alias when the outer query
+refers to its columns (`... ) AS g WHERE g.hops > 1`).
 
-### Node Patterns
-
-Match nodes in the graph:
+## Node patterns
 
 ```sql
--- Match all nodes
-SELECT *
-FROM GRAPH_TABLE (
+-- every node that has at least one relation
+SELECT * FROM GRAPH_TABLE(
     MATCH (n)
-    COLUMNS (n.title, n.status)
+    COLUMNS (n.path, n.node_type)
 );
 
--- Match nodes with label (node type)
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (n:Page)
-    COLUMNS (n.title, n.view_count)
+-- nodes of one type
+SELECT * FROM GRAPH_TABLE(
+    MATCH (n:Article)
+    COLUMNS (n.title, n.path)
 );
 
--- Filter in the MATCH clause's own WHERE
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (n:Page)
+-- with a filter
+SELECT * FROM GRAPH_TABLE(
+    MATCH (n:Article)
     WHERE n.status = 'published'
     COLUMNS (n.title, n.created_at)
 );
 ```
 
-:::warning A label is the node type's LOCAL name — and it matches every namespace
-Node types are namespaced — `news:Article`, `raisin:Folder` — but a pattern
-label carries **only the part after the colon**:
+A single-node pattern is resolved from the relation index, so it returns only
+nodes that are the source or target of at least one relation. Use an ordinary
+`SELECT` to list every node of a type.
+
+### Labels
+
+Node types are namespaced (`news:Article`, `raisin:Folder`). A label is the
+part after the colon, matched case-insensitively:
 
 ```sql
--- node_type is 'news:Article'
-MATCH (n:Article)        -- ✅
-MATCH (n:news:Article)   -- ❌ parse error: the label reads as `news`,
-                         --    and the second colon is unexpected
+MATCH (n:Article)          -- matches news:Article and studio:Article
+MATCH (n:`news:Article`)   -- backticks pin the full type
+MATCH (n:news:Article)     -- parse error
 ```
 
-Matching is case-insensitive, and a label matches the node type when it equals
-it **or** when the type ends with `:label`. That suffix rule is what lets you
-name a type without hardcoding its package prefix.
+`(n:Article|Page)` matches either label. Filtering on `n.node_type` in the
+`WHERE` clause is another way to pin a namespace.
 
-**If two packages share a local type name** — say `news:Article` and
-`studio:Article` — a bare `(n:Article)` matches **both**. To pin one, quote the
-full type: a backtick-quoted label is matched exactly.
+### Where filters go
 
-```sql
-MATCH (n:Article)              -- both namespaces
-MATCH (n:`news:Article`)       -- ✅ exactly one
-MATCH (n:news:Article)         -- ❌ parse error — quote it
-```
+Predicates belong in the `WHERE` clause of the `GRAPH_TABLE`, between `MATCH`
+and `COLUMNS`. A `WHERE` written inside a node or edge pattern
+(`(n:Page WHERE …)`) is a parse error; the message points at the supported
+form.
 
-Filtering on the column works too, and reads well when the rest of the query
-already has a `WHERE`:
+## Relationship patterns
 
 ```sql
-SELECT * FROM GRAPH_TABLE (
-    MATCH (n:Article)-[:CITES]->(m:Article)
-    WHERE n.node_type = 'news:Article'
-    COLUMNS (n.title, m.title)
-);
-```
-:::
-
-:::note `MATCH (n)` sees only connected nodes
-A single-node pattern is resolved from the **relation index**, so it returns
-nodes that appear as the source or target of at least one relationship. A node
-with no relationships is not returned — a graph pattern describes the graph, not
-the whole workspace. Use an ordinary `SELECT` when you want every node.
-:::
-
-:::danger Inline `WHERE` is rejected
-A `WHERE` written **inside** a node or edge pattern — `(n:Page WHERE …)` or
-`-[r:LINKS_TO WHERE …]->` — is a parse error, deliberately. It once parsed into
-a field nothing read, so the predicate silently vanished and the query returned
-**unfiltered** rows. Failing loudly is the fix.
-
-Put the predicate in the `MATCH` clause's own `WHERE`, as shown above.
-:::
-
-### Multi-Label Node Patterns
-
-Match nodes with any of several labels:
-
-```sql
--- Match nodes that are User OR Admin
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (n:User|Admin)
-    COLUMNS (n.name, n.email)
+-- directed, typed
+SELECT * FROM GRAPH_TABLE(
+    MATCH (a:Person)-[:follows]->(b:Person)
+    COLUMNS (a.name AS follower, b.name AS followed)
 );
 
--- Multi-label with inline filter
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (n:Page|Article WHERE n.status = 'published')
-    COLUMNS (n.title, n.__node_type)
+-- reverse direction
+SELECT * FROM GRAPH_TABLE(
+    MATCH (a:Person)<-[:follows]-(b:Person)
+    WHERE a.path = '/alice'
+    COLUMNS (b.name AS follower)
+);
+
+-- bound edge variable
+SELECT * FROM GRAPH_TABLE(
+    MATCH (a)-[r:follows]->(b)
+    WHERE r.weight > 1
+    COLUMNS (a.name, r.weight, b.name)
 );
 ```
 
-### Relationship Patterns
+Relation types match exactly, including case (`[:follows]` does not match an
+edge stored as `FOLLOWS`). A type containing a hyphen must be backticked:
+``[:`tagged-with`]``. `[:follows|likes]` matches either type.
 
-Match relationships between nodes:
+An edge pattern without an arrow, `(a)-[:follows]-(b)`, is accepted but
+currently matches the stored direction only, the same as `(a)-[:follows]->(b)`.
+Write two patterns when you need both directions.
 
-```sql
--- Simple relationship
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a:Page)-[:LINKS_TO]->(b:Page)
-    COLUMNS (a.title AS source, b.title AS target)
-);
+### Edge fields
 
--- Relationship with properties
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a)-[r:LINKS_TO WHERE r.weight > 0.5]->(b)
-    COLUMNS (a.title, r.weight, b.title)
-);
+An edge variable exposes two fields:
 
--- Undirected relationship
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a)-[:RELATED_TO]-(b)
-    COLUMNS (a.title, b.title)
-);
-```
+| Field | Type | Description |
+|---|---|---|
+| `r.relation_type` | TEXT | The type given in `RELATE … TYPE` |
+| `r.weight` | DOUBLE | The `WEIGHT`, or `NULL` when none was set |
 
-### Path Patterns
+Relations carry no other properties; to weight edges by a domain value, write
+it into `weight` when you create them.
 
-Match paths through the graph:
+## Path patterns and quantifiers
 
 ```sql
--- Fixed length path
-SELECT *
-FROM GRAPH_TABLE (
+-- fixed length
+SELECT * FROM GRAPH_TABLE(
     MATCH (a:Page)-[:LINKS_TO]->(b)-[:LINKS_TO]->(c)
     COLUMNS (a.title AS start, c.title AS end)
 );
 
--- Variable length path
-SELECT *
-FROM GRAPH_TABLE (
+-- variable length
+SELECT * FROM GRAPH_TABLE(
     MATCH (a:Page)-[:LINKS_TO]->{1,3}(b:Page)
     COLUMNS (a.title, b.title)
 );
 ```
 
-### Path Quantifiers
-
-Control the length of variable-length paths. The canonical form is the brace
-form, written **after** the arrow:
+The quantifier follows the arrow:
 
 | Quantifier | Hops |
 |------------|------|
 | `->{2}` | exactly 2 |
-| `->{1,3}` | 1 to 3 inclusive |
-| `->{2,}` | 2 or more (unbounded) |
-| `->*` | `{0,}` |
-| `->+` | `{1,}` |
-| `->?` | `{0,1}` |
+| `->{1,3}` | 1 to 3 |
+| `->{2,}` | 2 or more |
+| `->*` | 0 or more |
+| `->+` | 1 or more |
+| `->?` | 0 or 1 |
 
-```sql
--- Exactly 2 hops
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a)-[:LINKS_TO]->{2}(b)
-    COLUMNS (a.title AS start, b.title AS end)
-);
+An unbounded quantifier (`*`, `+`, `{m,}`) must be inside the scope of a
+[path selector](#path-selectors) or a [path restrictor](#path-restrictors);
+`MATCH (a)-[:t]->*(b)` on its own is a parse error, while
+`MATCH ANY SHORTEST p = (a)-[:t]->*(b)` and `MATCH TRAIL (a)-[:t]->*(b)` are
+accepted. Even then traversal stops at 10 hops. Bounded quantifiers need
+neither.
 
--- Between 1 and 3 hops
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a)-[:LINKS_TO]->{1,3}(b)
-    COLUMNS (a.title, b.title)
-);
+Every matching path is a row. A node reachable by two routes appears twice;
+use `SELECT DISTINCT` in the outer query to collapse them.
 
--- 2 or more hops — unbounded, so it needs a selector or a restrictor
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH TRAIL (a)-[:LINKS_TO]->{2,}(b)
-    COLUMNS (a.title, b.title)
-);
-```
+### Cypher-style quantifier
 
-:::warning Rule Q-SCOPE
-An **unbounded** quantifier (`*`, `+`, `{m,}`) must sit inside the scope of a
-[path selector](#path-selectors) or a [path restrictor](#path-restrictors).
+The older spelling inside the brackets still parses and is mapped as follows:
 
-`MATCH (a)-[:LINKS_TO]->*(b)` is a parse error. `MATCH ANY SHORTEST p = (a)-[:LINKS_TO]->*(b)`
-and `MATCH TRAIL (a)-[:LINKS_TO]->*(b)` are both fine. Bounded quantifiers such
-as `->{1,3}` need neither.
-
-Even under a selector or restrictor, an unbounded quantifier is capped at
-**10 hops**.
-:::
-
-#### Deprecated: the Cypher-style quantifier
-
-The older form, written **inside** the brackets, is still accepted but emits a
-deprecation warning that also shows up in `EXPLAIN`:
-
-| Deprecated | Canonical |
+| Older form | Equivalent |
 |------------|-----------|
 | `-[:t*2]->` | `-[:t]->{2}` |
 | `-[:t*1..3]->` | `-[:t]->{1,3}` |
 | `-[:t*2..]->` | `-[:t]->{2,}` |
 | `-[:t*]->` | `-[:t]->{1,}` |
 
-The two forms sit in different syntactic slots, so they are never ambiguous —
-but they are **not interchangeable**:
+Note that `*` inside the brackets means one or more, while `->*` means zero
+or more. The bracket form does not need a selector or restrictor and is capped
+at 10 hops.
 
-- legacy `*` means `{1,}`, while standard `*` means `{0,}`;
-- the legacy form is exempt from rule Q-SCOPE (it predates the rule) and is
-  capped at 10 hops instead.
+## Path variables
 
-Cypher is a separate dialect where `*1..3` is native and not deprecated; this
-note applies to SQL/PGQ `GRAPH_TABLE` only.
-
-## Path Variables
-
-Binding a path to a variable lets you address it with the
-[path accessors](#path-accessors):
+Bind the path to a variable to read it with the path accessors:
 
 ```sql
 SELECT hops, stops
-FROM GRAPH_TABLE (
-    MATCH p = (a:Page)-[:LINKS_TO]->{1,3}(b:Page)
-    WHERE a.title = 'Home'
+FROM GRAPH_TABLE(
+    MATCH p = (a:Person)-[:follows]->{1,3}(b:Person)
+    WHERE a.path = '/dave'
     COLUMNS (path_length(p) AS hops, nodes(p) AS stops)
 );
 ```
 
-The variable may be written before the selector (`p = ANY SHORTEST (...)`) or
-after the restrictor (`ANY SHORTEST TRAIL p = (...)`); both spellings are
-accepted. Selector before restrictor is fixed — the other order is a parse
-error that names the fix.
-
-:::note There is no PATH column type
-A path variable is not selectable on its own — no transport would know how to
-encode a path value. `COLUMNS (p)` is rejected with an error that names the
-accessors and shows a worked replacement, rather than returning something
-lossy. Select accessor results instead.
-:::
-
-### Path Selectors
-
-A selector limits how many matching paths are returned per pair of endpoints:
-
-| Selector | Meaning |
-|----------|---------|
-| *(none)* | Every path matching the pattern |
-| `ANY` | One arbitrary path per endpoint pair (**not** minimum-hop) |
-| `ANY SHORTEST` | One minimum-hop path per endpoint pair |
-| `ALL SHORTEST` | Every minimum-hop path per endpoint pair |
-| `ANY CHEAPEST` | One minimum-cost path — **RaisinDB extension**, requires `COST` |
-
-```sql
--- Minimum-hop route between two pages
-SELECT hops
-FROM GRAPH_TABLE (
-    MATCH ANY SHORTEST p = (a:Page)-[:LINKS_TO]->{1,6}(b:Page)
-    WHERE a.title = 'Home' AND b.title = 'Pricing'
-    COLUMNS (path_length(p) AS hops)
-);
-
--- Cheapest route by the weight carried on the edge (RaisinDB extension)
-SELECT hops
-FROM GRAPH_TABLE (
-    MATCH ANY CHEAPEST p = (a:Stop)-[r:ROUTE COST r.weight]->{1,8}(b:Stop)
-    COLUMNS (path_length(p) AS hops)
-);
+```json
+{"columns":["hops","stops"],
+ "rows":[{"hops":1,"stops":[{"id":"f3ea…","workspace":"social","node_type":"social:Person"},
+                            {"id":"6637…","workspace":"social","node_type":"social:Person"}]},
+         {"hops":2,"stops":[…]}]}
 ```
 
-`COST` needs a **bound edge variable**, and the expression must qualify through
-it. These are each rejected by name:
+The variable can be written before the selector (`p = ANY SHORTEST (...)`) or
+after the restrictor (`ANY SHORTEST TRAIL p = (...)`). A path variable is not
+selectable on its own; `COLUMNS (p)` is rejected with a message naming the
+accessors.
 
-- `-[:ROUTE COST r.weight]->` — anonymous edge, nothing to bind to;
-- `-[r:ROUTE COST s.weight]->` — references a different variable;
-- `-[r:ROUTE COST r.duration_min]->` — a RaisinDB relation has **no arbitrary
-  property map**. The only fields are `target`, `workspace`, `target_node_type`,
-  `relation_type` and `weight`, so an edge cost is `COST r.weight`;
-- `COST 0` — a literal cost must be a positive finite number.
-
-To weight edges by something domain-specific, write that value into the
-relation's `weight` when you create it.
-
-`ANY CHEAPEST` and `COST` are all-or-nothing: either without the other is a
-parse error. `SHORTEST k`, `SHORTEST k GROUP` and `ANY k` are not implemented
-and parse to a named error rather than being silently accepted.
-
-### Path Restrictors
-
-A restrictor controls whether a path may revisit nodes or edges:
-
-| Restrictor | Meaning |
-|------------|---------|
-| `WALK` | No distinctness requirement; nodes and edges may repeat |
-| `TRAIL` | Edge-distinct — no edge traversed twice |
-| `ACYCLIC` | Node-distinct — no node visited twice |
-
-**The default is `ACYCLIC`.** Variable-length traversal has always skipped
-already-visited nodes, so this preserves existing behaviour — request `WALK`
-explicitly if you want repeats. `SIMPLE` is not implemented.
-
-### Path Accessors
-
-These are the only way to read a path variable:
+### Path accessors
 
 | Accessor | Returns |
 |----------|---------|
-| `path_length(p)` | Hop count |
-| `nodes(p)` | The path's nodes, in order |
-| `edges(p)` | The path's edges, in order |
-| `path_first(p)` | First node |
-| `path_last(p)` | Last node |
-| `element_id(p)` | Stable identity string for the whole path |
-| `is_trail(p)` | Whether the path is edge-distinct |
-| `is_acyclic(p)` | Whether the path is node-distinct |
+| `path_length(p)` | hop count |
+| `nodes(p)` | array of `{id, workspace, node_type}` in order |
+| `edges(p)` | array of `{source_id, source_workspace, target_id, target_workspace, relation_type, weight}` |
+| `path_first(p)` | the first node |
+| `path_last(p)` | the last node |
+| `element_id(p)` | a stable string identifying the whole path |
+| `is_trail(p)` | whether no edge repeats |
+| `is_acyclic(p)` | whether no node repeats |
 
-## Properties in GRAPH_TABLE
+`element_id` takes a path variable only; it is not defined for a plain edge
+variable.
 
-Within GRAPH_TABLE COLUMNS, node properties are accessed **by name directly** (e.g., `n.title`, `n.status`). The GRAPH_TABLE abstraction automatically maps these to the underlying `properties` JSONB column. This is different from regular SQL queries where you must use `properties->>'title'`.
+### Path selectors
+
+A selector limits how many paths are returned per pair of endpoints:
+
+| Selector | Meaning |
+|----------|---------|
+| *(none)* | every matching path |
+| `ANY` | one arbitrary path per endpoint pair |
+| `ANY SHORTEST` | one minimum-hop path per endpoint pair |
+| `ALL SHORTEST` | every minimum-hop path per endpoint pair |
+| `ANY CHEAPEST` | one minimum-cost path (RaisinDB extension, requires `COST`) |
 
 ```sql
--- GRAPH_TABLE: access properties by name
-SELECT * FROM GRAPH_TABLE (
-    MATCH (n:Page)
-    COLUMNS (n.title, n.status)  -- direct property access
+-- fewest hops from dave to alice
+SELECT hops FROM GRAPH_TABLE(
+    MATCH ANY SHORTEST p = (a:Person)-[:follows]->{1,6}(b:Person)
+    WHERE a.path = '/dave' AND b.path = '/alice'
+    COLUMNS (path_length(p) AS hops)
 );
+-- hops: 1
 
--- Regular SQL: use JSONB operators
-SELECT properties->>'title', properties->>'status' FROM default;
-```
-
-## System Fields
-
-Nodes in the graph have system fields available in COLUMNS:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | UUID | Node UUID (same as `__id`) |
-| `workspace` | TEXT | Workspace the node belongs to |
-| `node_type` | TEXT | Node type name |
-| `path` | PATH | Hierarchical path |
-| `name` | TEXT | Node name (path segment) |
-| `parent_id` | UUID | Parent node ID |
-| `created_at` | TIMESTAMPTZ | Creation timestamp |
-| `updated_at` | TIMESTAMPTZ | Last modification timestamp |
-
-All other fields on nodes are stored as JSONB properties and accessed by name.
-
-```sql
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (n:Page)
-    COLUMNS (
-        n.id,
-        n.workspace,
-        n.node_type,
-        n.path,
-        n.name,
-        n.title,         -- JSONB property
-        n.view_count      -- JSONB property
-    )
+-- cheapest by edge weight
+SELECT hops FROM GRAPH_TABLE(
+    MATCH ANY CHEAPEST p = (a:Stop)-[r:route COST r.weight]->{1,8}(b:Stop)
+    COLUMNS (path_length(p) AS hops)
 );
 ```
 
-## WHERE Clause
+`COST` needs a bound edge variable and must be `r.weight` (or a positive
+literal); `COST` on an anonymous edge, on another variable, or naming a field
+other than `weight` is a parse error. `ANY CHEAPEST` and `COST` go together:
+either without the other is an error. Every edge on a cheapest path must carry
+a positive weight; an unweighted edge on the way makes the query fail with a
+message naming the edge. `SHORTEST k`, `SHORTEST k GROUP` and `ANY k` are not
+implemented.
 
-Filter graph patterns:
+### Path restrictors
+
+| Restrictor | Meaning |
+|------------|---------|
+| `WALK` | nodes and edges may repeat |
+| `TRAIL` | no edge is traversed twice |
+| `ACYCLIC` | no node is visited twice (default) |
+
+Write the selector before the restrictor: `ANY SHORTEST TRAIL p = (...)`.
+`SIMPLE` is not implemented.
+
+## Properties and system fields
+
+Inside `WHERE` and `COLUMNS`, a node variable exposes its system fields and any
+property by name; `n.title` and `n.properties->>'title'` are equivalent.
+
+| Field | Description |
+|-------|-------------|
+| `id` | node id |
+| `path` | hierarchical path |
+| `name` | last path segment |
+| `node_type` | full node type, e.g. `social:Person` |
+| `workspace` | workspace the node lives in |
+| `parent_id` | parent node id |
+| `created_at`, `updated_at` | timestamps |
 
 ```sql
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a:Page)-[:LINKS_TO]->(b:Page)
-    WHERE a.status = 'published' AND b.view_count > 100
-    COLUMNS (a.title, b.title, b.view_count)
+SELECT * FROM GRAPH_TABLE(
+    MATCH (n:Article)
+    COLUMNS (n.id, n.workspace, n.node_type, n.path, n.name, n.title)
 );
 ```
 
-## COLUMNS Clause
+Without an alias a column is named `variable_field` (`n.title` becomes
+`n_title`).
 
-Specify which properties to return:
+## Expressions in COLUMNS and WHERE
+
+Comparisons, `AND`/`OR`/`NOT`, arithmetic on numeric fields and the graph
+algorithm functions are supported:
 
 ```sql
--- Select node properties
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (n:Page)
-    COLUMNS (
-        n.title AS page_title,
-        n.status,
-        n.view_count
-    )
-);
-
--- Select relationship properties
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a)-[r:LINKS_TO]->(b)
-    COLUMNS (
-        a.title AS source,
-        r.weight AS link_weight,
-        r.created_at AS linked_at,
-        b.title AS target
-    )
-);
-
--- Select with expressions
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (n:Page)
-    COLUMNS (
-        n.title,
-        n.view_count * 2 AS doubled_views,
-        UPPER(n.status) AS status_upper
-    )
+SELECT * FROM GRAPH_TABLE(
+    MATCH (a)-[r:follows]->(b)
+    WHERE r.weight > 1
+    COLUMNS (a.name, r.weight * 2 AS doubled)
 );
 ```
 
-## Aggregate Functions in GRAPH_TABLE
+General SQL functions such as `UPPER()` or `PARENT()` are not available inside
+`GRAPH_TABLE`; apply them in the outer query instead.
 
-The following aggregate functions are available inside GRAPH_TABLE COLUMNS:
-
-- `COUNT(expression)` - Count matching elements
-- `COLLECT(expression)` - Collect values into an array
+`COUNT(x)` and `COLLECT(x)` are accepted inside `COLUMNS`, but they aggregate
+over the entire match set (there is no per-node grouping inside the pattern).
+For per-node counts, aggregate in the outer query:
 
 ```sql
--- Count relationships per node
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (a:Page)-[:LINKS_TO]->(b:Page)
-    COLUMNS (
-        a.title,
-        COUNT(b) AS link_count,
-        COLLECT(b.title) AS linked_pages
-    )
-);
+SELECT followed, COUNT(*) AS followers
+FROM GRAPH_TABLE(
+    MATCH (a:Person)-[:follows]->(b:Person)
+    COLUMNS (b.name AS followed)
+) AS g
+GROUP BY followed
+ORDER BY followers DESC;
 ```
 
 ## Combining with SQL
 
-Graph patterns integrate seamlessly with SQL:
-
 ```sql
--- Join with regular tables
-SELECT
-    g.page_title,
-    g.linked_page,
-    c.category_name
-FROM GRAPH_TABLE (
-    MATCH (a:Page)-[:LINKS_TO]->(b:Page)
-    COLUMNS (a.title AS page_title, b.title AS linked_page, b.category_id)
-) g
-JOIN categories c ON g.category_id = c.__id;
+-- filter and sort the matches
+SELECT * FROM GRAPH_TABLE(
+    MATCH (a:Person)-[:follows]->(b:Person)
+    COLUMNS (a.name AS follower, b.name AS followed)
+) AS g
+ORDER BY follower
+LIMIT 20;
 
--- Filter results with WHERE
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (n:Page)
-    COLUMNS (n.title, n.view_count)
-) AS pages
-WHERE view_count > 1000
-ORDER BY view_count DESC;
+-- join back to a workspace
+SELECT g.follower, s.properties->>'city' AS city
+FROM GRAPH_TABLE(
+    MATCH (a:Person)-[:follows]->(b:Person)
+    COLUMNS (a.name AS follower, a.id AS follower_id)
+) AS g
+JOIN 'social' s ON s.id = g.follower_id;
 
--- Aggregate results
-SELECT
-    status,
-    COUNT(*) AS page_count,
-    AVG(view_count) AS avg_views
-FROM GRAPH_TABLE (
-    MATCH (n:Page)
-    COLUMNS (n.status, n.view_count)
-) AS pages
-GROUP BY status;
+-- collapse duplicate paths
+SELECT DISTINCT reached
+FROM GRAPH_TABLE(
+    MATCH (a:Person)-[:follows]->{1,3}(b:Person)
+    WHERE a.path = '/dave'
+    COLUMNS (b.name AS reached)
+) AS g;
 ```
 
-## Multiple Patterns
+Time-travel predicates (`__revision`) apply to workspace tables, not to
+`GRAPH_TABLE`; the pattern is always matched against the current state of the
+branch.
 
-Match multiple patterns in one query:
+## Multiple patterns
 
 ```sql
--- Two separate patterns
-SELECT *
-FROM GRAPH_TABLE (
+-- two patterns sharing a variable
+SELECT * FROM GRAPH_TABLE(
     MATCH
         (a:Page)-[:LINKS_TO]->(b:Page),
         (b)-[:LINKS_TO]->(c:Page)
     COLUMNS (a.title, b.title, c.title)
 );
 
--- Chain patterns
-SELECT *
-FROM GRAPH_TABLE (
+-- the same as one chain
+SELECT * FROM GRAPH_TABLE(
     MATCH (a:Page)-[:LINKS_TO]->(b:Page)-[:LINKS_TO]->(c:Page)
     WHERE a.id <> c.id
     COLUMNS (a.title AS start, b.title AS middle, c.title AS end)
 );
 ```
 
-## Complete Examples
+## Examples
 
-### Find Related Pages
+### Pages linked from a page
 
 ```sql
--- Pages linked from a specific page
-SELECT
-    linked_title,
-    view_count
-FROM GRAPH_TABLE (
-    MATCH (start:Page WHERE start.title = 'Home')-[:LINKS_TO]->(linked:Page)
-    COLUMNS (linked.title AS linked_title, linked.view_count AS view_count)
+SELECT linked_title
+FROM GRAPH_TABLE(
+    MATCH (start:Page)-[:LINKS_TO]->(linked:Page)
+    WHERE start.title = 'Home'
+    COLUMNS (linked.title AS linked_title)
 ) AS results
-ORDER BY view_count DESC;
+ORDER BY linked_title;
 ```
 
-### Two-Hop Connections
+### Pages reachable in exactly two hops
 
 ```sql
--- Pages reachable in 2 hops
 SELECT DISTINCT end_title
-FROM GRAPH_TABLE (
-    MATCH (start:Page WHERE start.title = 'Home')-[:LINKS_TO*2]->(end:Page)
-    WHERE start.id <> end.id
+FROM GRAPH_TABLE(
+    MATCH (start:Page)-[:LINKS_TO]->{2}(end:Page)
+    WHERE start.title = 'Home' AND start.id <> end.id
     COLUMNS (end.title AS end_title)
 ) AS results;
 ```
 
-### Link Count Analysis
+### Incoming link count
 
 ```sql
--- Count incoming links per page
-SELECT
-    page_title,
-    COUNT(*) AS incoming_links
-FROM GRAPH_TABLE (
+SELECT page_title, COUNT(*) AS incoming_links
+FROM GRAPH_TABLE(
     MATCH (source:Page)-[:LINKS_TO]->(target:Page)
     COLUMNS (target.title AS page_title)
 ) AS links
@@ -571,99 +402,26 @@ ORDER BY incoming_links DESC
 LIMIT 10;
 ```
 
-### Path Analysis
+### Related through a shared tag
 
 ```sql
--- Analyze paths between pages
-SELECT
-    start_page,
-    end_page,
-    COUNT(*) AS path_count
-FROM GRAPH_TABLE (
-    MATCH (a:Page)-[:LINKS_TO*1..3]->(b:Page)
-    COLUMNS (a.title AS start_page, b.title AS end_page)
-) AS paths
-GROUP BY start_page, end_page
-ORDER BY path_count DESC;
-```
-
-### Category Network
-
-```sql
--- Links between different categories
-SELECT
-    from_cat,
-    to_cat,
-    COUNT(*) AS link_count
-FROM GRAPH_TABLE (
-    MATCH (a:Page)-[:LINKS_TO]->(b:Page)
-    WHERE a.category <> b.category
-    COLUMNS (a.category AS from_cat, b.category AS to_cat)
-) AS cross_links
-GROUP BY from_cat, to_cat
-ORDER BY link_count DESC;
-```
-
-### Hub Detection
-
-```sql
--- Pages with many outgoing links
-SELECT
-    page_title,
-    COUNT(*) AS outgoing_links
-FROM GRAPH_TABLE (
-    MATCH (hub:Page)-[:LINKS_TO]->(target:Page)
-    COLUMNS (hub.title AS page_title)
-) AS hubs
-GROUP BY page_title
-HAVING COUNT(*) >= 10
-ORDER BY outgoing_links DESC;
-```
-
-### Influence Metric
-
-```sql
--- Calculate influence (pages reached in 3 hops)
-SELECT
-    source_page,
-    COUNT(DISTINCT target_page) AS influence_count
-FROM GRAPH_TABLE (
-    MATCH (source:Page)-[:LINKS_TO*1..3]->(target:Page)
-    COLUMNS (source.title AS source_page, target.title AS target_page)
-) AS influence
-GROUP BY source_page
-ORDER BY influence_count DESC
-LIMIT 20;
-```
-
-### Multi-Label Query
-
-```sql
--- Find users or admins connected to projects
-SELECT *
-FROM GRAPH_TABLE (
-    MATCH (person:User|Admin)-[:MEMBER_OF]->(project:Project)
-    COLUMNS (
-        person.name,
-        person.node_type AS role,
-        project.name AS project_name
-    )
+SELECT * FROM GRAPH_TABLE(
+    MATCH (a:Article)-[:`tagged-with`]->(t:Tag)<-[:`tagged-with`]-(b:Article)
+    WHERE a.path = '/articles/graph-intro' AND a.id <> b.id
+    COLUMNS (b.title AS related, t.name AS via_tag)
 );
 ```
 
----
+### Members of a project, two node types
 
-## Notes
+```sql
+SELECT * FROM GRAPH_TABLE(
+    MATCH (person:User|Admin)-[:MEMBER_OF]->(project:Project)
+    COLUMNS (person.name, person.node_type AS role, project.name AS project_name)
+);
+```
 
-- SQL/PGQ is part of the SQL:2023 standard
-- Graph patterns are compiled to efficient execution plans
-- Can combine graph patterns with regular SQL operations
-- Variable-length paths may be expensive on large graphs
-- Use WHERE clauses to limit pattern matching scope
-- COLUMNS clause determines the result schema
-- Graph patterns support same data types as regular SQL
-- Patterns are matched exhaustively (all possible matches)
-- Use DISTINCT to remove duplicate paths
-- System fields (id, workspace, node_type, path, name, parent_id, created_at, updated_at) are always available on nodes
-- User-defined properties are stored in JSONB and accessed by name in COLUMNS
-- For graph algorithms (PageRank, community detection, shortest paths), see [Graph Algorithm Functions](/docs/reference/sql/functions/graph-algorithms)
+## See also
+
+- [Graph Model](/docs/concepts/graph-model) for creating relations with `RELATE`
+- [Graph algorithm functions](/docs/reference/sql/functions/graph-algorithms) for `pageRank(n)`, `wcc(n)` and friends inside `COLUMNS`

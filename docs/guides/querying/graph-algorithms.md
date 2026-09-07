@@ -4,85 +4,88 @@ sidebar_position: 8
 
 # Graph Algorithms
 
-Run graph algorithms directly in SQL to analyze relationships, detect communities, and measure node importance.
+Run graph algorithms from SQL to rank nodes, detect communities and measure
+how nodes are connected.
 
 ## Overview
 
-RaisinDB includes a set of graph algorithms based on the LDBC Graphalytics benchmark. These algorithms operate on the relationships between nodes and are accessible through standard SQL using the `GRAPH_TABLE` syntax.
+The algorithm functions run inside `GRAPH_TABLE`. RaisinDB builds an in-memory
+graph from the stored relations that match the pattern's relation types, runs
+the algorithm once per query, and returns each node's value as a column. There
+is nothing to project or materialise first.
 
-Use graph algorithms when you need to:
+Use them when you need to:
 
-- **Rank nodes** by importance or influence (PageRank, closeness, betweenness)
-- **Detect communities** in your data (Louvain, CDLP)
-- **Measure connectivity** between nodes (BFS, SSSP, WCC)
-- **Analyze structure** of your graph (clustering coefficient, triangle count)
+- **Rank nodes** by importance (`pageRank`, `closeness`, `betweenness`)
+- **Detect communities** (`louvain`, `cdlp`)
+- **Measure connectivity** (`bfs`, `sssp`, `wcc`)
+- **Describe structure** (`lcc`, `triangle_count`, `degree`)
 
-## Quick Start
+## Quick start
 
-Create some users and relationships, then run PageRank:
+Create a few people, let them follow each other, and ask for PageRank:
 
 ```sql
--- Create users
-INSERT INTO 'users' (path, name, node_type) VALUES
-  ('/users/alice', 'Alice', 'User'),
-  ('/users/bob', 'Bob', 'User'),
-  ('/users/carol', 'Carol', 'User'),
-  ('/users/dave', 'Dave', 'User');
+INSERT INTO 'social' (path, node_type, name, properties) VALUES
+  ('/alice', 'social:Person', 'alice', '{"name":"Alice"}'::jsonb),
+  ('/bob',   'social:Person', 'bob',   '{"name":"Bob"}'::jsonb),
+  ('/carol', 'social:Person', 'carol', '{"name":"Carol"}'::jsonb),
+  ('/dave',  'social:Person', 'dave',  '{"name":"Dave"}'::jsonb);
 
--- Add FOLLOWS relationships
-RELATE '/users/bob' -> '/users/alice' AS 'FOLLOWS';
-RELATE '/users/carol' -> '/users/alice' AS 'FOLLOWS';
-RELATE '/users/dave' -> '/users/alice' AS 'FOLLOWS';
-RELATE '/users/dave' -> '/users/bob' AS 'FOLLOWS';
+RELATE FROM path='/bob'   IN WORKSPACE 'social' TO path='/alice' IN WORKSPACE 'social' TYPE 'follows';
+RELATE FROM path='/carol' IN WORKSPACE 'social' TO path='/alice' IN WORKSPACE 'social' TYPE 'follows';
+RELATE FROM path='/dave'  IN WORKSPACE 'social' TO path='/alice' IN WORKSPACE 'social' TYPE 'follows';
+RELATE FROM path='/dave'  IN WORKSPACE 'social' TO path='/bob'   IN WORKSPACE 'social' TYPE 'follows' WEIGHT 2.5;
 
--- Run PageRank to find the most influential user
 SELECT * FROM GRAPH_TABLE(
-  MATCH (n:User)
-  COLUMNS (
-    n.name AS name,
-    pageRank(n) AS rank
-  )
+  MATCH (n:Person)
+  COLUMNS (n.name AS name, pageRank(n) AS rank)
 )
 ORDER BY rank DESC;
 ```
 
-Result:
-
 | name  | rank  |
 |-------|-------|
-| Alice | 0.41  |
-| Bob   | 0.22  |
-| Dave  | 0.19  |
-| Carol | 0.18  |
+| alice | 0.274 |
+| bob   | 0.112 |
+| dave  | 0.079 |
+| carol | 0.079 |
 
-## Available Algorithms
+`ORDER BY` and `LIMIT` belong to the outer `SELECT`, not inside `GRAPH_TABLE`.
+
+## Available algorithms
 
 | Algorithm | Function | Returns | Description |
 |-----------|----------|---------|-------------|
-| PageRank | `pageRank(n)` | Float | Importance based on incoming links |
-| BFS | `bfs(n, source)` | Integer | Hop count from a source node |
-| SSSP | `sssp(n, source)` | Float | Weighted shortest path distance |
-| WCC | `wcc(n)` | Integer | Connected component ID |
+| PageRank | `pageRank(n)` | Float | Importance from incoming links |
+| BFS | `bfs(n, source_id)` | Integer | Hop count from a source node |
+| SSSP | `sssp(n, source_id)` | Float | Weighted shortest-path distance |
+| WCC | `wcc(n)` | Integer | Weakly connected component id |
 | CDLP | `cdlp(n)` | Integer | Community label (label propagation) |
 | LCC | `lcc(n)` | Float | Local clustering coefficient |
-| Triangle Count | `triangle_count(n)` | Integer | Triangles the node participates in |
-| Louvain | `louvain(n)` | Integer | Community ID (modularity-based) |
-| Degree | `degree(n)` | Integer | Total connections |
-| In-Degree | `in_degree(n)` | Integer | Incoming connections |
-| Out-Degree | `out_degree(n)` | Integer | Outgoing connections |
+| Triangle count | `triangle_count(n)` | Integer | Triangles the node is part of |
+| Louvain | `louvain(n)` | Integer | Community id (modularity) |
+| Degree | `degree(n)` | Integer | Incoming plus outgoing edges |
+| In-degree | `in_degree(n)` | Integer | Incoming edges |
+| Out-degree | `out_degree(n)` | Integer | Outgoing edges |
 | Closeness | `closeness(n)` | Float | Reachability centrality |
-| Betweenness | `betweenness(n)` | Float | Bridge/bottleneck score |
-| Component Count | `component_count()` | Integer | Total connected components |
-| Community Count | `community_count()` | Integer | Total detected communities |
+| Betweenness | `betweenness(n)` | Float | Bridge score |
+| Component count | `component_count()` | Integer | Number of connected components |
+| Community count | `community_count()` | Integer | Number of detected communities |
 
-## Ad-hoc Queries
+Function names are case-insensitive, and most have aliases (`page_rank`,
+`betweenness_centrality`, `closeness_centrality`, `component_id`,
+`shortest_path_distance`); the
+[reference](/docs/reference/sql/functions/graph-algorithms) lists them.
 
-Graph algorithm functions can be used directly in any `GRAPH_TABLE` query. The algorithm is computed on the fly over the matched subgraph.
+## Ad-hoc queries
+
+Any number of algorithm functions can appear in one `COLUMNS` list. They share
+the graph built for the query, so adding a second function is cheap:
 
 ```sql
--- Combine multiple algorithms in one query
 SELECT * FROM GRAPH_TABLE(
-  MATCH (n:User)
+  MATCH (n:Person)
   COLUMNS (
     n.id AS user_id,
     n.name AS name,
@@ -94,187 +97,151 @@ SELECT * FROM GRAPH_TABLE(
 ORDER BY influence DESC;
 ```
 
-You can filter, join, and aggregate the results like any SQL result set:
+The graph contains the relation types named in the pattern; a bare `(n:Person)`
+with no edge pattern uses every relation type. Results can be filtered, joined
+and aggregated like any SQL result:
 
 ```sql
--- Average PageRank per community
+-- average PageRank per community
 SELECT community, COUNT(*) AS members, AVG(influence) AS avg_rank
-FROM (
-  SELECT * FROM GRAPH_TABLE(
-    MATCH (n:User)
-    COLUMNS (
-      pageRank(n) AS influence,
-      louvain(n) AS community
-    )
-  )
-)
+FROM GRAPH_TABLE(
+  MATCH (n:Person)
+  COLUMNS (pageRank(n) AS influence, louvain(n) AS community)
+) AS g
 GROUP BY community
 ORDER BY avg_rank DESC;
 ```
 
-## Background Precomputation
-
-For production workloads, you can configure algorithms to run in the background and store results persistently. This avoids recomputing on every query.
-
-### RAP Package Configuration
-
-In a RAP package, add a `.node.yaml` file under the `raisin:access_control/graph-config/` path:
-
-```yaml
-# content/raisin:access_control/graph-config/social-pagerank/.node.yaml
-node_type: raisin:GraphAlgorithmConfig
-properties:
-  algorithm: "pagerank"
-  enabled: true
-  target:
-    mode: "all_branches"
-  scope:
-    node_types: ["User"]
-    relation_types: ["FOLLOWS"]
-  config:
-    damping_factor: 0.85
-    max_iterations: 100
-  refresh:
-    on_relation_change: true
-    ttl_seconds: 300
-```
-
-```yaml
-# content/raisin:access_control/graph-config/bfs-from-hub/.node.yaml
-node_type: raisin:GraphAlgorithmConfig
-properties:
-  algorithm: "bfs"
-  enabled: true
-  target:
-    mode: "branch"
-    branches: ["main"]
-  scope:
-    node_types: ["User"]
-  config:
-    source_node: "hub-user-123"
-  refresh:
-    on_relation_change: true
-```
-
-### Refresh Behavior
-
-RaisinDB supports several ways to trigger algorithm recomputation:
-
-- **`on_relation_change: true`** — when relationships change (RELATE/UNRELATE), the projection and cached results are automatically marked stale and rebuilt on next access. This is the recommended setting for most use cases.
-- **`on_branch_change: true`** — recomputes when the branch HEAD changes (any commit).
-- **`ttl_seconds: N`** — recomputes after N seconds regardless of changes.
-- **`cron: "..."` ** — recomputes on a cron schedule (e.g., `"0 */6 * * *"` for every 6 hours).
-
-**Defaults** (when no refresh config is specified):
-- All refresh triggers are **off** — the algorithm computes once on first access and does not automatically recompute.
-- Set at least one refresh trigger to keep results fresh.
-
-**Admin Console defaults** (pre-filled in the UI):
-- `ttl_seconds: 3600` (1 hour), `on_branch_change: true`, `on_relation_change: false`
-
-Results are persisted in RocksDB and survive server restarts. On cluster join, projections are transferred as part of the RocksDB checkpoint.
-
-### Managing Configs via SQL
-
-Graph algorithm configs are stored as nodes in the `raisin:access_control` workspace. You can create, update, and delete them using standard SQL:
+`bfs` and `sssp` take the **id** of the source node as their second argument
+(a path is not resolved):
 
 ```sql
--- Create a PageRank config for social network analysis
+SELECT * FROM GRAPH_TABLE(
+  MATCH (n:Person)
+  COLUMNS (n.name AS name, bfs(n, 'ce3a9b41-eb0f-4104-95f5-edfa16a32766') AS hops)
+);
+-- alice 0, everyone else NULL: the follows edges point at alice, not away from her
+```
+
+## Background precomputation
+
+Algorithms can also run in the background on a schedule, with results stored
+per branch. A background job wakes up every 60 seconds, computes every enabled
+config whose results are missing or stale, and keeps the stored graph
+projection for the next run.
+
+:::note
+Stored results are consumed by the platform (the console shows them, and
+`relates_cache` feeds row-level security). The `GRAPH_TABLE` functions above
+compute on the fly and do not read stored results, so a config does not
+speed up ad-hoc queries.
+:::
+
+A config is a node of type `raisin:GraphAlgorithmConfig` in the
+`raisin:access_control` workspace, under `/graph-config/`. Create it with SQL,
+in a package, or from the Admin Console.
+
+### With SQL
+
+```sql
 INSERT INTO "raisin:access_control" (path, name, node_type, properties) VALUES (
   '/graph-config/social-pagerank',
   'social-pagerank',
   'raisin:GraphAlgorithmConfig',
   '{"algorithm": "pagerank", "enabled": true,
-    "target": {"mode": "all_branches"},
-    "scope": {"relation_types": ["FOLLOWS"], "node_types": ["User"]},
+    "target": {"mode": "branch", "branches": ["main"]},
+    "scope": {"workspaces": ["social"], "relation_types": ["follows"]},
     "config": {"damping_factor": 0.85, "max_iterations": 100},
     "refresh": {"on_relation_change": true, "ttl_seconds": 300}
   }'::jsonb
 );
 
--- Create a BFS config to measure distances from a hub node
-INSERT INTO "raisin:access_control" (path, name, node_type, properties) VALUES (
-  '/graph-config/bfs-from-hub',
-  'bfs-from-hub',
-  'raisin:GraphAlgorithmConfig',
-  '{"algorithm": "bfs", "enabled": true,
-    "target": {"mode": "branch", "branches": ["main"]},
-    "scope": {"node_types": ["User"]},
-    "config": {"source_node": "hub-user-123"},
-    "refresh": {"on_relation_change": true}
-  }'::jsonb
-);
-
--- Create a weighted shortest path config
-INSERT INTO "raisin:access_control" (path, name, node_type, properties) VALUES (
-  '/graph-config/sssp-from-warehouse',
-  'sssp-from-warehouse',
-  'raisin:GraphAlgorithmConfig',
-  '{"algorithm": "sssp", "enabled": true,
-    "target": {"mode": "branch", "branches": ["main"]},
-    "scope": {"relation_types": ["SHIPS_TO"]},
-    "config": {"source_node": "warehouse-east"},
-    "refresh": {"on_relation_change": true}
-  }'::jsonb
-);
-
--- Disable a config
-UPDATE "raisin:access_control"
-SET properties = properties || '{"enabled": false}'::jsonb
-WHERE path = '/graph-config/social-pagerank';
-
--- Delete a config
-DELETE FROM "raisin:access_control"
-WHERE path = '/graph-config/social-pagerank';
-
--- List all graph algorithm configs
-SELECT name, 
-  properties->>'algorithm' AS algorithm,
-  properties->>'enabled' AS enabled
+-- list configs
+SELECT name, properties->>'algorithm' AS algorithm, properties->>'enabled' AS enabled
 FROM "raisin:access_control"
 WHERE node_type = 'raisin:GraphAlgorithmConfig';
+
+-- disable, delete
+UPDATE "raisin:access_control" SET properties = properties || '{"enabled": false}'::jsonb
+WHERE path = '/graph-config/social-pagerank';
+DELETE FROM "raisin:access_control" WHERE path = '/graph-config/social-pagerank';
 ```
 
-Configs can be managed three ways:
+### In a package
 
-1. **SQL** — INSERT/UPDATE/DELETE on `raisin:access_control` workspace (shown above)
-2. **Admin Console** — visual UI for creating and monitoring configs
-3. **RAP Packages** — YAML config files deployed as part of a package
+```yaml
+# content/raisin:access_control/graph-config/social-pagerank/.node.yaml
+node_type: raisin:GraphAlgorithmConfig
+properties:
+  algorithm: pagerank
+  enabled: true
+  target:
+    mode: branch
+    branches: [main]
+  scope:
+    workspaces: [social]
+    relation_types: [follows]
+  config:
+    damping_factor: 0.85
+  refresh:
+    on_relation_change: true
+    ttl_seconds: 300
+```
 
-### Config Reference
+### Checking status
+
+The management API reports each config's state, when it last ran and when the
+next tick is due:
+
+```bash
+curl -s localhost:8090/management/graph-cache/docs-graph/status -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"success":true,"data":{"configs":[{"id":"social-pagerank","algorithm":"pagerank",
+  "enabled":true,"status":"pending","last_computed_at":null,"next_scheduled_at":null,
+  "node_count":null,"error":null,"config":{…}}],
+  "next_tick_at":1788720348015,"tick_interval_seconds":60}}
+```
+
+`POST /management/graph-cache/{repo}/{config_id}/recompute` runs a config now;
+`POST …/mark-stale` marks it for the next tick.
+
+### Config reference
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| algorithm | string | yes | One of: pagerank, bfs, sssp, connected_components, cdlp, lcc, louvain, triangle_count, betweenness_centrality, closeness_centrality |
-| enabled | boolean | yes | Whether this config is active |
-| target.mode | string | yes | "branch", "all_branches", "revision", or "branch_pattern" |
-| target.branches | string[] | no | Branch names (for mode=branch) |
-| target.branch_pattern | string | no | Glob pattern (for mode=branch_pattern) |
-| scope.node_types | string[] | no | Filter by node types |
-| scope.relation_types | string[] | no | Filter by relation types |
-| scope.workspaces | string[] | no | Filter by workspaces |
-| scope.paths | string[] | no | Filter by path glob patterns |
-| config.damping_factor | number | no | PageRank damping (default: 0.85) |
-| config.max_iterations | number | no | PageRank: default 100. Louvain/CDLP: default 10. |
-| config.convergence_threshold | number | no | PageRank convergence (default: 1e-6) |
-| config.source_node | string | no | BFS/SSSP source node ID (required for these algorithms) |
-| config.resolution | number | no | Louvain resolution parameter |
-| refresh.ttl_seconds | number | no | Time-to-live before recomputation |
-| refresh.on_branch_change | boolean | no | Recompute when branch HEAD changes |
-| refresh.on_relation_change | boolean | no | Recompute when relations change (event-driven) |
-| refresh.cron | string | no | Cron schedule for periodic recomputation |
+| `algorithm` | string | yes | `pagerank`, `louvain`, `connected_components`, `betweenness_centrality`, `closeness_centrality`, `triangle_count`, `bfs`, `sssp`, `cdlp`, `lcc`, `relates_cache` |
+| `enabled` | boolean | yes | Whether the config is active |
+| `target.mode` | string | yes | `branch`, `all_branches`, `revision` or `branch_pattern` |
+| `target.branches` | string[] | no | Branch names for `mode: branch` |
+| `target.revisions` | string[] | no | Revisions for `mode: revision` |
+| `target.branch_pattern` | string | no | Glob for `mode: branch_pattern` |
+| `scope.node_types` | string[] | no | Limit to these node types |
+| `scope.relation_types` | string[] | no | Limit to these relation types |
+| `scope.workspaces` | string[] | no | Limit to these workspaces |
+| `scope.paths` | string[] | no | Limit to these path globs |
+| `config.damping_factor` | number | no | PageRank damping (default 0.85) |
+| `config.max_iterations` | number | no | PageRank default 100; Louvain and CDLP default 10 |
+| `config.convergence_threshold` | number | no | PageRank convergence (default 1e-6) |
+| `config.resolution` | number | no | Louvain resolution (default 1.0) |
+| `config.source_node` | string | no | Source node id; required for `bfs` and `sssp` |
+| `refresh.ttl_seconds` | number | no | Recompute after this many seconds |
+| `refresh.on_branch_change` | boolean | no | Recompute when the branch HEAD moves |
+| `refresh.on_relation_change` | boolean | no | Recompute when relations change |
+| `refresh.cron` | string | no | Cron schedule, e.g. `"0 */6 * * *"` |
+
+When `refresh` is omitted every trigger is off: the config is computed once
+and stays as it is until you mark it stale or recompute it.
 
 ## Examples
 
-### Social Network: Influence and Communities
-
-Find the most influential users and which communities they belong to:
+### Influence and communities
 
 ```sql
 SELECT * FROM GRAPH_TABLE(
-  MATCH (n:User)
+  MATCH (n:Person)
   COLUMNS (
-    n.id AS user_id,
     n.name AS name,
     pageRank(n) AS influence,
     cdlp(n) AS community,
@@ -286,100 +253,52 @@ ORDER BY influence DESC
 LIMIT 20;
 ```
 
-Find bridge users who connect different communities:
+### Bridge nodes
 
 ```sql
 SELECT * FROM GRAPH_TABLE(
-  MATCH (n:User)
-  COLUMNS (
-    n.id AS user_id,
-    n.name AS name,
-    betweenness(n) AS bridge_score,
-    louvain(n) AS community
-  )
-)
+  MATCH (n:Person)
+  COLUMNS (n.name AS name, betweenness(n) AS bridge_score, louvain(n) AS community)
+) AS g
 WHERE bridge_score > 0
 ORDER BY bridge_score DESC
 LIMIT 10;
 ```
 
-### Knowledge Graph: Paths and Connectivity
-
-Find the shortest path distance from a root topic to all others:
+### Distance from a node
 
 ```sql
 SELECT * FROM GRAPH_TABLE(
   MATCH (n:Topic)
-  COLUMNS (
-    n.id AS topic_id,
-    n.name AS name,
-    bfs(n, 'machine-learning') AS distance
-  )
-)
+  COLUMNS (n.name AS name, bfs(n, '<id of machine-learning>') AS distance)
+) AS g
 WHERE distance IS NOT NULL
 ORDER BY distance;
 ```
 
-Check if the knowledge graph has disconnected clusters:
+### Connected components
 
 ```sql
--- Count connected components
 SELECT * FROM GRAPH_TABLE(
   MATCH (n:Topic)
-  COLUMNS (
-    component_count() AS total_components
-  )
-)
-LIMIT 1;
-
--- See which topics are in which component
-SELECT * FROM GRAPH_TABLE(
-  MATCH (n:Topic)
-  COLUMNS (
-    n.name AS name,
-    wcc(n) AS component
-  )
+  COLUMNS (n.name AS name, wcc(n) AS component, component_count() AS total)
 )
 ORDER BY component, name;
 ```
 
-### Content Graph: Clustering Analysis
-
-Analyze how tightly connected content categories are:
-
-```sql
-SELECT * FROM GRAPH_TABLE(
-  MATCH (n:Article)
-  COLUMNS (
-    n.id AS article_id,
-    n.name AS title,
-    lcc(n) AS clustering,
-    triangle_count(n) AS triangles,
-    degree(n) AS connections
-  )
-)
-ORDER BY clustering DESC;
-```
-
-Find densely interconnected groups of articles:
+### Clustering
 
 ```sql
 SELECT community, COUNT(*) AS articles, AVG(clustering) AS avg_clustering
-FROM (
-  SELECT * FROM GRAPH_TABLE(
-    MATCH (n:Article)
-    COLUMNS (
-      louvain(n) AS community,
-      lcc(n) AS clustering
-    )
-  )
-)
+FROM GRAPH_TABLE(
+  MATCH (n:Article)
+  COLUMNS (louvain(n) AS community, lcc(n) AS clustering)
+) AS g
 GROUP BY community
-HAVING COUNT(*) > 3
 ORDER BY avg_clustering DESC;
 ```
 
-## Next Steps
+## Next steps
 
-- [Graph Queries](./graph-queries.md) - Traversing relationships and hierarchies
-- [Graph Algorithm Functions Reference](/docs/reference/sql/functions/graph-algorithms) - Full function signatures and parameter details
+- [Graph queries](./graph-queries.md)
+- [Graph algorithm function reference](/docs/reference/sql/functions/graph-algorithms)

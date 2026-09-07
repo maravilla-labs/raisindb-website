@@ -4,69 +4,61 @@ sidebar_position: 3
 
 # Vector Search
 
-RaisinDB stores vector embeddings alongside your content and provides fast approximate nearest neighbor (ANN) search using the HNSW algorithm. This enables semantic search, content recommendations, and hybrid queries that combine vectors with SQL filters.
+RaisinDB stores vector embeddings alongside your content and answers
+approximate nearest-neighbour queries from a built-in HNSW index. Semantic
+search, "more like this" and hybrid keyword-plus-meaning queries are all SQL.
 
-## How It Works
+## How it works
 
-1. **Generate embeddings** — RaisinDB sends node content to a configured embedding provider (OpenAI, Anthropic, local models, etc.) and stores the resulting vectors
-2. **Index with HNSW** — Vectors are indexed using Hierarchical Navigable Small World graphs for O(log n) approximate nearest neighbor search
-3. **Query via SQL** — Use the `KNN` / `HYBRID_SEARCH` table functions, or the `<=>` distance operator in an ordinary query, optionally combined with filters
+1. **Embed**: when a node is created or updated, a job sends its text to the
+   tenant's configured embedding provider and stores the vectors.
+2. **Index**: vectors go into an HNSW (Hierarchical Navigable Small World) graph
+   for logarithmic-time approximate search.
+3. **Query**: use the `KNN` and `HYBRID_SEARCH` table functions, or the `<=>`
+   distance operator in an ordinary query, with filters as needed.
 
-## Embedding Storage
+## What gets embedded
 
-Each node can have an associated embedding vector. Embeddings are generated asynchronously through the job system when nodes are created or updated:
+- Text is taken from the node's fields marked `index: [Vector]` in its node
+  type, plus its name and path when the tenant configuration says so.
+- Long text is chunked (256 tokens with 64 overlap by default) and each chunk
+  gets its own vector, keyed by node and chunk index.
+- Vectors are stored per tenant, repository, branch and workspace, and grouped
+  into partitions by embedding model and kind (`text` or `image`).
 
-- Embeddings are stored per-node with metadata (model name, dimensions, revision)
-- Multiple embedding providers are supported per tenant
-- Long documents are automatically chunked before embedding
+## Similarity queries
 
-## Similarity Queries
-
-### Basic Vector Search
-
-Find the 10 nodes most similar to a query vector:
+### Basic vector search
 
 ```sql
-SELECT path, properties->>'title'::String AS title, vector_distance
+SELECT path, properties->>'title'::String AS title, vector_distance, chunk_index
 FROM KNN('how do vector indexes work', 10, workspaces => 'default');
 ```
 
-- The first argument is the query — plain text is embedded with your tenant's provider; `EMBEDDING('…')`, a literal vector, or `VECTOR_OF('ws:/path')` also work
-- `10` is the number of results (k)
-- `workspaces` is **required**: a name, a comma-separated list, a glob such as `'content-*'`, or `'ALL READABLE'`
-- `vector_distance` is the cosine distance (lower = more similar)
+- The first argument is the query. Plain text is embedded with the tenant's
+  provider; `EMBEDDING('...')`, a literal vector, or `VECTOR_OF('ws:/path')`
+  also work.
+- `10` is the number of rows.
+- `workspaces` is required: a name, a comma-separated list, a glob such as
+  `'content-*'`, or `'ALL READABLE'`.
+- `vector_distance` is the cosine distance; lower is closer.
 
-### Interpreting Distance
+### Interpreting distance
 
-RaisinDB uses cosine distance (1 - cosine similarity):
+Cosine distance is `1 - cosine similarity`:
 
-| Distance | Similarity | Interpretation |
-|----------|-----------|----------------|
-| 0.0 | 1.0 | Identical vectors |
-| 0.2 – 0.4 | 0.8 – 0.6 | Semantically similar |
-| 0.4 – 0.6 | 0.6 – 0.4 | Weakly related |
-| > 0.6 | < 0.4 | Not related |
+| Distance | Interpretation |
+|----------|----------------|
+| 0.0 | identical |
+| up to about 0.4 | close in meaning |
+| 0.4 to 0.6 | loosely related |
+| above 0.6 | filtered out by default |
 
-### Distance Filtering
+The cutoff is configurable per tenant
+(`ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5'`) and per query
+(`max_distance => 0.3`).
 
-Filter results by distance threshold directly in SQL. The threshold is extracted and pushed down to the HNSW engine for efficient search:
-
-```sql
-SELECT id, path
-FROM 'default'
-WHERE embedding <=> EMBEDDING('search query') < 0.3
-ORDER BY embedding <=> EMBEDDING('search query');
-```
-
-The default maximum distance threshold is configurable per-tenant:
-
-```sql
-ALTER EMBEDDING CONFIG SET DEFAULT_MAX_DISTANCE = '0.5';
-```
-
-### Hybrid Search (Vector + Filters)
-
-Combine vector similarity with property filters:
+### Vector search plus filters
 
 ```sql
 SELECT path, vector_distance
@@ -76,20 +68,23 @@ WHERE node_type = 'blog:Article'
 LIMIT 10;
 ```
 
-Request more results from the vector index (20) than you need (10) to account for rows removed by the property filter.
+The `WHERE` is applied after the search, so ask the index for more rows than
+you need when a filter is selective.
 
-### Hybrid Search (Vector + Full-Text)
+### Vector plus full-text
 
-The `HYBRID_SEARCH` table function combines full-text search and vector similarity using Reciprocal Rank Fusion (RRF):
+`HYBRID_SEARCH` runs both legs and fuses them by rank (reciprocal rank
+fusion), so an exact product name and a paraphrase both count:
 
 ```sql
-SELECT * FROM HYBRID_SEARCH('how does authentication work', 10,
-                            workspaces => 'default');
+SELECT path, score, fulltext_rank, vector_rank
+FROM HYBRID_SEARCH('how does authentication work', 10, workspaces => 'default');
 ```
 
-This produces a single ranked result set that merges keyword matches and semantic similarity, returning columns for both fulltext and vector ranks alongside a combined score. This approach avoids the weaknesses of either search method alone — pure vector search can miss exact keyword matches, while pure full-text search misses semantically equivalent terms.
+### Search within a subtree
 
-### Search Within a Subtree
+The operator form is planned as an index scan when the distance is the
+`ORDER BY` key and there is a `LIMIT`. Structural predicates are pushed into it:
 
 ```sql
 SELECT path, embedding <=> EMBEDDING('index maintenance') AS distance
@@ -101,85 +96,70 @@ LIMIT 10;
 
 ## One row per node, with `chunk_index`
 
-The unit the index stores is a **chunk**, but results are fused per **node** — a
-40-page handbook does not occupy ten of your ten slots. The `chunk_index` column
-tells you which chunk answered, which is what lets a RAG caller cite the right
-passage:
+The unit the index stores is a chunk, but results are fused per node by
+default, so a long handbook occupies one row. `chunk_index` and `chunk_text`
+name the passage that answered:
 
 ```sql
-SELECT path, chunk_index, vector_distance
+SELECT path, chunk_index, chunk_text, vector_distance
 FROM KNN('rotating an API key', 5, workspaces => 'handbook');
 ```
 
-`chunk_index` is `0` for a document that was never chunked, and `NULL` when the
-hit came from the lexical leg only.
+Ask for `granularity => 'chunk'` to get one row per passage instead, which is
+what a RAG prompt usually wants. `chunk_index` is `0` for a document that was
+never chunked and `NULL` when a hybrid hit came from the lexical leg only.
 
-## Chunk-Aware Scoring
+## Embedding providers
 
-When documents are split into chunks for embedding, scoring accounts for chunk position:
+Providers are configured per tenant. The embedding configuration can point at
+any of these kinds:
 
-- **Position decay** — Earlier chunks (introductions, abstracts) score slightly higher
-- **First chunk boost** — The first chunk of a document gets a configurable relevance boost
-
-This helps surface the most relevant document rather than a random chunk from the middle.
-
-## AI Provider Configuration
-
-Embedding providers are configured per tenant. Supported providers:
-
-| Provider | Notes |
+| Kind | Notes |
 |----------|-------|
-| OpenAI | `text-embedding-3-small`, `text-embedding-3-large` |
-| Anthropic | Claude embedding models |
-| Azure OpenAI | Enterprise Azure deployments |
-| Google Gemini | Gemini embedding models |
-| AWS Bedrock | Converse API + Titan embeddings (fully supported) |
-| Ollama | Local models (self-hosted) |
-| Custom | Any OpenAI-compatible endpoint |
+| `openai` | `text-embedding-3-small` (1536), `text-embedding-3-large` (3072) |
+| `azure_openai`, `groq`, `openrouter`, `custom` | any OpenAI-compatible `/embeddings` endpoint |
+| `anthropic` | embeddings are served by Voyage AI |
+| `ollama` | local models such as `nomic-embed-text` (768) or `bge-m3` (1024) |
 
-API keys are encrypted with AES-256-GCM before storage. See the [AI Provider Configuration guide](/docs/guides/ai/ai-provider-configuration) for setup.
+API keys are encrypted with AES-256-GCM before storage and are never returned
+by any read. See the
+[AI Provider Configuration guide](/docs/guides/ai/ai-provider-configuration).
 
-## Multi-Tenant Isolation
+## Isolation
 
-Vector indexes are isolated per tenant, repository, and branch. Each combination gets its own HNSW index, ensuring:
+Vectors and indexes are scoped by tenant, repository and branch, and searches
+are filtered by workspace and row-level security inside the graph walk:
 
-- No cross-tenant vector leakage
-- Independent scaling per tenant
-- Branch-aware search (feature branch changes don't affect main)
+- no cross-tenant results
+- a branch searches its own content; creating a branch copies the parent's
+  embeddings and index
+- a caller only ever sees hits they could read as nodes
 
-## HNSW Parameter Tuning
+## Index settings
 
-The HNSW index exposes several parameters for tuning the trade-off between search accuracy and performance:
+Two index properties are configurable, both on the tenant's embedding
+configuration:
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `M` | 16 | Number of bi-directional links per node. Higher values improve recall but use more memory |
-| `ef_construction` | 200 | Size of the dynamic candidate list during index building. Higher values produce a better graph but slow down insertion |
-| `ef_search` | 50 | Size of the dynamic candidate list during search. Higher values improve recall at the cost of query latency |
+| Setting | Values | Notes |
+|---------|--------|-------|
+| `distance_metric` | `cosine` (default), `l2`, `inner_product`, `hamming` | the metric the partition is built with |
+| `quantization` | `F32` (default), `F16`, `Int8` | storage precision; `F16` halves memory, `Int8` quarters it |
 
-These are configured through your embedding configuration and apply per-index.
-
-## Vector Quantization
-
-RaisinDB supports vector quantization to reduce memory usage at the cost of some precision:
-
-| Format | Size per Dimension | Use Case |
-|--------|-------------------|----------|
-| **F32** (default) | 4 bytes | Full precision, best accuracy |
-| **F16** | 2 bytes | 50% memory savings with minimal accuracy loss |
-| **Int8** | 1 byte | 75% memory savings, suitable for large-scale approximate search |
-
-Quantization is configured in the embedding configuration and applies when vectors are stored in the HNSW index.
+The HNSW graph parameters (connectivity and expansion factors) use the
+library defaults and are not exposed.
 
 ## Performance
 
-- **HNSW** provides O(log n) approximate search — sub-millisecond for millions of vectors
-- **Cosine, L2, InnerProduct, and Hamming** distance metrics are supported
-- **Moka LRU cache** limits memory usage with configurable cache size
-- **Periodic snapshots** persist indexes to disk with crash-safe recovery
+- HNSW gives approximate search in logarithmic time; a query over a few
+  hundred vectors answers in tens of milliseconds including embedding the
+  query text.
+- Loaded indexes are kept in a memory cache with a 512 MB budget.
+- Changed indexes are written to disk about every 60 seconds and on shutdown.
+- `SHOW VECTOR INDEX HEALTH`, `VERIFY VECTOR INDEX` and `REBUILD VECTOR INDEX`
+  inspect and repair the index for the current branch.
 
 ## Next Steps
 
-- [Full-Text Search](./full-text-search) — Keyword-based search
-- [Document Model](./document-model) — How nodes store content
-- [Common Query Patterns](/docs/guides/querying/common-query-patterns) — SQL recipes including vector search
+- [Full-Text Search](./full-text-search): keyword search
+- [Document Model](./document-model): how nodes store content
+- [Vector Functions reference](/docs/reference/sql/functions/vector-functions): the full grammar

@@ -4,138 +4,211 @@ sidebar_position: 2
 
 # Installing Packages
 
-Install RAP packages to add features to your repository.
+A package is installed into one repository and branch. Upload puts the `.rap`
+into the repository's `packages` workspace as a `raisin:Package` node; install
+runs a background job that applies its schema, workspaces and content.
 
-## List Available Packages
+## List packages
 
 ```bash
 raisindb package list --repo myapp
 ```
 
-## Install a Package
+```
+Packages in repository 'myapp':
+
+  Name                          Version     Installed   Status
+  ──────────────────────────────────────────────────────────────
+  blog-starter                  1.0.0       -           uploaded
+  raisin-auth                   1.0.0       ✓           installed
+  imap-adapter                  1.7.0       -           -
+  ...
+```
+
+Built-in packages that are registered but not installed show `-` in both
+columns. The same list is available as `GET /api/repos/{repo}/packages`, which
+returns the package nodes with their properties.
+
+## Install a package
+
+With the CLI, either install an uploaded package by name or deploy a folder and
+install in one step:
 
 ```bash
 raisindb package install blog-starter --repo myapp
+raisindb deploy ./package --repo myapp --install
+raisindb deploy ./package --repo myapp --install --branch staging
 ```
 
-Via API:
+Both commands start the install job and poll until the package reaches a
+terminal status. They exit `0` on `installed` and `1` on `failed`, printing the
+server's error detail.
+
+Over HTTP, the package is addressed by its name (the manifest `name`, not the
+file name):
 
 ```bash
-curl -X POST \
-  http://localhost:8080/api/repos/myapp/packages/blog-starter-1.0.0/install \
-  -H "Authorization: Bearer TOKEN"
+curl -X POST "http://localhost:8080/api/repos/myapp/packages/blog-starter/install?mode=sync" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-This endpoint — and `raisindb package install` / `raisindb deploy --install` —
-always install in the default **skip** mode (below); the CLI has no flag to
-change it yet. To choose a different install mode, or to preview an install
-first, use the command-style endpoint the **admin console**'s package page
-uses:
+```json
+{"package_name":"blog-starter","version":"1.0.0","installed":false,"installed_at":null,"job_id":"4f0c..."}
+```
+
+The same operation exists on the command-style endpoint used by the admin
+console, which also takes the branch in the path:
 
 ```bash
-curl -X POST \
-  "http://localhost:8080/api/packages/myapp/main/head/blog-starter-1.0.0/raisin:install?mode=sync" \
-  -H "Authorization: Bearer TOKEN"
+curl -X POST "http://localhost:8080/api/packages/myapp/main/head/blog-starter/raisin:install?mode=sync" \
+  -H "Authorization: Bearer $TOKEN"
 ```
 
-## What Gets Installed
+Query parameters on both: `mode` (default `skip`) and, on the first form,
+`branch` (default `main`).
 
-When you install a package:
-1. Mixins are installed (if any)
-2. NodeTypes are created
-3. Workspaces are created or patched
-4. Content nodes are imported (including functions, templates, etc.)
+## What gets installed
 
-## Install Modes
+The job runs these phases in order:
 
-Every install/reinstall runs in one of three modes, controlling what happens
-to **content nodes** that already exist at a path the package also defines
-(schema — node types, archetypes, element types, mixins — is always upserted,
-regardless of mode; only content honors this setting):
+1. Nested `.rap` packages under `dependencies/` or `packages/`
+2. Mixins, then node types, archetypes and element types
+3. Workspaces
+4. Processing rules
+5. Workspace patches from the manifest
+6. Content nodes, binaries and translation overlays
+7. Package assets (`README.md`, `static/`), attached under the package node
 
-| Mode | Behavior |
-|------|----------|
-| `skip` (default) | Never touch existing content nodes — only create ones that don't exist yet. Safest for repeat installs; a user's edits are never clobbered. |
-| `sync` | Update existing content nodes, create new ones, leave nodes the package no longer defines untouched. |
-| `overwrite` | Delete and replace existing content unconditionally — a clean reset. This mode also **always wins over a package's own `.raisin-sync.yaml`** (below), for exactly this "start over" use case. |
+Schema definitions are upserted in every mode. The install mode only governs
+workspaces, processing rules and content.
 
-Pass it as `?mode=` on the `raisin:install` / `raisin:dry-run` endpoints (the
-admin console's Install/Reinstall/Preview buttons let a user pick it
-directly). There is currently no `raisindb package install`/`deploy --install`
-CLI flag for it — those always use `skip`.
+## Install modes
+
+| Mode | Existing content nodes | Existing workspaces and rules |
+|------|------------------------|-------------------------------|
+| `skip` | Left untouched; only missing nodes are created. | Kept. A workspace gains the package's `allowed_node_types` add-only. |
+| `sync` | Updated from the package; missing nodes created; nodes the package does not define are left alone. | Replaced by the package definition. |
+| `overwrite` | Replaced unconditionally. Also ignores the package's own `.raisin-sync.yaml`. | Replaced by the package definition. |
+
+Which mode applies depends on how you install:
+
+- `raisindb package install` sends no mode, so the server default `skip`
+  applies.
+- `raisindb deploy --install` sends `--mode sync` unless you pass
+  `--mode skip` or `--mode overwrite`.
+- The HTTP endpoints take `?mode=`.
+- The admin console's Install and Reinstall buttons let you pick the mode.
+
+Binary assets are compared by content hash in `skip` and `sync` mode, so an
+unchanged file is not rewritten.
 
 ### Reinstalling
 
-Reinstalling a package never overwrites an existing workspace. New NodeTypes are still made usable in workspaces the package defines: their `allowed_node_types` are **additively merged** into the existing workspace (add-only, never removing types), so a reinstall that adds a type makes it usable without manual intervention. Workspaces that already allow everything (empty `allowed_node_types` or `"*"`) are left untouched. See [Workspace Patches](./creating-packages.md#workspace-patches) for extending workspaces your package does not own.
+Installing an already-installed package in `skip` mode does nothing: the server
+returns `installed: true` without a `job_id`, and the CLI says so:
 
-Since the CLI always installs in `skip` mode, a `deploy --install` / `sync
---push` redeploy never updates existing content — including server-side
-functions and seed nodes — no matter which command you used. If your package
-ships updates that must always reach an already-installed repository (a bug
-fix in a function, a newly-added seed node), declare a **per-path override**
-in a
-[`.raisin-sync.yaml`](./creating-packages.md#reconciling-updates-raisin-syncyaml)
-file at the package root — it applies regardless of which install mode ends
-up being used.
-
-## Preview an Install (Dry Run)
-
-Before committing to an install or reinstall, preview exactly what will
-happen — no changes are made:
-
-```bash
-curl "http://localhost:8080/api/packages/myapp/main/head/blog-starter-1.0.0/raisin:dry-run?mode=sync" \
-  -H "Authorization: Bearer TOKEN"
+```
+Package 'blog-starter' is already installed, and mode 'skip' leaves existing
+content untouched — nothing was applied.
+Re-apply the package's content with: --mode sync
 ```
 
-The response lists every node type, workspace, content node, and binary
-asset the install would touch, with an action (`create` / `update` / `skip`)
-and a create/update/skip summary count per category:
+To ship updates to content the package owns, such as functions or seed
+configuration, without asking operators to choose a mode, declare a per-path
+policy in the package's [`.raisin-sync.yaml`](./creating-packages.md#install-policy-raisin-syncyaml).
+A `replace` filter there overwrites its subtree in both `skip` and `sync` mode.
+
+## Preview an install (dry run)
+
+A dry run reports what an install would do without changing anything:
+
+```bash
+curl "http://localhost:8080/api/packages/myapp/main/head/blog-starter/raisin:dry-run?mode=sync" \
+  -H "Authorization: Bearer $TOKEN"
+```
 
 ```json
 {
   "package_name": "blog-starter",
-  "package_version": "1.1.0",
-  "mode": "skip",
+  "package_version": "1.0.0",
+  "mode": "sync",
   "logs": [
-    {
-      "level": "skip",
-      "category": "content",
-      "path": "/welcome-post",
-      "message": "Content node at '/welcome-post' already exists, will skip",
-      "action": "skip"
-    },
-    {
-      "level": "update",
-      "category": "content",
-      "path": "/functions/lib/notify",
-      "message": "Content node at '/functions/lib/notify' exists, will update",
-      "action": "update",
-      "policy": "package sync policy: replace (filter '/functions')"
-    }
+    { "level": "info", "category": "manifest", "path": "manifest.yaml",
+      "message": "Package: blog-starter v1.0.0", "action": "info",
+      "policy": "package ships a .raisin-sync.yaml policy — see per-path entries below" },
+    { "level": "create", "category": "node_type", "path": "blog:Article",
+      "message": "Node type 'blog:Article' will be created", "action": "create" },
+    { "level": "create", "category": "workspace", "path": "blog",
+      "message": "Workspace 'blog' will be created", "action": "create" },
+    { "level": "create", "category": "content", "path": "/posts/welcome",
+      "message": "Content node 'welcome' will be created at /posts/welcome",
+      "action": "create", "policy": "package sync policy: skip (default)" },
+    { "level": "create", "category": "binary", "path": "functions/lib/blog/hello/index.js",
+      "message": "Binary asset 'index.js' will be created (93 bytes)",
+      "action": "create", "policy": "package sync policy: replace (filter '/functions')" }
   ],
-  "summary": { "content_nodes": { "create": 0, "update": 1, "skip": 1 }, "...": "..." }
+  "summary": {
+    "node_types": { "create": 1, "update": 0, "skip": 0 },
+    "archetypes": { "create": 0, "update": 0, "skip": 0 },
+    "element_types": { "create": 0, "update": 0, "skip": 0 },
+    "workspaces": { "create": 1, "update": 0, "skip": 0 },
+    "content_nodes": { "create": 4, "update": 0, "skip": 0 },
+    "binary_files": { "create": 1, "update": 0, "skip": 0 },
+    "package_assets": { "create": 2, "update": 0, "skip": 0 }
+  }
 }
 ```
 
-The optional `policy` field on a log entry appears only when the package's own
-`.raisin-sync.yaml` — not the `mode` you passed — determined that path's
-outcome, and explains which rule fired. The admin console's package Preview
-dialog surfaces this the same way, with a banner when the package ships a
-policy at all.
+Against a repository where the package is already installed, the same call
+reports what a reinstall would do; here the package's policy keeps `/posts`
+and replaces `/functions`:
 
-The **admin console** exposes the same preview from a package's detail page
-("Preview" next to Install/Reinstall), and shows a "Custom Sync Policy" badge
-on any package that ships a `.raisin-sync.yaml`.
-
-## Uninstall a Package
-
-```bash
-curl -X POST \
-  http://localhost:8080/api/repos/myapp/packages/blog-starter-1.0.0/uninstall \
-  -H "Authorization: Bearer TOKEN"
+```
+skip    content  /posts/welcome                       package sync policy: skip (default)
+update  content  /lib/blog/hello                      package sync policy: replace (filter '/functions')
+update  binary   functions/lib/blog/hello/index.js    package sync policy: replace (filter '/functions')
 ```
 
-## Next Steps
+Each entry carries an `action` of `create`, `update`, `skip` or `info`. The
+`policy` field is present only when the package's `.raisin-sync.yaml` decided
+the outcome, and names the rule that fired. Categories are `manifest`, `mixin`,
+`node_type`, `archetype`, `element_type`, `workspace`, `processing_rule`,
+`content`, `binary` and `package_asset`.
+
+The admin console offers the same preview from a package's detail page, next to
+Install and Reinstall.
+
+## Uninstall a package
+
+```bash
+curl -X POST http://localhost:8080/api/repos/myapp/packages/blog-starter/uninstall \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+```json
+{"package_name":"blog-starter","version":"1.0.0","installed":false}
+```
+
+Uninstalling marks the package node as not installed and sets its status back
+to `uploaded`. The nodes it created stay in place; the archive remains on the
+server and can be installed again.
+
+## Package status
+
+The package node's `status` property tracks the lifecycle:
+
+| Status | Meaning |
+|--------|---------|
+| `processing` | Upload accepted, manifest extraction running |
+| `uploaded` | Archive stored, not installed (also after uninstall) |
+| `installing` | Install job running |
+| `installed` | Install finished; `installed: true`, `installed_at` set |
+| `failed` | Processing or install failed; `error` holds the detail |
+
+`raisindb package list` shows this column and prints the `error` for failed
+packages.
+
+## Next steps
 
 - [Creating Packages](./creating-packages.md)
+- [Sync and Watch](./sync-and-watch.md)

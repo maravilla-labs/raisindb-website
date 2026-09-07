@@ -4,610 +4,158 @@ sidebar_position: 3
 
 # Operators
 
-SQL operators for expressions and comparisons in RaisinDB.
+Operators available in RaisinDB SQL expressions, with the behaviour you get when you run them. Examples use a `blog` workspace whose pages carry `title`, `views`, `published`, `tags` and `author` properties.
 
-## Comparison Operators
+## Comparison
 
-### Equality and Inequality
-
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `=` | Equal to | `properties->>'status' = 'published'` |
-| `!=` | Not equal to | `properties->>'status' != 'draft'` |
-| `<>` | Not equal to (alternative) | `properties->>'status' <> 'draft'` |
-| `<` | Less than | `(properties->>'view_count')::int < 100` |
-| `<=` | Less than or equal | `(properties->>'view_count')::int <= 100` |
-| `>` | Greater than | `(properties->>'view_count')::int > 100` |
-| `>=` | Greater than or equal | `(properties->>'view_count')::int >= 100` |
-
-**Examples:**
+| Operator | Meaning |
+|----------|---------|
+| `=` | equal |
+| `!=`, `<>` | not equal |
+| `<`, `<=`, `>`, `>=` | ordering |
+| `IS NULL`, `IS NOT NULL` | null test |
+| `IS DISTINCT FROM`, `IS NOT DISTINCT FROM` | null-safe equality |
+| `BETWEEN x AND y`, `NOT BETWEEN` | inclusive range |
+| `IN (...)`, `NOT IN (...)` | membership in a list or an `IN (SELECT ...)` subquery |
+| `LIKE`, `NOT LIKE`, `ILIKE` | pattern match (`%` any run, `_` one character); `ILIKE` ignores case |
 
 ```sql
-SELECT * FROM default WHERE properties->>'status' = 'published';
-SELECT * FROM default WHERE (properties->>'view_count')::int > 1000;
-SELECT * FROM default WHERE (properties->>'price')::numeric >= 9.99;
-SELECT * FROM default WHERE properties->>'status' != 'archived';
+SELECT name FROM 'blog'
+WHERE name NOT LIKE 'h%' AND name IN ('news', 'first') AND depth BETWEEN 1 AND 2;
+-- rows: news, first
+
+SELECT name FROM 'blog' WHERE properties->>'title' ILIKE '%FIRST%';
+-- rows: first
+
+SELECT name FROM 'blog' WHERE path IN (SELECT PARENT(path) FROM 'blog');
+-- rows: news   (the only node that is somebody's parent)
 ```
 
-### IS NULL / IS NOT NULL
-
-Check for NULL values.
-
-| Operator | Description |
-|----------|-------------|
-| `IS NULL` | Value is NULL |
-| `IS NOT NULL` | Value is not NULL |
-
-**Examples:**
+Comparisons are typed. `->>` yields TEXT, so a number in JSON must be cast before a numeric comparison, and a timestamp column must be compared with a timestamp:
 
 ```sql
-SELECT * FROM default WHERE properties->>'description' IS NULL;
-SELECT * FROM default WHERE properties->>'author' IS NOT NULL;
-SELECT * FROM default WHERE created_at IS NULL;
+SELECT name FROM 'blog' WHERE (properties->>'views')::INT > 20;
+SELECT name FROM 'blog' WHERE created_at > '2020-01-01T00:00:00Z'::TIMESTAMPTZ;
 ```
 
-**Notes:**
-- Cannot use `= NULL` or `!= NULL`
-- NULL comparisons require IS NULL / IS NOT NULL
-- Three-valued logic: true, false, NULL
+`created_at BETWEEN '2020-01-01' AND '2030-01-01'` without casts is rejected (`expected TIMESTAMPTZ, got TEXT`).
 
----
-
-## JSON Operators
-
-Since all node properties are stored in the `properties` JSONB column, JSON operators are used in nearly every query.
-
-### Field Extraction
-
-| Operator | Description | Return Type |
-|----------|-------------|-------------|
-| `->` | Extract JSON field by key or index | JSONB |
-| `->>` | Extract JSON field as text | TEXT |
-| `#>` | Extract JSON value at path | JSONB |
-| `#>>` | Extract JSON value at path as text | TEXT |
-
-**Examples:**
+`= NULL` matches nothing; use `IS NULL`. A missing JSON key reads as NULL:
 
 ```sql
--- Extract as JSONB
-SELECT properties -> 'tags' FROM default;
-SELECT properties -> 'tags' -> 0 FROM default;
-
--- Extract as text
-SELECT properties ->> 'title' FROM default;
-SELECT properties -> 'author' ->> 'name' FROM default;
-
--- Extract at path
-SELECT properties #> '{author,address}' FROM default;
-SELECT properties #>> '{author,address,city}' FROM default;
-
--- In WHERE clause
-SELECT * FROM default
-WHERE properties ->> 'status' = 'published';
-
--- Nested access
-SELECT
-    properties -> 'author' ->> 'name' AS author_name,
-    properties -> 'author' ->> 'email' AS author_email
-FROM default;
+SELECT name FROM 'blog' WHERE properties->>'summary' IS NULL;
 ```
 
-### Containment and Existence
+<!-- TODO(sql-ext): fill from engine report (regex operators ~ ~* SIMILAR TO, ANY/ALL) -->
 
-| Operator | Description | Return Type |
-|----------|-------------|-------------|
-| `@>` | JSON contains | BOOLEAN |
-| `<@` | JSON is contained by | BOOLEAN |
-| `?` | Key exists | BOOLEAN |
-| `?|` | Any key exists | BOOLEAN |
-| `?&` | All keys exist | BOOLEAN |
-| `#-` | Delete key/path | JSONB |
-| `@?` | JSONPath test | BOOLEAN |
+## Logical
 
-**Examples:**
+`AND`, `OR`, `NOT`, with three-valued logic (NULL AND true is NULL). `AND` binds tighter than `OR`:
 
 ```sql
--- Containment
-SELECT * FROM default
-WHERE properties @> '{"color": "blue"}';
-
-SELECT * FROM default
-WHERE '{"color": "blue"}' <@ properties;
-
--- Key existence
-SELECT * FROM default
-WHERE properties ? 'color';
-
--- Delete key from JSON
-SELECT properties #- '{old_field}' FROM default;
-
--- JSONPath test
-SELECT * FROM default
-WHERE properties @? '$.tags[*] ? (@ == "featured")';
+SELECT name FROM 'blog' WHERE name = 'hello' OR name = 'news' AND depth = 2;
+-- rows: hello    (parsed as hello OR (news AND depth = 2))
 ```
 
-### JSONB Merge
+Parenthesise mixed `AND` / `OR` conditions.
 
-| Operator | Description | Return Type |
-|----------|-------------|-------------|
-| `||` | Merge JSONB objects | JSONB |
+## Arithmetic
 
-The `||` operator merges two JSONB objects. Keys in the right operand overwrite keys in the left operand:
+`+`, `-`, `*`, `/`, `%` and unary `-`. Every arithmetic result is DOUBLE, including integer-only input, and division by zero is an error.
 
 ```sql
--- Merge properties (used in UPDATE)
-UPDATE default
-SET properties = properties || '{"status": "published", "featured": true}'
-WHERE path = '/content/blog/my-post';
+SELECT 1 + 2 AS a, 7 / 2 AS b, 7 % 3 AS c, -depth AS neg FROM 'blog' LIMIT 1;
+-- {"a":3.0,"b":3.5,"c":1.0,"neg":-1}
+
+SELECT 1 / 0;
+-- error: Division by zero
 ```
 
----
+Use `NULLIF(x, 0)` as a divisor to turn a zero into NULL instead of an error. NULL in any operand gives NULL.
 
-## Logical Operators
+A timestamp plus or minus an `INTERVAL` works on `NOW()` (`NOW() - INTERVAL '1 day'`). See [DateTime functions](./functions/datetime-functions.md) for the cases that do not work on columns yet.
 
-### Boolean Logic
+## String concatenation
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `AND` | Logical AND | `properties->>'status' = 'published' AND (properties->>'view_count')::int > 100` |
-| `OR` | Logical OR | `properties->>'status' = 'published' OR properties->>'status' = 'featured'` |
-| `NOT` | Logical NOT | `NOT (properties->>'status' = 'draft')` |
-
-**Examples:**
+`||` joins TEXT values. NULL in either operand gives NULL; wrap optional parts in `COALESCE`.
 
 ```sql
--- AND: Both conditions must be true
-SELECT * FROM default
-WHERE properties->>'status' = 'published'
-  AND (properties->>'view_count')::int > 100;
+SELECT name || ' (' || path || ')' AS label FROM 'blog' WHERE path = '/hello';
+-- {"label":"hello (/hello)"}
 
--- OR: At least one condition must be true
-SELECT * FROM default
-WHERE properties->>'status' = 'draft'
-  OR properties->>'status' = 'pending';
-
--- NOT: Negates condition
-SELECT * FROM default
-WHERE NOT (properties->>'status' = 'archived');
-
--- Complex combinations
-SELECT * FROM default
-WHERE (properties->>'status' = 'published' OR properties->>'status' = 'featured')
-  AND (properties->>'view_count')::int > 100
-  AND properties->>'category' IS NOT NULL;
+SELECT 'a' || NULL AS n;
+-- {"n":null}
 ```
 
-**Truth Tables:**
+## JSON operators
 
-AND:
-| A | B | A AND B |
-|---|---|---------|
-| true | true | true |
-| true | false | false |
-| false | true | false |
-| false | false | false |
-| NULL | true | NULL |
+All node data lives in the `properties` JSONB column, so these are the operators you use most.
 
-OR:
-| A | B | A OR B |
-|---|---|--------|
-| true | true | true |
-| true | false | true |
-| false | true | true |
-| false | false | false |
-| NULL | false | NULL |
-
----
-
-## Arithmetic Operators
-
-### Numeric Operations
-
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `+` | Addition | `(properties->>'price')::numeric + (properties->>'tax')::numeric` |
-| `-` | Subtraction | `(properties->>'stock')::int - (properties->>'sold')::int` |
-| `*` | Multiplication | `(properties->>'price')::numeric * (properties->>'quantity')::int` |
-| `/` | Division | `(properties->>'total')::numeric / (properties->>'count')::int` |
-| `%` | Modulo (remainder) | `(properties->>'value')::int % 10` |
-
-**Examples:**
+| Operator | Result | Description |
+|----------|--------|-------------|
+| `json -> 'key'` | JSONB | field by key; chains for nested access |
+| `json ->> 'key'` | TEXT | field by key as text |
+| `json @> json` | BOOLEAN | left contains right |
+| `json ? 'key'` | BOOLEAN | top-level key exists |
+| `json @? 'jsonpath'` | BOOLEAN | JSONPath matches (`'$.tags'`) |
+| `json \|\| json` | JSONB | shallow merge; keys on the right win |
+| `json - 'key'` | JSONB | remove a top-level key |
 
 ```sql
--- Addition
-SELECT (properties->>'price')::numeric + (properties->>'tax')::numeric AS total_price
-FROM default;
+SELECT properties->'tags' AS tags,
+       properties->'author'->>'name' AS author,
+       properties->'views' AS views_json,
+       properties->>'views' AS views_text
+FROM 'blog' WHERE path = '/news/second';
+-- {"tags":["b","c"],"author":"Ana","views_json":7,"views_text":"7"}
 
--- Multiplication
-SELECT (properties->>'price')::numeric * (properties->>'quantity')::int AS line_total
-FROM default;
+SELECT name FROM 'blog' WHERE properties @> '{"published": true}';
+SELECT name FROM 'blog' WHERE properties->'tags' @> '["b"]'::jsonb;   -- array contains element
+SELECT name FROM 'blog' WHERE properties ? 'tags';
+SELECT name FROM 'blog' WHERE properties @? '$.tags';
 
--- Combined
-SELECT
-    (properties->>'price')::numeric * (properties->>'quantity')::int
-    - (properties->>'discount')::numeric AS net_total
-FROM default;
+SELECT properties || '{"extra": 1}' AS merged FROM 'blog' WHERE path = '/hello';
+SELECT properties - 'tags' AS without_tags FROM 'blog' WHERE path = '/hello';
 ```
 
-**Notes:**
-- Division by zero returns error
-- Use NULLIF to prevent division by zero: `total / NULLIF(count, 0)`
-- Integer division truncates: `5 / 2 = 2`
-- Use DOUBLE for decimal division: `5.0 / 2.0 = 2.5`
+Notes on the edges:
 
----
+- `->` takes a text key only. `properties->'tags'->0` is rejected (`expected TEXT, got INT`). Read an array element with `JSON_VALUE(properties, '$.tags[0]')`.
+- `#>`, `#>>` and `#-` parse but currently fail at run time (`requires JSONB arguments`), and `?|` / `?&` need array literals the analyzer does not accept. Chain `->` for nested access and use `JSONB_SET` / `-` to modify.
+- `@>` with a JSON scalar on the right (`properties->'tags' @> '"b"'`) matches nothing; wrap the element in an array.
 
-## String Operators
+### The `::String` key cast
 
-### Concatenation
-
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `||` | String concatenation | `properties->>'first_name' || ' ' || properties->>'last_name'` |
-
-**Examples:**
+`properties->>'key'::String = value` is a RaisinDB form that keeps the predicate as a verbatim row filter. It is always correct, including combined with `path =` or `node_type =` and on workspaces with compound indexes. The bare form (`properties->>'key' = value`) may be routed to a property or compound index.
 
 ```sql
--- Concatenate properties
-SELECT properties->>'first_name' || ' ' || properties->>'last_name' AS full_name
-FROM default;
-
--- Multiple concatenations
-SELECT properties->>'category' || ': ' || properties->>'title' || ' (' || properties->>'status' || ')'
-FROM default;
-
--- With NULL handling
-SELECT properties->>'title' || COALESCE(' - ' || properties->>'subtitle', '')
-FROM default;
+SELECT name FROM 'blog' WHERE properties->>'views'::String = '42';
 ```
 
-**Notes:**
-- NULL concatenated with any value results in NULL
-- Use COALESCE to handle NULLs: `'Hello' || COALESCE(properties->>'name', 'Guest')`
+`->>` yields text, so compare number and boolean properties against string literals in either form.
 
-### Pattern Matching
+## CASE
 
-| Operator | Description | Example |
-|----------|-------------|---------|
-| `LIKE` | Pattern matching | `properties->>'title' LIKE '%Guide%'` |
-| `NOT LIKE` | Negated pattern | `properties->>'title' NOT LIKE 'Draft%'` |
-
-**Wildcards:**
-- `%` - Matches zero or more characters
-- `_` - Matches exactly one character
-
-**Examples:**
+Both forms are supported.
 
 ```sql
--- Starts with
-SELECT * FROM default WHERE properties->>'title' LIKE 'Guide%';
-
--- Ends with
-SELECT * FROM default WHERE properties->>'title' LIKE '%Tutorial';
-
--- Contains
-SELECT * FROM default WHERE properties->>'title' LIKE '%Database%';
-
--- NOT LIKE
-SELECT * FROM default WHERE properties->>'title' NOT LIKE 'Draft%';
+SELECT name,
+       CASE node_type WHEN 'raisin:Folder' THEN 'folder' ELSE 'page' END AS kind,
+       CASE WHEN depth = 1 THEN 'root' ELSE 'nested' END AS level
+FROM 'blog' ORDER BY name;
 ```
 
-**Case-Insensitive Matching:**
-
-```sql
--- Use UPPER or LOWER
-SELECT * FROM default
-WHERE UPPER(properties->>'title') LIKE UPPER('%guide%');
+```json
+{"name":"first","kind":"page","level":"nested"}
+{"name":"hello","kind":"page","level":"root"}
+{"name":"news","kind":"folder","level":"root"}
 ```
 
----
+## Search operators
 
-## Range Operators
+- `@@` matches a `TSVECTOR` against a `TSQUERY`. In practice use `FULLTEXT_MATCH(query, language)` in `WHERE`; see [Full-text functions](./functions/fulltext-functions.md).
+- Vector similarity is expressed with `VECTOR_L2_DISTANCE`, `VECTOR_COSINE_DISTANCE` and `VECTOR_INNER_PRODUCT` or through `KNN` / `HYBRID_SEARCH`; see [Vector functions](./functions/vector-functions.md).
 
-### BETWEEN
+## Precedence
 
-Check if value is within a range (inclusive).
-
-| Operator | Description |
-|----------|-------------|
-| `BETWEEN x AND y` | Value is between x and y (inclusive) |
-| `NOT BETWEEN x AND y` | Negated range check |
-
-**Examples:**
-
-```sql
--- Numeric range
-SELECT * FROM default
-WHERE (properties->>'price')::numeric BETWEEN 10.0 AND 100.0;
-
--- Date range
-SELECT * FROM default
-WHERE created_at BETWEEN '2024-01-01' AND '2024-12-31';
-
--- NOT BETWEEN
-SELECT * FROM default
-WHERE (properties->>'price')::numeric NOT BETWEEN 50.0 AND 150.0;
-```
-
-**Notes:**
-- Inclusive of both endpoints
-- Equivalent to: `value >= x AND value <= y`
-- Works with numbers, dates, strings
-
-### IN
-
-Check if value matches any in a list.
-
-| Operator | Description |
-|----------|-------------|
-| `IN (list)` | Value equals any in list |
-| `NOT IN (list)` | Value not in list |
-
-**Examples:**
-
-```sql
--- Value list
-SELECT * FROM default
-WHERE properties->>'status' IN ('published', 'featured', 'archived');
-
--- Subquery
-SELECT * FROM default
-WHERE properties->>'category_id' IN (
-    SELECT id FROM nodes WHERE node_type = 'Category'
-      AND properties->>'active' = 'true'
-);
-
--- NOT IN
-SELECT * FROM default
-WHERE properties->>'status' NOT IN ('draft', 'pending');
-
--- Single value
-SELECT * FROM default WHERE properties->>'status' IN ('published');
-```
-
-**Notes:**
-- More readable than multiple OR conditions
-- Can use subqueries
-- Returns false if list is empty
-- NULL in list requires special handling
-
----
-
-## Full-Text Search Operator
-
-### Match Operator
-
-| Operator | Description |
-|----------|-------------|
-| `@@` | Full-text match |
-
-**Examples:**
-
-```sql
--- Basic match
-SELECT * FROM default
-WHERE search_vector @@ TO_TSQUERY('database');
-
--- With ranking
-SELECT
-    properties->>'title' AS title,
-    TS_RANK(search_vector, TO_TSQUERY('database')) AS rank
-FROM default
-WHERE search_vector @@ TO_TSQUERY('database')
-ORDER BY rank DESC;
-
--- Complex query
-SELECT * FROM default
-WHERE search_vector @@ TO_TSQUERY('database & query & !tutorial');
-```
-
----
-
-## Vector Operators
-
-### Distance Operators
-
-| Operator | Description | Return Type |
-|----------|-------------|-------------|
-| `<->` | L2 (Euclidean) distance | DOUBLE |
-| `<=>` | Cosine distance | DOUBLE |
-| `<#>` | Inner product (negative) | DOUBLE |
-
-**Examples:**
-
-```sql
--- L2 distance for nearest neighbor search
-SELECT properties->>'title' AS title, embedding <-> query_embedding AS distance
-FROM default
-ORDER BY distance
-LIMIT 10;
-
--- Cosine distance
-SELECT properties->>'title' AS title, embedding <=> query_embedding AS distance
-FROM default
-ORDER BY distance
-LIMIT 10;
-```
-
----
-
-## Array Operators
-
-### ANY
-
-Check if comparison is true for any array element.
-
-**Examples:**
-
-```sql
--- Value in array
-SELECT * FROM default
-WHERE 'sql' = ANY(properties->'tags');
-```
-
-### ALL
-
-Check if comparison is true for all array elements.
-
-**Examples:**
-
-```sql
--- All elements match
-SELECT * FROM default
-WHERE 'published' = ALL(properties->'statuses');
-```
-
----
-
-## Operator Precedence
-
-From highest to lowest:
-
-1. `::` (type cast)
-2. `[]` (array subscript)
-3. `->`, `->>`, `#>`, `#>>` (JSON extraction)
-4. `-` (unary minus)
-5. `*`, `/`, `%`
-6. `+`, `-` (binary)
-7. `||` (string/JSONB concatenation/merge)
-8. `<->`, `<=>`, `<#>` (vector distance)
-9. `@>`, `<@`, `?`, `?|`, `?&`, `#-`, `@?` (JSON containment/existence)
-10. `@@` (full-text match)
-11. `=`, `<`, `>`, `<=`, `>=`, `<>`, `!=`
-12. `IS NULL`, `IS NOT NULL`, `LIKE`, `IN`, `BETWEEN`
-13. `NOT`
-14. `AND`
-15. `OR`
-
-**Examples:**
-
-```sql
--- Without parentheses
-SELECT * FROM default
-WHERE properties->>'status' = 'published'
-  OR properties->>'status' = 'featured'
-  AND (properties->>'view_count')::int > 100;
--- Equivalent to:
-WHERE properties->>'status' = 'published'
-  OR (properties->>'status' = 'featured' AND (properties->>'view_count')::int > 100)
-
--- With parentheses for clarity
-SELECT * FROM default
-WHERE (properties->>'status' = 'published' OR properties->>'status' = 'featured')
-  AND (properties->>'view_count')::int > 100;
-
--- Arithmetic precedence
-SELECT (properties->>'price')::numeric + (properties->>'tax')::numeric * (properties->>'quantity')::int
-FROM default;
--- Equivalent to:
-SELECT (properties->>'price')::numeric + ((properties->>'tax')::numeric * (properties->>'quantity')::int)
-FROM default;
-```
-
----
-
-## CASE Expression
-
-Conditional expressions (not technically an operator, but commonly used).
-
-### Simple CASE
-
-```sql
-SELECT
-    properties->>'title' AS title,
-    CASE properties->>'status'
-        WHEN 'published' THEN 'Live'
-        WHEN 'draft' THEN 'In Progress'
-        WHEN 'archived' THEN 'Archived'
-        ELSE 'Unknown'
-    END AS status_label
-FROM default;
-```
-
-### Searched CASE
-
-```sql
-SELECT
-    properties->>'title' AS title,
-    CASE
-        WHEN (properties->>'view_count')::int > 1000 THEN 'Popular'
-        WHEN (properties->>'view_count')::int > 100 THEN 'Normal'
-        ELSE 'Unpopular'
-    END AS popularity
-FROM default;
-```
-
----
-
-## Examples
-
-### Complex Filtering
-
-```sql
-SELECT * FROM default
-WHERE (properties->>'status' = 'published' OR properties->>'status' = 'featured')
-  AND (properties->>'view_count')::int BETWEEN 100 AND 10000
-  AND created_at > NOW() - INTERVAL '30 days'
-  AND properties->>'category_id' IN (
-    SELECT id FROM nodes WHERE node_type = 'Category'
-      AND properties->>'active' = 'true'
-  )
-  AND properties->>'title' NOT LIKE 'Draft%'
-  AND properties->>'description' IS NOT NULL;
-```
-
-### Computed Columns
-
-```sql
-SELECT
-    properties->>'title' AS title,
-    (properties->>'price')::numeric AS price,
-    (properties->>'tax')::numeric AS tax,
-    (properties->>'price')::numeric + (properties->>'tax')::numeric AS total,
-    (properties->>'price')::numeric * 0.9 AS discounted,
-    ((properties->>'price')::numeric + (properties->>'tax')::numeric) * (properties->>'quantity')::int AS line_total
-FROM default;
-```
-
-### String Manipulation
-
-```sql
-SELECT
-    properties->>'first_name' || ' ' || properties->>'last_name' AS full_name,
-    UPPER(properties->>'status') AS status_code,
-    properties->>'category' || ': ' || properties->>'title' AS full_title
-FROM default;
-```
-
-### Conditional Logic
-
-```sql
-SELECT
-    properties->>'title' AS title,
-    (properties->>'view_count')::int AS view_count,
-    CASE
-        WHEN (properties->>'view_count')::int > 10000 THEN 'viral'
-        WHEN (properties->>'view_count')::int > 1000 THEN 'popular'
-        WHEN (properties->>'view_count')::int > 100 THEN 'normal'
-        ELSE 'low'
-    END AS tier,
-    CASE
-        WHEN properties->>'status' = 'published'
-            AND (properties->>'view_count')::int > 1000 THEN 'high'
-        WHEN properties->>'status' = 'published' THEN 'normal'
-        ELSE 'low'
-    END AS priority
-FROM default;
-```
-
----
-
-## Notes
-
-- Use parentheses for clarity, especially with AND/OR
-- NULL handling is important in all comparisons
-- Type coercion applies in comparisons and arithmetic
-- LIKE is case-sensitive; use UPPER/LOWER for case-insensitive
-- Division by zero causes errors; use NULLIF
-- String concatenation with NULL results in NULL
-- Properties extracted with `->>` return TEXT; cast with `::type` for numeric comparisons
+Precedence follows PostgreSQL: `::` casts first, then unary minus, `*` `/` `%`, `+` `-`, then `||` and the JSON operators, then comparisons and `LIKE` / `IN` / `BETWEEN` / `IS`, then `NOT`, `AND`, `OR`. A cast written directly after a JSON access applies to the extracted value: `properties->>'views'::INT > 20` and `(properties->>'views')::INT > 20` return the same rows. The parenthesised form is the unambiguous one.

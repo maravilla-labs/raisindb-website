@@ -4,582 +4,197 @@ sidebar_position: 3
 
 # Defining Element Types
 
-Element types are the building blocks of properties in your NodeTypes.
+This guide walks through creating element types, composing them, and writing nodes that use them. The field reference is on the [Elements](/docs/concepts/data-model/elements) concept page.
 
-## Element Type Basics
+All examples use repository `docs-model`, branch `main`, and these shell variables:
 
-An element type defines:
-- Data type (text, number, date, etc.)
-- Validation rules
-- Default values
-- UI presentation hints
-
-## Core Element Types
-
-### Text
-
-Simple string values:
-
-```yaml
-name:
-  type: text
-  label: Name
-  required: true
-  min_length: 1
-  max_length: 100
-  placeholder: Enter name...
-  help_text: The person's full name
+```bash
+TOKEN=$(curl -s -X POST localhost:8090/api/raisindb/sys/default/auth \
+  -H 'content-type: application/json' \
+  -d '{"username":"admin","password":"AdminPassword123!"}' | jq -r .token)
+H="Authorization: Bearer $TOKEN"; J="content-type: application/json"
+B=localhost:8090/api/management/docs-model/main
 ```
 
-Options:
-- `min_length`: Minimum character count
-- `max_length`: Maximum character count
-- `pattern`: Regular expression for validation
-- `placeholder`: UI hint
-- `help_text`: Description for editors
+## 1. Create an element type
 
-### Richtext
+The body wraps the definition in `element_type`. Each field is tagged with `$type`; type-specific settings go in `config`.
 
-HTML or Markdown formatted content:
-
-```yaml
-content:
-  type: richtext
-  label: Content
-  format: html  # or 'markdown'
-  toolbar:
-    - bold
-    - italic
-    - link
-    - heading
-    - list
+```bash
+curl -s -X POST $B/elementtypes -H "$H" -H "$J" -d '{
+  "element_type": {
+    "name": "arch:Hero",
+    "title": "Hero",
+    "fields": [
+      { "$type": "TextField", "name": "heading", "title": "Heading",
+        "required": true, "translatable": true, "config": { "max_length": 120 } },
+      { "$type": "MediaField", "name": "image" },
+      { "$type": "OptionsField", "name": "align",
+        "config": { "options": ["left", "center"], "render_as": "Radio" } }
+    ]
+  }
+}'
 ```
 
-### Number
+Response (`201 Created`):
 
-Numeric values:
-
-```yaml
-quantity:
-  type: number
-  label: Quantity
-  min: 0
-  max: 1000
-  step: 1        # Integer steps
-  default: 1
-
-price:
-  type: number
-  label: Price
-  min: 0
-  decimal: true  # Allow decimals
-  step: 0.01
-  default: 0.00
+```json
+{"id":"3tPiu1sfNV89jWlU","name":"arch:Hero","title":"Hero","description":null,
+ "fields":[{"$type":"TextField","name":"heading","title":"Heading","required":true,"translatable":true,"config":{"max_length":120}},
+           {"$type":"MediaField","name":"image"},
+           {"$type":"OptionsField","name":"align","config":{"options":["left","center"],"render_as":"Radio"}}],
+ "version":1,"created_at":"2026-09-06T18:37:57.033632Z","updated_at":"2026-09-06T18:37:57.033632Z",
+ "published_at":null,"published_by":null,"publishable":null,"previous_version":null}
 ```
 
-### Boolean
+Add a second, strict type. With `strict: true` an element of this type may only contain the declared fields:
 
-True/false toggle:
-
-```yaml
-active:
-  type: boolean
-  label: Active
-  default: false
-
-featured:
-  type: boolean
-  label: Featured
-  default: true
-  help_text: Show on homepage
+```bash
+curl -s -X POST $B/elementtypes -H "$H" -H "$J" -d '{
+  "element_type": {
+    "name": "arch:TextBlock",
+    "strict": true,
+    "fields": [ { "$type": "RichTextField", "name": "body", "required": true } ]
+  }
+}'
 ```
 
-### Date
+## 2. Publish
 
-Date and datetime values:
+Publishing bumps `version`, sets `published_at`, `published_by` and `publishable: true`, and keeps the previous record id in `previous_version`. Only published types appear under `/elementtypes/published`. An unpublished type can still be used in content; publishing is a bookkeeping state for editors and package tooling.
 
-```yaml
-birth_date:
-  type: date
-  label: Birth Date
-  min: 1900-01-01
-  max: 2024-12-31
-
-event_time:
-  type: date
-  label: Event Time
-  include_time: true
-  default: now
+```bash
+curl -s -X POST $B/elementtypes/arch:Hero/publish -H "$H"
 ```
 
-### Select
-
-Dropdown with predefined options:
-
-```yaml
-size:
-  type: select
-  label: Size
-  options:
-    - Small
-    - Medium
-    - Large
-  default: Medium
-
-status:
-  type: select
-  label: Status
-  options:
-    - value: draft
-      label: Draft
-    - value: published
-      label: Published
-    - value: archived
-      label: Archived
-  default: draft
+```json
+{"id":"3tPiu1sfNV89jWlU","name":"arch:Hero", ... ,"version":2,
+ "published_at":"2026-09-06T18:37:57.068137Z","published_by":"system","publishable":true,
+ "previous_version":"3tPiu1sfNV89jWlU"}
 ```
 
-### Reference
+The other verbs on `/elementtypes/{name}` are `GET`, `PUT` (same body as create; `name` must match the path), `DELETE` (returns `204`), and `POST .../unpublish`. Any write accepts an optional `"commit": {"message": "...", "actor": "..."}` next to `element_type`.
 
-Link to another node:
+## 3. Reuse fields with `extends`
 
-```yaml
-author:
-  type: reference
-  label: Author
-  node_type: User
-  workspace: users
-  required: true
-
-category:
-  type: reference
-  label: Category
-  node_type: Category
-  allow_create: true  # Allow creating new categories
+```bash
+curl -s -X POST $B/elementtypes -H "$H" -H "$J" -d '{
+  "element_type": {
+    "name": "arch:BigHero",
+    "extends": "arch:Hero",
+    "fields": [ { "$type": "TextField", "name": "kicker" } ]
+  }
+}'
+curl -s $B/elementtypes/arch:BigHero/resolved -H "$H"
 ```
 
-### Array
+The resolved view merges the chain, child fields winning by name:
 
-Multiple values:
-
-```yaml
-tags:
-  type: text
-  label: Tags
-  array: true
-  min_items: 1
-  max_items: 10
-
-related_articles:
-  type: reference
-  label: Related Articles
-  node_type: Article
-  array: true
-  max_items: 5
+```json
+{"element_type": {"name":"arch:BigHero","extends":"arch:Hero", ...},
+ "resolved_fields":[{"$type":"OptionsField","name":"align", ...},{"$type":"TextField","name":"heading", ...},
+                    {"$type":"MediaField","name":"image"},{"$type":"TextField","name":"kicker"}],
+ "resolved_layout":null,"inheritance_chain":["arch:BigHero","arch:Hero"],"resolved_strict":false}
 ```
 
-### Object
+## 4. Nest element types
 
-Nested structure:
+An `ElementField` holds one element of a fixed type. A `CompositeField` is an inline group with its own `fields`; with `multiple: true` it is a repeatable list.
 
-```yaml
-address:
-  type: object
-  label: Address
-  properties:
-    street:
-      type: text
-      label: Street Address
-    city:
-      type: text
-      label: City
-    state:
-      type: text
-      label: State
-    zip:
-      type: text
-      label: ZIP Code
-      pattern: ^\d{5}(-\d{4})?$
-
-dimensions:
-  type: object
-  label: Dimensions
-  properties:
-    width:
-      type: number
-      label: Width
-    height:
-      type: number
-      label: Height
-    depth:
-      type: number
-      label: Depth
-    unit:
-      type: select
-      label: Unit
-      options: [cm, in, ft]
+```bash
+curl -s -X POST $B/elementtypes -H "$H" -H "$J" -d '{
+  "element_type": {
+    "name": "arch:Feature",
+    "fields": [
+      { "$type": "ElementField", "name": "hero", "element_type": "arch:Hero" },
+      { "$type": "CompositeField", "name": "bullets", "multiple": true,
+        "fields": [ { "$type": "TextField", "name": "text", "translatable": true } ] }
+    ]
+  }
+}'
 ```
 
-## Advanced Validation
+A value for this type looks like:
 
-### Pattern Matching
-
-```yaml
-email:
-  type: text
-  label: Email
-  pattern: ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
-  error_message: Please enter a valid email address
-
-phone:
-  type: text
-  label: Phone
-  pattern: ^\+?1?\d{9,15}$
-  error_message: Please enter a valid phone number
-
-slug:
-  type: text
-  label: Slug
-  pattern: ^[a-z0-9]+(?:-[a-z0-9]+)*$
-  error_message: Only lowercase letters, numbers, and hyphens allowed
+```json
+{
+  "element_type": "arch:Feature",
+  "hero": { "element_type": "arch:Hero", "heading": "h" },
+  "bullets": [ { "uuid": "b1", "text": "one" } ]
+}
 ```
 
-### Unique Constraints
+The `uuid` on each bullet is required here because the repeatable composite has a translatable sub-field. Without it the write fails with `COMPOSITE_MISSING_UUID: Item ...bullets[0] requires a 'uuid' field because the composite has translatable sub-fields`.
 
-```yaml
-username:
-  type: text
-  label: Username
-  unique: true
-  min_length: 3
-  max_length: 30
-  pattern: ^[a-zA-Z0-9_]+$
+## 5. Write content that uses the types
 
-email:
-  type: text
-  label: Email
-  unique: true
-  pattern: ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
+Element types are usually placed through an [archetype](/docs/guides/data-modeling/using-archetypes) `SectionField`, but any property may hold an element. The validator finds every object with an `element_type` key, wherever it sits, and checks it:
+
+```bash
+curl -s -X POST localhost:8090/api/repository/docs-model/main/head/blog/ -H "$H" -H "$J" -d '{
+  "name": "with-blocks",
+  "node_type": "blog:Article",
+  "properties": {
+    "title": "Blocks",
+    "blocks": [ { "element_type": "arch:Hero", "heading": "Welcome", "align": "center" } ]
+  }
+}'
 ```
 
-### Conditional Requirements
+What is enforced on write:
+
+| Rule | Error message |
+|---|---|
+| Unknown element type | `Failed to resolve element type 'nope:X': Not found: ElementType not found: nope:X (at element 'nope:X', path 'blocks[0]')` |
+| Missing `required` field | `Missing required field 'heading' at ...sections[0]` |
+| Extra key in a strict type | `Undefined property 'extra' in strict element type 'arch:TextBlock' at path '...'` |
+| Wrong type in an `ElementField` | `Field '...feature' expects element type 'arch:Feature', found 'arch:Hero'` |
+| Two elements in a non-`multiple` `ElementField` | `Field '...feature' does not allow multiple elements` |
+| Type not in a `SectionField` list | `Element type 'blog:Nope' is not allowed in field '...sections'` |
+
+`config` settings such as `max_length`, `min_value` or `options` are hints for editors and are not enforced by the server.
+
+## Other ways to define element types
+
+**Package YAML.** Put one file per type under `package/elementtypes/` and install the package with the CLI (`raisindb package create`, `raisindb package upload`, `raisindb package install`). The YAML is the same shape as the JSON body without the wrapper:
 
 ```yaml
-# Via JSON schema
-product_type:
-  type: select
-  label: Product Type
-  options: [physical, digital]
-
-shipping_weight:
-  type: number
-  label: Shipping Weight (kg)
-  required_if:
-    field: product_type
-    value: physical
-
-download_url:
-  type: text
-  label: Download URL
-  required_if:
-    field: product_type
-    value: digital
-```
-
-## Custom Validation
-
-### JSON Schema
-
-Use full JSON Schema for complex validation:
-
-```yaml
-config:
-  type: object
-  label: Configuration
-  json_schema:
-    type: object
-    properties:
-      host:
-        type: string
-        format: hostname
-      port:
-        type: integer
-        minimum: 1
-        maximum: 65535
-      ssl:
-        type: boolean
-    required: [host, port]
-```
-
-### Validation Functions
-
-Reference a serverless function for validation:
-
-```yaml
-custom_field:
-  type: text
-  label: Custom Field
-  validate: validate-custom-field  # Function name
-```
-
-## UI Presentation
-
-### Display Options
-
-```yaml
-description:
-  type: text
-  label: Description
-  multiline: true
-  rows: 5
-
-bio:
-  type: richtext
-  label: Biography
-  toolbar_position: top
-  min_height: 200px
-
-color:
-  type: text
-  label: Color
-  widget: color-picker
-  default: "#000000"
-```
-
-### Grouping
-
-```yaml
-# NodeType with field groups
-name: Product
-element_types:
-  # Basic Information
-  name:
-    type: text
-    group: basic
-  sku:
-    type: text
-    group: basic
-
-  # Pricing
-  price:
-    type: number
-    group: pricing
-  sale_price:
-    type: number
-    group: pricing
-
-  # Inventory
-  stock:
-    type: number
-    group: inventory
-  warehouse:
-    type: text
-    group: inventory
-
-groups:
-  basic:
-    label: Basic Information
-    order: 1
-  pricing:
-    label: Pricing
-    order: 2
-  inventory:
-    label: Inventory
-    order: 3
-```
-
-## Computed Properties
-
-### Auto-generated Values
-
-```yaml
-created_at:
-  type: date
-  label: Created At
-  auto: true
-  immutable: true
-
-updated_at:
-  type: date
-  label: Updated At
-  auto: true
-  on_update: true
-
-id:
-  type: text
-  label: ID
-  auto: true
-  generator: ulid
-  immutable: true
-```
-
-### Derived Values
-
-Use functions to compute values:
-
-```yaml
-full_name:
-  type: text
-  label: Full Name
-  computed: true
-  compute: compute-full-name  # Function that combines first_name + last_name
-
-total_price:
-  type: number
-  label: Total Price
-  computed: true
-  compute: calculate-total  # Function that sums line items
-```
-
-## Internationalization
-
-### Translatable Fields
-
-```yaml
-title:
-  type: text
-  label: Title
-  translatable: true
-
-description:
-  type: richtext
-  label: Description
-  translatable: true
-
-# Non-translatable
-sku:
-  type: text
-  label: SKU
-  translatable: false
-```
-
-Translations are stored as a **per-locale overlay** on top of the base node, not
-inline on the field. The base node holds the source-language content; each locale
-adds an overlay of just the translated fields, and reads resolve them via a
-locale parameter (e.g. `?lang=fr`). Non-translatable fields like `sku` always
-fall back to the base.
-
-For **repeatable** content (a `CompositeField` with `multiple: true`) that has
-translatable sub-fields, every item — at **every** nesting level — must carry a
-`uuid` so the overlay can address an individual item instead of replacing the
-whole array:
-
-```yaml
-features:                 # repeatable composite with a translatable sub-field
-  - uuid: feat-fast       # uuid required
-    icon: zap             # not translatable — preserved from base
-    title: Fast Development
-```
-
-See the [Translations guide](./translations.md) for the full overlay model, the
-REST and SQL ways to write translations, and the rules for nested composites.
-
-## Real-World Examples
-
-### User Profile
-
-```yaml
-name: UserProfile
-element_types:
-  username:
-    type: text
-    label: Username
-    required: true
-    unique: true
-    min_length: 3
-    max_length: 30
-    pattern: ^[a-zA-Z0-9_]+$
-
-  email:
-    type: text
-    label: Email
-    required: true
-    unique: true
-    pattern: ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$
-
-  display_name:
-    type: text
-    label: Display Name
-    max_length: 50
-
-  bio:
-    type: richtext
-    label: Bio
-    max_length: 500
-
-  avatar:
-    type: reference
-    label: Avatar
-    node_type: Image
-
-  social_links:
-    type: object
-    label: Social Links
-    properties:
-      twitter:
-        type: text
-      linkedin:
-        type: text
-      github:
-        type: text
-```
-
-### Product Catalog
-
-```yaml
-name: Product
-element_types:
-  name:
-    type: text
-    label: Product Name
-    required: true
-    max_length: 200
+name: events:HeroBlock
+title: Hero Block
+icon: image
+fields:
+  - $type: TextField
+    name: heading
+    title: Heading
     translatable: true
-
-  sku:
-    type: text
-    label: SKU
-    required: true
-    unique: true
-    pattern: ^[A-Z0-9-]+$
-
-  description:
-    type: richtext
-    label: Description
-    translatable: true
-
-  price:
-    type: number
-    label: Price
-    required: true
-    min: 0
-    decimal: true
-
-  images:
-    type: reference
-    label: Images
-    node_type: Image
-    array: true
-    max_items: 10
-
-  variants:
-    type: object
-    label: Variants
-    array: true
-    properties:
-      size:
-        type: select
-        options: [XS, S, M, L, XL]
-      color:
-        type: text
-      sku:
-        type: text
-      price_adjustment:
-        type: number
+  - $type: MediaField
+    name: background_image
+    title: Background Image
 ```
 
-## Next Steps
+**JavaScript client.** `HttpDatabase.elementTypes()` wraps the same endpoints:
 
-- [Creating NodeTypes](./creating-nodetypes.md) with element types
-- [Using Archetypes](./using-archetypes.md) for reusable elements
-- [Querying Data](../querying/sql-basics.md) with your schema
+```javascript
+import { RaisinHttpClient } from '@raisindb/client';
+
+const client = new RaisinHttpClient('http://localhost:8090');
+await client.authenticate({ username: 'admin', password: 'AdminPassword123!' });
+const db = client.database('docs-model');
+
+await db.elementTypes().create('arch:Quote', {
+  fields: [{ $type: 'TextField', name: 'text', required: true }],
+});
+await db.elementTypes().publish('arch:Quote', { message: 'publish quote' });
+const resolved = await db.elementTypes().getResolved('arch:Quote');
+const published = await db.elementTypes().list(true);
+```
+
+Use `db.onBranch('staging')` to manage the schema of another branch.
+
+**SQL.** `CREATE ELEMENTTYPE 'arch:Quote' DESCRIPTION 'A quote' PUBLISHABLE` and `DROP ELEMENTTYPE 'arch:Quote'` work, but a `FIELDS (...)` clause is not stored, so the record comes back with `"fields": []`. Define fields over HTTP, the client or YAML.
+
+## Next steps
+
+- [Using Archetypes](./using-archetypes.md) to place element types in page templates
+- [Translations](./translations.md) for translatable fields and locale overlays
+- [Elements](/docs/concepts/data-model/elements) for the full field and layout reference

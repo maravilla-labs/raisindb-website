@@ -4,236 +4,215 @@ sidebar_position: 6
 
 # Indexing
 
-RaisinDB provides multiple indexing strategies to keep queries fast as your data grows. From single-property lookups to multi-column compound indexes to full-text search, indexes are defined declaratively and maintained automatically.
+RaisinDB maintains its indexes automatically as nodes are written. Most
+queries need no declaration at all; compound indexes and the search indexes
+are declared on the NodeType.
 
-## Types of Indexes
+## Types of indexes
 
-| Index Type | Best For | Defined On |
-|-----------|----------|------------|
-| **Property Index** | Single-field equality lookups | Automatic for queried properties |
-| **Compound Index** | Multi-field queries with sorting | NodeType via `COMPOUND_INDEX` clause |
-| **Full-Text Search** | Natural language queries | NodeTypes with `indexable: true` |
-| **Vector Search** | Semantic similarity | Embedding-enabled nodes |
+| Index | Answers | Declared |
+|---|---|---|
+| Path index | `path = …`, `CHILD_OF`, `DESCENDANT_OF`, `PATH_STARTS_WITH` | automatic |
+| Property index | `properties->>'k' = v`, `node_type = …`, `ORDER BY created_at` | automatic for every top-level property |
+| Compound index | several equalities plus an `ORDER BY`, in one scan | `COMPOUND_INDEX` on the NodeType |
+| Full-text | `FULLTEXT_SEARCH`, `FULLTEXT_MATCH` | `index: [Fulltext]` per property |
+| Vector | `KNN`, `HYBRID_SEARCH` | `index: [Vector]` per property plus an embedding provider |
+| Spatial | `ST_DWITHIN`, `ST_DISTANCE` ordering | automatic for geometry values |
 
-## Compound Indexes
+`EXPLAIN` shows which one a query uses.
 
-Compound indexes are the workhorse for structured queries. They allow the query engine to scan a small, pre-sorted slice of the index instead of walking every node in the workspace.
+## Path index
 
-### The Problem They Solve
-
-Without a compound index, a query like this scans **every node** in the workspace:
+Every node's path is indexed, and hierarchy predicates become prefix scans:
 
 ```sql
-SELECT * FROM 'default'
-WHERE properties->>'category'::String = 'tech'
-  AND properties->>'status'::String = 'published'
-ORDER BY __created_at DESC
+EXPLAIN SELECT path FROM 'blog' WHERE CHILD_OF('/posts');
+-- PrefixScan: prefix=/posts/
+```
+
+## Property index
+
+Each top-level property of every node is written to the property index as a
+hash of its value, keyed by property name. That gives equality lookups on any
+property without declaring anything:
+
+```sql
+EXPLAIN SELECT path FROM 'blog' WHERE properties->>'status' = 'published';
+-- PropertyIndexScan: status=published
+```
+
+The same index holds a few system fields: `node_type`, `name`, `archetype`,
+`created_by`, `updated_by`, and the two timestamps. The timestamps are stored
+in sortable form, so `ORDER BY created_at DESC LIMIT n` is served in index
+order without sorting:
+
+```sql
+EXPLAIN SELECT path FROM 'blog' ORDER BY created_at DESC LIMIT 10;
+-- PropertyOrderScan: __created_at DESC limit_hint=10
+```
+
+Because values are hashed, the property index answers equality only. A
+`LIKE`, a range, or a comparison on a cast key is evaluated row by row on
+top of whichever index narrows the scan (a path prefix, a `node_type`, or a
+compound index).
+
+Index entries are versioned with the revision that wrote them, and draft and
+published states are kept apart, so a time-travel query or a published-only
+read sees exactly the entries that were live at that point.
+
+## Compound indexes
+
+A compound index stores several property values in one key, in a declared
+order, so a query that filters on all of them and sorts on the last can read
+its result as one pre-sorted slice.
+
+### The problem they solve
+
+```sql
+SELECT path FROM 'feed'
+WHERE properties->>'category' = 'tech'
+  AND properties->>'status' = 'published'
+ORDER BY created_at DESC
 LIMIT 10;
 ```
 
-With a compound index, the same query becomes an **O(LIMIT) prefix scan** — it seeks directly to `category=tech, status=published` in the index, reads 10 pre-sorted entries, and looks up the nodes by ID. Fast regardless of total data size.
+With only the property index, the planner picks the more selective of the
+two equalities, filters the rest, and sorts. With a compound index on
+`(category, status, __created_at DESC)` it seeks to `tech / published` and
+reads ten entries that are already in the right order.
 
-### Defining Compound Indexes
+### Declaring one
 
-Compound indexes are declared on NodeTypes using SQL DDL:
+Compound indexes belong to a NodeType:
 
 ```sql
-CREATE NODETYPE 'myapp:Article' (
-    PROPERTIES (
-        title String NOT NULL,
-        category String,
-        status String DEFAULT 'draft',
-        author_id String
-    )
-    COMPOUND_INDEX 'idx_category_status_created' ON (
-        category,
-        status,
-        __created_at DESC
-    )
-    COMPOUND_INDEX 'idx_author_created' ON (
-        author_id,
-        __created_at DESC
-    )
+CREATE NODETYPE 'app:Post' PROPERTIES (
+  category  String REQUIRED,
+  status    String,
+  author_id String
 )
+COMPOUND_INDEX 'idx_category_status_created' ON (category, status, __created_at DESC)
+COMPOUND_INDEX 'idx_author_created'          ON (author_id, __created_at DESC);
 ```
 
-Each index specifies:
-- A **name** — must be unique within the NodeType
-- An ordered list of **columns** — properties or system fields
-- An optional **sort direction** per column — `ASC` (default) or `DESC`
+Each index has a name that is unique within the type, an ordered list of
+columns, and an optional `ASC` or `DESC` per column. Add one to an existing
+type with `ALTER NODETYPE 'app:Post' ADD COMPOUND_INDEX 'name' ON (...)`,
+or declare it in YAML under `compound_indexes`.
 
-### Column Order Matters
+Columns are property names, or one of the system fields `__created_at`,
+`__updated_at`, `__node_type` and `__parent_path`. In the query you still
+write `created_at`; the planner maps it to the index column.
 
-The query planner matches indexes using **leftmost prefix matching**. Given an index on `(category, status, __created_at DESC)`:
+### Column order matters
 
-| Query | Uses Index? | Why |
-|-------|-------------|-----|
-| `WHERE category = 'tech' AND status = 'pub' ORDER BY __created_at DESC` | Yes | Full prefix match |
-| `WHERE category = 'tech' AND status = 'pub'` | Yes | Equality on first 2 columns |
-| `WHERE category = 'tech'` | Yes | Equality on first column |
-| `WHERE status = 'pub'` | **No** | Skips leading column |
-| `WHERE category = 'tech' ORDER BY __created_at DESC` | Partial | Uses category prefix, but skips status |
+The planner matches a leading prefix of the equality columns. For
+`(category, status, __created_at DESC)`:
 
-**Rule of thumb:** put high-cardinality equality columns first, and the ORDER BY column last.
+| Query | Uses the index | Sorted by the index |
+|---|---|---|
+| `category = 'tech' AND status = 'pub' ORDER BY created_at DESC` | yes | yes |
+| `category = 'tech' AND status = 'pub'` | yes | |
+| `category = 'tech' ORDER BY created_at DESC` | partial: `category` only | no, sorted afterwards |
+| `status = 'pub'` | no | |
 
-### System Properties
+Put equality columns first, most selective first, and the sort column last.
+Only a full match on every equality column lets the planner trust the index
+order and skip the sort.
 
-Compound indexes can include system properties alongside user-defined properties:
+### Timestamp direction
 
-| System Property | Type | Use Case |
-|----------------|------|----------|
-| `__node_type` | String | Cross-type indexes |
-| `__created_at` | Timestamp | "Latest first" feeds |
-| `__updated_at` | Timestamp | "Recently modified" views |
+`__created_at DESC` stores the newest entry first, which is what feeds and
+"latest" views read. `ASC` stores oldest first for timelines and queues. The
+direction is encoded in the key, so it costs nothing at query time.
 
-A cross-type index using `__node_type` lets you query across multiple NodeTypes efficiently:
+### When the planner uses it
 
-```sql
-CREATE NODETYPE 'myapp:ContentItem'
-    PROPERTIES (
-        workspace_id String
-    )
-    COMPOUND_INDEX 'idx_ws_type_created' ON (
-        workspace_id,
-        __node_type,
-        __created_at DESC
-    )
+A compound index is used only after its build has completed and been
+recorded for the workspace; until then queries take the property index and
+`EXPLAIN` shows why:
+
+```
+PropertyIndexScan: category=tech
 ```
 
-### Timestamp Sort Direction
+The build runs as a background job: it scans the type's existing nodes in
+batches of 1,000, writes their entries, and skips any node that lacks one of
+the index's columns. New writes are indexed inline from the start. When the
+index is in use, `EXPLAIN` prints `CompoundIndexScan` with the index name.
 
-Timestamp columns support direction-aware encoding in the index:
+Like the property index, compound entries are versioned by revision and
+split into draft and published sets.
 
-- **`DESC`** — most recent entries first (natural forward scan). Use this for feeds, activity logs, "latest" queries.
-- **`ASC`** — oldest entries first. Use this for chronological timelines, queue processing.
+## Practical examples
 
-The encoding is baked into the index key, so sorting happens at scan time with zero overhead.
-
-### Background Index Building
-
-When you add a compound index to a NodeType that already has data, RaisinDB doesn't block — it schedules a background job:
-
-1. Scans all existing nodes of the target NodeType
-2. Builds index entries in batches of 1,000
-3. Skips nodes where required index columns are missing
-4. New writes are indexed inline immediately (no gap in coverage)
-
-You can monitor the build job through the admin console or the job queue API.
-
-### Draft vs. Published
-
-Compound indexes maintain **separate entries** for draft and published node states. This means:
-
-- Queries against the default (draft) workspace only scan draft index entries
-- Published content queries only scan published index entries
-- No cross-contamination between editing and live data
-
-### Versioning (MVCC)
-
-Compound index entries are fully revision-aware:
-
-- Each entry includes the HLC revision in the key
-- Deleted nodes are tracked with tombstone markers
-- Scans deduplicate by node ID, returning only the latest live entry
-
-This guarantees correct results during concurrent writes, branch operations, and time-travel queries.
-
-## Practical Examples
-
-### Social Feed
-
-Show the latest posts by a specific user:
+### Social feed
 
 ```sql
-CREATE NODETYPE 'social:Post'
-    PROPERTIES (
-        author_id String NOT NULL,
-        visibility String DEFAULT 'public'
-    )
-    COMPOUND_INDEX 'idx_author_feed' ON (
-        author_id,
-        visibility,
-        __created_at DESC
-    )
-```
+CREATE NODETYPE 'social:Post' PROPERTIES (
+  author_id  String REQUIRED,
+  visibility String
+)
+COMPOUND_INDEX 'idx_author_feed' ON (author_id, visibility, __created_at DESC);
 
-```sql
--- Latest 20 public posts by user
-SELECT * FROM 'default'
-WHERE properties->>'author_id'::String = $1
-  AND properties->>'visibility'::String = 'public'
-ORDER BY __created_at DESC
+-- latest 20 public posts by a user
+SELECT path FROM 'feed'
+WHERE properties->>'author_id' = $1
+  AND properties->>'visibility' = 'public'
+ORDER BY created_at DESC
 LIMIT 20;
 ```
 
-### E-Commerce Catalog
-
-Browse products by category, filtering in-stock items, sorted by price:
+### Catalog
 
 ```sql
-CREATE NODETYPE 'shop:Product'
-    PROPERTIES (
-        category String NOT NULL,
-        in_stock Boolean DEFAULT true,
-        price Integer
-    )
-    COMPOUND_INDEX 'idx_category_stock_price' ON (
-        category,
-        in_stock,
-        price ASC
-    )
-```
+CREATE NODETYPE 'shop:Product' PROPERTIES (
+  category String REQUIRED,
+  in_stock Boolean,
+  price    Number
+)
+COMPOUND_INDEX 'idx_category_stock_price' ON (category, in_stock, price ASC);
 
-```sql
--- Cheapest in-stock electronics
-SELECT * FROM 'default'
-WHERE properties->>'category'::String = 'electronics'
-  AND properties->>'in_stock'::Boolean = true
-ORDER BY properties->>'price'::Integer ASC
+-- cheapest in-stock electronics
+SELECT path FROM 'catalog'
+WHERE properties->>'category' = 'electronics'
+  AND properties->>'in_stock' = 'true'
+ORDER BY properties->>'price'::Double ASC
 LIMIT 50;
 ```
 
-### Multi-Tenant Activity Log
-
-Show recent activity across all content types for a tenant:
+### Activity log
 
 ```sql
-CREATE NODETYPE 'app:Activity'
-    PROPERTIES (
-        tenant String NOT NULL,
-        action String NOT NULL
-    )
-    COMPOUND_INDEX 'idx_tenant_activity' ON (
-        tenant,
-        __created_at DESC
-    )
-```
+CREATE NODETYPE 'app:Activity' PROPERTIES (
+  tenant String REQUIRED,
+  action String REQUIRED
+)
+COMPOUND_INDEX 'idx_tenant_activity' ON (tenant, __created_at DESC);
 
-```sql
--- Last 100 actions by tenant
-SELECT * FROM 'default'
-WHERE properties->>'tenant'::String = $1
-ORDER BY __created_at DESC
+SELECT path FROM 'activity'
+WHERE properties->>'tenant' = $1
+ORDER BY created_at DESC
 LIMIT 100;
 ```
 
-## Property Indexes
+## Full-text and vector
 
-Property indexes are single-field secondary indexes maintained by the `PropertyIndexPlugin`. They're updated automatically when nodes are created or modified, and the SQL query planner uses them for equality lookups on individual properties.
+Both are declared per property with the `index` list, and both are rebuilt
+locally on every node of a cluster rather than replicated:
 
-Unlike compound indexes, property indexes don't need to be declared — they're built on demand based on query patterns.
+```yaml
+properties:
+  - name: title
+    type: String
+    index: [Fulltext, Vector]
+```
 
-## Full-Text Search
-
-Nodes with `indexable: true` on their NodeType are automatically indexed for full-text search using [Tantivy](https://github.com/quickwit-oss/tantivy). See [Full-Text Search](/docs/concepts/multi-model/full-text-search) for details.
-
-## Vector Search
-
-Embedding-enabled nodes can be searched using approximate nearest neighbor (ANN) via the HNSW algorithm. See [Vector Search](/docs/concepts/multi-model/vector-search) for details.
+See [Full-Text Search](/docs/concepts/multi-model/full-text-search) and
+[Vector Search](/docs/concepts/multi-model/vector-search).
 
 ## Next Steps
 
-- **[DDL Reference](/docs/reference/sql/statements/ddl)** — Full syntax for `COMPOUND_INDEX` and other schema statements
-- **[Querying Guide](/docs/guides/querying/sql-basics)** — Write efficient queries that leverage indexes
-- **[Full-Text Search](/docs/concepts/multi-model/full-text-search)** — Natural language search
-- **[Vector Search](/docs/concepts/multi-model/vector-search)** — Semantic similarity search
+- [DDL Reference](/docs/reference/sql/statements/ddl) for the full `CREATE NODETYPE` syntax
+- [SQL Basics](/docs/guides/querying/sql-basics)
+- [Pagination](/docs/guides/querying/pagination) for cursors that use these indexes

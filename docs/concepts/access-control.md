@@ -4,265 +4,239 @@ sidebar_position: 12
 
 # Access Control
 
-RaisinDB provides **role-based access control (RBAC)** with graph-aware conditions, field-level filtering, and row-level security. Users, groups, and roles are stored as nodes in the `raisin:access_control` workspace and enforced automatically on every data access.
+RaisinDB uses role-based access control with row-level conditions and
+field-level filtering. Users, groups and roles are ordinary nodes in the
+`raisin:access_control` workspace of each repository, and permissions are
+checked in the storage layer, so the same rules apply to REST, SQL, WebSocket
+and the PostgreSQL wire protocol.
 
-## How It Works
+## How it works
 
-Every request flows through a single enforcement point:
+Every request carries an authentication context: the caller's identity, the
+`raisin:User` node that represents them in this repository, and the
+permissions resolved from that user's roles (direct roles plus the roles of
+every group they belong to). When a node is read, updated, deleted or created,
+the storage layer looks for a permission that covers the operation, the
+workspace, the path and the node type. If that permission carries a condition,
+the condition is evaluated against the node and the caller. If nothing
+matches, the operation is denied.
 
-```
-Client (REST / SQL / WebSocket / pgwire)
-    ↓
-  NodeService
-    ↓
-  RLS Filter  ←  AuthContext (user, roles, groups)
-    ↓
-  Storage
-```
-
-Permissions are resolved once per request from the user's roles (direct + inherited via groups), then cached. The RLS filter matches each operation against path patterns, workspace scopes, node types, and runtime conditions before allowing it through.
+Resolved permissions are cached for five minutes per user. A role or group
+change therefore applies to a user who is already active within five minutes,
+and immediately to a user who logs in afterwards.
 
 ## Users
 
-Users are `raisin:User` nodes stored under `/users/` in the `raisin:access_control` workspace.
+A `raisin:User` node represents one person in one repository. Its main
+properties:
 
-```yaml
-# raisin:User properties
-email: "jane@example.com"        # required, unique
-display_name: "Jane Developer"   # required
-groups: ["editors"]              # group memberships
-roles: ["editor"]                # direct role assignments
-metadata: {}                     # custom data
-```
+| Property | Meaning |
+|----------|---------|
+| `user_id` | The identity id from the authentication layer (or the id you choose for a SQL-created user) |
+| `email` | Required, unique |
+| `display_name` | Required |
+| `status` | `active` by default |
+| `roles` | Role ids assigned directly |
+| `groups` | Group ids the user belongs to |
+| `can_login` | Defaults to `true` |
 
-Each user automatically gets child folders: `profile`, `inbox`, `outbox`, `sent`, and `notifications`.
+Identity users are provisioned automatically the first time they log in
+through a repository-scoped route such as `POST /auth/{repo}/login`. The node
+is created at `/users/internal/{email-slug}` (for `jane@example.com` that is
+`/users/internal/jane-at-example-com`) with the roles `viewer` and
+`authenticated_user`. Users created with SQL live at `/users/{user_id}`.
+
+Each user node gets child nodes `profile`, `inbox`, `outbox`, `sent` and
+`notifications`.
 
 ## Groups
 
-Groups assign roles to collections of users. A user inherits all roles from every group they belong to.
+A `raisin:Group` assigns roles to a set of users. A user inherits every role
+of every group they belong to.
 
-```yaml
-# raisin:Group properties
-name: "editors"                  # required, unique
-description: "Content editors"
-roles: ["editor", "reviewer"]    # roles inherited by all group members
-```
+| Property | Meaning |
+|----------|---------|
+| `group_id` | Required, unique. This is what a user's `groups` list refers to |
+| `name` | Display name |
+| `description` | Free text |
+| `roles` | Role ids granted to all members |
 
 ## Roles
 
-Roles define permissions — what operations are allowed on which paths.
+A `raisin:Role` is a named list of permission grants.
 
-```yaml
-# raisin:Role properties
-name: "editor"                   # required, unique
-description: "Can edit content"
-inherits: ["viewer"]             # inherit permissions from other roles
-permissions:                     # permission grants (see below)
-  - path: "**"
-    operations: ["read"]
-  - path: "articles/**"
-    operations: ["create", "update", "delete"]
-```
+| Property | Meaning |
+|----------|---------|
+| `role_id` | Required, unique. This is what `roles` lists on users and groups refer to |
+| `name` | Display name |
+| `description` | Free text |
+| `inherits` | Role ids whose permissions this role also gets |
+| `permissions` | The grants, see below |
 
-Roles support **inheritance**: if `editor` inherits from `viewer`, the editor gets all viewer permissions plus its own.
+Users and groups reference roles by `role_id`, and users reference groups by
+`group_id`. Node paths are not used for these references.
 
 ## Permissions
 
-Each permission grant has this structure:
+Each entry in a role's `permissions` array has this shape:
 
 ```yaml
-- path: "articles/**"                    # glob pattern
-  operations: ["create", "read", "update"]
-  workspace: "content"                   # optional — scope to workspace
-  branch: "main"                         # optional — scope to branch
-  node_types: ["Article", "BlogPost"]    # optional — only these types
-  fields: ["title", "body", "status"]    # optional — only these properties
-  condition: "node.path.startsWith(auth.home)"  # optional — runtime check
+- path: "articles/**"                  # required, glob over the node path
+  operations: ["create", "read", "update"]   # required
+  workspace: "content"                 # optional, glob over workspace names
+  branch_pattern: "main"               # optional, glob over branch names
+  node_types: ["blog:Article"]         # optional, only these node types
+  fields: ["title", "body"]            # optional, only these properties are returned
+  except_fields: ["internal_notes"]    # optional, all properties except these
+  condition: "node.status == 'published'"   # optional, evaluated per node
 ```
 
 | Field | Description |
 |-------|-------------|
-| `path` | Glob pattern: `**` (everything), `users/**` (subtree), `posts/*/comments` (one level) |
-| `operations` | `create`, `read`, `update`, `delete`, `translate`, `relate`, `unrelate` |
-| `workspace` | Restrict to a specific workspace (glob pattern supported) |
-| `branch` | Restrict to a specific branch |
-| `node_types` | Only apply to these node types |
-| `fields` | Limit which properties the user can see (field-level security) |
-| `condition` | REL expression evaluated at runtime (see below) |
+| `path` | Glob pattern. A leading `/` is optional. `*` matches within one path segment, `**` matches across segments |
+| `operations` | Any of `create`, `read`, `update`, `delete`, `translate`, `relate`, `unrelate` |
+| `workspace` | Restrict to matching workspaces. Omit for all workspaces |
+| `branch_pattern` | Restrict to matching branches. Omit for all branches |
+| `node_types` | Restrict to these node types |
+| `fields` | Return only these properties on reads |
+| `except_fields` | Return everything except these properties on reads |
+| `condition` | A REL expression that must be true for the grant to apply |
 
-## Auth Variables
-
-Conditions can reference the authenticated user via `auth`:
-
-| Variable | Description |
-|----------|-------------|
-| `auth.local_user_id` | Workspace-specific `raisin:User` node ID |
-| `auth.user_id` | Global identity ID |
-| `auth.home` | User's home path (e.g., `/users/jane`) |
-| `auth.email` | User's email |
-| `auth.roles` | Array of effective role IDs |
-| `auth.groups` | Array of group IDs |
+Grants are additive. When several grants match a node, the operation is
+allowed if any one of them applies; the most specific path pattern decides
+which field filter is used.
 
 ## Conditions
 
-Conditions are [REL expressions](/docs/reference/rel) evaluated at runtime. They enable ownership checks, path-based rules, and graph-based social access.
+A condition is a [REL expression](/docs/reference/rel). It can refer to the
+caller through `auth` and to the node through `node`.
 
-### Ownership
+| Variable | Description |
+|----------|-------------|
+| `auth.user_id` | Global identity id |
+| `auth.local_user_id` | Id of the caller's `raisin:User` node in this repository |
+| `auth.home` | Path of that user node, for example `/users/internal/jane-at-example-com` |
+| `auth.email` | Email address |
+| `auth.roles` | Effective role ids |
+| `auth.groups` | Group ids |
+| `auth.is_anonymous` | Whether the caller is the anonymous user |
+| `node.id`, `node.name`, `node.path`, `node.node_type` | Node identity |
+| `node.created_by`, `node.updated_by`, `node.owner_id`, `node.workspace` | Node metadata |
+| `node.<property>` | Any node property, for example `node.status` |
+
+Examples:
 
 ```yaml
-# User can only read/update their own node
+# Only the caller's own user node
 - path: "users/**"
   operations: ["read", "update"]
   condition: "node.id == auth.local_user_id"
-```
 
-### Path-Based
-
-```yaml
-# User can manage everything under their home path
+# Everything under the caller's home path
 - path: "users/**/inbox/**"
   operations: ["create", "read", "update", "delete"]
   condition: "node.path.startsWith(auth.home)"
-```
 
-### Graph-Based (Social)
-
-Permissions can follow relationships in the graph. This enables patterns like "friends can see my profile":
-
-```yaml
-# Friends can read my profile
+# Friends can read my profile, friends of friends see three fields
 - path: "users/**/profile"
   operations: ["read"]
   condition: "node.created_by RELATES auth.local_user_id VIA 'FRIENDS_WITH'"
-
-# Friends-of-friends see limited fields (2 hops)
 - path: "users/**/profile"
   operations: ["read"]
   fields: ["display_name", "avatar", "bio"]
   condition: "node.created_by RELATES auth.local_user_id VIA 'FRIENDS_WITH' DEPTH 2"
-
-# Public — everyone sees display_name only
-- path: "users/**"
-  operations: ["read"]
-  fields: ["display_name"]
 ```
 
-The `RELATES` operator traverses relationships in the graph. It supports:
-- **Relation type filtering**: `VIA 'FRIENDS_WITH'` or `VIA ['FOLLOWS', 'FRIENDS_WITH']`
-- **Depth control**: `DEPTH 2` (up to 2 hops)
-- **Direction**: `DIRECTION OUTGOING` or `DIRECTION INCOMING`
+`RELATES` follows relationships in the graph. It accepts `VIA 'TYPE'` or
+`VIA ['A', 'B']`, `DEPTH n` (or `DEPTH min..max`), and `DIRECTION OUTGOING`,
+`DIRECTION INCOMING` or `DIRECTION ANY`. The default is one hop in either
+direction.
 
-## Built-in Roles
+A condition that fails to parse or evaluate counts as false, so a
+misconfigured grant denies rather than allows.
 
-RaisinDB ships with three system roles:
+## Built-in roles
 
-### system_admin
+Every repository starts with these roles:
 
-Full access to everything:
+| Role | Grants |
+|------|--------|
+| `system_admin` | All seven operations on every path. Permission checks are skipped for this role |
+| `anonymous` | `read` on the `launchpad` workspace. Used for unauthenticated callers when anonymous access is enabled |
+| `authenticated_user` | Read and update of the caller's own user node, profile, inbox, outbox, sent and notifications; friends' profiles through `FRIENDS_WITH`; `display_name` of every user |
+| `viewer` | `read` on every path |
+| `editor` | `create`, `read`, `update`, `delete` and `translate` on every path |
+| `author` | `create` and `read` on every path, plus `update` and `delete` intended for the author's own content |
 
-```yaml
-permissions:
-  - path: "**"
-    operations: ["create", "read", "update", "delete", "translate", "relate", "unrelate"]
-```
+`viewer`, `author` and `editor` come from the built-in `raisin-auth` package.
+Use `DESCRIBE ROLE 'author'` to see the exact grants before relying on them.
 
-### anonymous
-
-Read-only access to the `launchpad` workspace (for unauthenticated visitors):
-
-```yaml
-permissions:
-  - path: "**"
-    operations: ["read"]
-    workspace: "launchpad"
-```
-
-### authenticated_user
-
-Default role for all signed-in users. Includes:
-- Read/update own user node and profile
-- Read friends' profiles (via `FRIENDS_WITH` relationship)
-- Read friends-of-friends' limited profile fields (2 hops)
-- Read `display_name` for all users (public)
-- Full CRUD on own inbox, outbox, sent, and notifications
-
-## Workspace Organization
+## Workspace layout
 
 ```
 raisin:access_control/
 ├── config/
-│   └── default          (raisin:SecurityConfig)
+│   ├── default              (raisin:SecurityConfig)
+│   └── stewardship          (raisin:StewardshipConfig)
 ├── users/
-│   ├── jane             (raisin:User)
-│   │   ├── profile      (raisin:Profile)
-│   │   ├── inbox        (raisin:MessageFolder)
-│   │   ├── outbox       (raisin:MessageFolder)
-│   │   ├── sent         (raisin:MessageFolder)
-│   │   └── notifications(raisin:Folder)
+│   ├── internal/
+│   │   └── jane-at-example-com   (raisin:User, provisioned at first login)
+│   │       ├── profile      (raisin:Profile)
+│   │       ├── inbox        (raisin:MessageFolder)
+│   │       ├── outbox       (raisin:MessageFolder)
+│   │       ├── sent         (raisin:MessageFolder)
+│   │       └── notifications (raisin:Folder)
 │   └── system/
-│       └── anonymous    (raisin:User)
+│       └── anonymous        (raisin:User)
 ├── roles/
-│   ├── system_admin     (raisin:Role)
-│   ├── anonymous        (raisin:Role)
-│   └── authenticated_user (raisin:Role)
+│   ├── system_admin, anonymous, authenticated_user
+│   └── viewer, author, editor
 ├── groups/
-│   └── editors          (raisin:Group)
-├── relation-types/      (raisin:RelationType)
-├── circles/             (raisin:EntityCircle)
+├── relation-types/          (raisin:RelationType, e.g. friends-with, follows)
+├── circles/
 └── graph-config/
 ```
 
-## Identity Authentication
+## Identity authentication
 
-RaisinDB supports multiple authentication methods:
+Authentication is handled by a tenant-wide identity layer. An identity is one
+person with an email address and a password (or a magic link). Logging in
+through a repository-scoped route provisions the matching `raisin:User` node
+and puts its path into the token's `home` claim. Tokens are JWTs: a one-hour
+access token and a thirty-day refresh token. See
+[Authentication Setup](/docs/guides/auth/authentication-setup).
 
-| Method | Description |
-|--------|-------------|
-| Email / password | Built-in local authentication |
-| Magic link | Passwordless email login |
-| OIDC | Google, Okta, Azure AD, Keycloak, etc. |
-| Admin credentials | Database operator accounts |
-| JWT | External token authentication |
+## Querying users and roles
 
-When a user authenticates, the system:
-1. Validates credentials against the `Identity` (global per tenant)
-2. Finds or creates a `raisin:User` node in the target workspace (just-in-time provisioning)
-3. Links the identity to the workspace via a `WorkspaceAccess` record
-4. Issues JWT tokens (short-lived access + rotated refresh)
-
-## Querying Users and Roles
+SQL has dedicated statements for the access-control workspace:
 
 ```sql
--- List all users
-SELECT path, properties->>'email'::String AS email,
-       properties->>'display_name'::String AS display_name
-FROM "raisin:access_control"
-WHERE node_type = 'raisin:User';
-
--- Find users with a specific role
-SELECT path, properties->>'display_name'::String AS name
-FROM "raisin:access_control"
-WHERE node_type = 'raisin:User'
-  AND properties->'roles' ? 'editor';
-
--- List all roles
-SELECT path, properties->>'name'::String AS role_name,
-       properties->>'description'::String AS description
-FROM "raisin:access_control"
-WHERE node_type = 'raisin:Role';
+SHOW ROLES;
+DESCRIBE ROLE 'editor';
+SHOW GROUPS;
+SHOW USERS WITH ROLE 'editor';
+SHOW USERS IN GROUP 'readers';
+SHOW EFFECTIVE ROLES FOR USER 'internal/jane-at-example-com';
+SHOW PERMISSIONS FOR USER 'internal/jane-at-example-com' ON 'articles';
 ```
 
-## Best Practices
+`SHOW EFFECTIVE ROLES` returns one row per role with its `source` (`direct` or
+`group`) and, for group roles, the group in `via`. The nodes can also be
+queried like any other workspace:
 
-1. **Use groups** — assign roles to groups, then add users to groups
-2. **Inherit roles** — build a hierarchy (e.g. editor inherits viewer) instead of duplicating permissions
-3. **Prefer path patterns** — use `articles/**` instead of listing individual node types
-4. **Use field filtering** — expose only what's needed for each role
-5. **Use graph conditions** for social features — they're evaluated efficiently via precomputed circles
+```sql
+SELECT path, properties->>'email'::String AS email,
+       properties->>'roles' AS roles
+FROM 'raisin:access_control'
+WHERE node_type = 'raisin:User';
+```
 
-## Next Steps
+See [Roles and Permissions](/docs/guides/auth/roles-and-permissions) for the
+statements that create and change roles, groups and users.
 
-- [Workspaces](/docs/concepts/workspaces) — Organize content with workspace isolation
-- [Graph Model](/docs/concepts/graph-model) — Relationships and graph queries
-- [JavaScript Client — Authentication](/docs/reference/javascript-client/connection) — Client-side auth API
-- [Workflows](/docs/guides/workflows/overview) — Automate workflows
+## Next steps
+
+- [Roles and Permissions](/docs/guides/auth/roles-and-permissions)
+- [Row-Level Security](/docs/guides/auth/row-level-security)
+- [Workspaces](/docs/concepts/workspaces)
+- [Graph Model](/docs/concepts/graph-model)

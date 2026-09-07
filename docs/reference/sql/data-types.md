@@ -4,519 +4,116 @@ sidebar_position: 2
 
 # Data Types
 
-RaisinDB supports a comprehensive set of SQL data types for various use cases.
+Two type systems meet in RaisinDB SQL, and it helps to keep them apart:
 
-## Numeric Types
+- **Expression types** are what the SQL analyzer assigns to literals, columns, casts and function results while a statement runs. They are listed on this page.
+- **Property types** (`String`, `Number`, `Boolean`, `Date`, `Reference`, `Object { ... }`, `Array OF ...`) describe the shape of `properties` in a NodeType, Mixin, Archetype or ElementType. They are declared with DDL and documented in [DDL Statements](./statements/ddl.md#property-types-and-modifiers).
 
-### INT
+A node has no user-defined columns. A `views` property is JSON inside `properties`; `properties->>'views'` reads it as TEXT and `(properties->>'views')::INT` turns it into an INT expression.
 
-32-bit signed integer.
+## Numeric types
 
-**Range:** -2,147,483,648 to 2,147,483,647
+| Type | Description |
+|------|-------------|
+| `INT` | 32-bit signed integer. The type of an integer literal and of `depth`, `version` and `DEPTH(path)`. |
+| `BIGINT` | 64-bit signed integer. Returned by `COUNT` and the ranking window functions. |
+| `DOUBLE` | 64-bit float. The type of a float literal and of every arithmetic result. |
 
-**Examples:**
-```sql
-CREATE NODETYPE product (
-    stock INT,
-    priority INT DEFAULT 0
-);
+`NUMERIC` and `DECIMAL` are not accepted as cast targets in the current build; use `DOUBLE`.
 
-INSERT INTO product (stock) VALUES (100);
-SELECT * FROM product WHERE stock > 50;
-```
-
----
-
-### BIGINT
-
-64-bit signed integer.
-
-**Range:** -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807
-
-**Examples:**
-```sql
-CREATE NODETYPE stats (
-    total_views BIGINT,
-    user_count BIGINT
-);
-
-INSERT INTO stats (total_views) VALUES (10000000000);
-```
-
----
-
-### DOUBLE
-
-64-bit floating-point number.
-
-**Precision:** ~15 decimal digits
-
-**Examples:**
-```sql
-CREATE NODETYPE product (
-    price DOUBLE,
-    weight_kg DOUBLE
-);
-
-INSERT INTO product (price) VALUES (99.99);
-SELECT * FROM product WHERE price > 50.0;
-```
-
-**Notes:**
-- Use for decimal numbers
-- Subject to floating-point precision limitations
-- For exact decimal arithmetic, store as integers (cents instead of dollars)
-- `NUMERIC` and `DECIMAL` are accepted as type aliases but convert to DOUBLE internally
-
----
-
-## Text Types
-
-### TEXT
-
-Variable-length UTF-8 string.
-
-**Examples:**
-```sql
-CREATE NODETYPE page (
-    title TEXT NOT NULL,
-    content TEXT,
-    description TEXT
-);
-
-INSERT INTO page (title, content)
-VALUES ('Welcome', 'Hello world');
-
-SELECT * FROM page WHERE title LIKE '%Guide%';
-```
-
-**Notes:**
-- No length limit
-- UTF-8 encoded
-- Case-sensitive comparisons
-
----
-
-### UUID
-
-Universally Unique Identifier stored as text.
-
-**Format:** `550e8400-e29b-41d4-a716-446655440000`
-
-**Examples:**
-```sql
-CREATE NODETYPE user (
-    external_id UUID,
-    name TEXT
-);
-
-INSERT INTO user (external_id, name)
-VALUES ('550e8400-e29b-41d4-a716-446655440000', 'John');
-
-SELECT * FROM user
-WHERE external_id = '550e8400-e29b-41d4-a716-446655440000';
-```
-
-**Notes:**
-- Stored as 36-character string with hyphens
-- System `__id` column is UUID type
-- Can be generated externally or auto-generated
-
----
-
-## Boolean Type
-
-### BOOLEAN
-
-Logical true/false value.
-
-**Values:** `true`, `false`, `NULL`
-
-**Examples:**
-```sql
-CREATE NODETYPE product (
-    name TEXT,
-    active BOOLEAN DEFAULT true,
-    featured BOOLEAN
-);
-
-INSERT INTO product (name, active) VALUES ('Widget', true);
-SELECT * FROM product WHERE active = true;
-SELECT * FROM product WHERE featured IS NULL;
-```
-
-**Notes:**
-- Three-valued logic (true, false, NULL)
-- Use `IS NULL` / `IS NOT NULL` to check for NULL
-
----
-
-## Temporal Types
-
-### TIMESTAMPTZ
-
-Timestamp with timezone, stored in UTC.
-
-**Format:** ISO 8601 with timezone
-
-**Examples:**
-```sql
-CREATE NODETYPE event (
-    name TEXT,
-    event_time TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
-
-INSERT INTO event (name, event_time)
-VALUES ('Launch', '2024-01-15T10:00:00Z');
-
-SELECT * FROM event
-WHERE event_time > NOW() - INTERVAL '7 days';
-```
-
-**Notes:**
-- Always stored in UTC
-- Microsecond precision
-- System columns `__created_at` and `__updated_at` are TIMESTAMPTZ
-
----
-
-### INTERVAL
-
-Time duration or interval.
-
-**Units:** microseconds, milliseconds, seconds, minutes, hours, days, weeks, months, years
-
-**Examples:**
-```sql
-SELECT NOW() + INTERVAL '1 day';
-SELECT NOW() - INTERVAL '7 days';
-
-CREATE NODETYPE task (
-    name TEXT,
-    duration INTERVAL
-);
-
-INSERT INTO task (name, duration)
-VALUES ('Backup', INTERVAL '2 hours');
-```
-
-**Notes:**
-- Used for date/time arithmetic
-- Supports various time units
-- Can be positive or negative
-
----
-
-## RaisinDB-Specific Types
-
-### PATH
-
-Hierarchical path for node organization.
-
-**Format:** Unix-style path strings like `/content/blog/post1`
-
-**Examples:**
-```sql
--- PATH is automatically managed for __path column
-SELECT * FROM nodes WHERE __path = '/content/blog';
-
-SELECT * FROM nodes
-WHERE CHILD_OF(__path, '/content/docs');
-
-SELECT * FROM nodes
-WHERE DEPTH(__path) = 2;
-```
-
-**Notes:**
-- Used for hierarchical organization
-- Supports path functions (DEPTH, PARENT, ANCESTOR, etc.)
-- Always starts with `/`
-- System column `__path` is PATH type
-
----
-
-### JSONB
-
-JSON Binary format for structured data.
-
-**Examples:**
-```sql
-CREATE NODETYPE product (
-    name TEXT,
-    metadata JSONB
-);
-
-INSERT INTO product (name, metadata)
-VALUES (
-    'Widget',
-    '{"color": "blue", "size": "large", "tags": ["new", "featured"]}'::JSONB
-);
-
-SELECT * FROM product
-WHERE JSON_VALUE(metadata, '$.color') = 'blue';
-
-UPDATE product
-SET metadata = JSONB_SET(metadata, '{price}', '99.99')
-WHERE name = 'Widget';
-```
-
-**Notes:**
-- Binary storage format (more efficient than text JSON)
-- Supports JSONPath queries
-- Can contain nested objects and arrays
-- Use JSON functions for manipulation
-
----
-
-### GEOMETRY
-
-GeoJSON geometry for spatial data.
-
-**Types:** Point, LineString, Polygon, MultiPoint, MultiLineString, MultiPolygon
-
-**Examples:**
-```sql
-CREATE NODETYPE location (
-    name TEXT,
-    point GEOMETRY,
-    area GEOMETRY
-);
-
--- Insert point
-INSERT INTO location (name, point)
-VALUES ('Office', ST_POINT(-122.4194, 37.7749));
-
--- Insert polygon from GeoJSON
-INSERT INTO location (name, area)
-VALUES (
-    'Service Area',
-    ST_GEOMFROMGEOJSON('{
-        "type": "Polygon",
-        "coordinates": [[
-            [-122.5, 37.7],
-            [-122.5, 37.8],
-            [-122.4, 37.8],
-            [-122.4, 37.7],
-            [-122.5, 37.7]
-        ]]
-    }')
-);
-
--- Spatial queries
-SELECT * FROM location
-WHERE ST_DWITHIN(point, ST_POINT(-122.4194, 37.7749), 5000);
-```
-
-**Notes:**
-- PostGIS-compatible
-- Coordinates in WGS84 (longitude, latitude)
-- Use ST_* functions for operations
-
----
-
-### VECTOR(n)
-
-Fixed-dimension vector for embeddings and similarity search.
-
-**Dimensions:** Specified as VECTOR(n) where n is the dimension count
-
-**Examples:**
-```sql
-CREATE NODETYPE document (
-    title TEXT,
-    embedding VECTOR(768)  -- 768-dimensional vector
-);
-
--- Insert vector (example with 3 dimensions)
-INSERT INTO document (title, embedding)
-VALUES (
-    'Example Doc',
-    ARRAY[0.1, 0.2, 0.3]::VECTOR(3)
-);
-```
-
-**Notes:**
-- Used for machine learning embeddings
-- Dimension must be specified
-- Fixed size for all values in column
-- Useful for semantic search and similarity
-
----
-
-## Full-Text Search Types
-
-### TSVECTOR
-
-Full-text search document representation.
-
-**Examples:**
-```sql
-CREATE NODETYPE article (
-    title TEXT,
-    content TEXT,
-    search_vector TSVECTOR
-);
-
-UPDATE article
-SET search_vector = TO_TSVECTOR(title || ' ' || content);
-
-SELECT * FROM article
-WHERE search_vector @@ TO_TSQUERY('database & query');
-```
-
-**Notes:**
-- Normalized, stemmed text for searching
-- Generated from text using TO_TSVECTOR
-- Use with @@ operator for matching
-
----
-
-### TSQUERY
-
-Full-text search query representation.
-
-**Examples:**
-```sql
--- Create query
-SELECT TO_TSQUERY('database & query');
-SELECT TO_TSQUERY('sql | database');
-SELECT TO_TSQUERY('database & !tutorial');
-
--- Use in search
-SELECT * FROM article
-WHERE search_vector @@ TO_TSQUERY('database');
-```
-
-**Notes:**
-- Normalized query with boolean operators
-- Supports &, |, ! operators
-- Generated from text using TO_TSQUERY
-
----
-
-## Collection Types
-
-### ARRAY[T]
-
-Array of elements of type T.
-
-**Element Types:** Any base type (INT, TEXT, etc.)
-
-**Examples:**
-```sql
-CREATE NODETYPE article (
-    title TEXT,
-    tags ARRAY[TEXT],
-    ratings ARRAY[INT]
-);
-
-INSERT INTO article (title, tags)
-VALUES ('SQL Guide', ARRAY['sql', 'database', 'tutorial']);
-
-SELECT * FROM article WHERE 'sql' = ANY(tags);
-```
-
-**Notes:**
-- Homogeneous (all elements same type)
-- Can be nested: ARRAY[ARRAY[INT]]
-- Use ARRAY_AGG to create arrays
-
----
-
-## Nullable Types
-
-All types can be nullable by default or explicitly marked NOT NULL.
-
-### NULLABLE[T]
-
-Any type with NULL support (default).
-
-**Examples:**
-```sql
-CREATE NODETYPE page (
-    title TEXT NOT NULL,          -- Not nullable
-    description TEXT,              -- Nullable (default)
-    view_count INT                 -- Nullable (default)
-);
-
--- NULL values
-INSERT INTO page (title) VALUES ('Example');  -- description is NULL
-
-SELECT * FROM page WHERE description IS NULL;
-SELECT * FROM page WHERE description IS NOT NULL;
-
--- COALESCE for defaults
-SELECT COALESCE(description, 'No description') FROM page;
-```
-
----
-
-## Type Coercion
-
-RaisinDB supports implicit type coercion in some cases:
-
-### Numeric Coercion
+<!-- TODO(sql-ext): fill from engine report (NUMERIC/CAST additions) -->
 
 ```sql
-INT → BIGINT → DOUBLE
+SELECT 1 + 2 AS a, 7 / 2 AS b, 7 % 3 AS c, (properties->>'views')::INT * 2 AS d
+FROM 'blog' WHERE path = '/hello';
 ```
+
+```json
+{"a":3.0,"b":3.5,"c":1.0,"d":24.0}
+```
+
+Arithmetic always yields DOUBLE, so `7 / 2` is `3.5`, not `3`. Cast the result back if you need an integer: `(7 / 2)::INT`.
+
+## Text types
+
+| Type | Description |
+|------|-------------|
+| `TEXT` | UTF-8 string. The type of `name`, `node_type`, `id` and of `properties->>'key'`. |
+| `UUID` | A UUID kept as text. Available as a cast target (`'...'::UUID`). |
+
+String literals use single quotes; double a quote to escape it (`'it''s'`).
+
+## BOOLEAN
+
+`true`, `false` and NULL. Comparison and predicate results are BOOLEAN, and `WHERE` accepts only a BOOLEAN expression. A boolean stored in JSON reads back as the text `'true'` / `'false'` through `->>`, so compare against the string, or use `properties @> '{"published": true}'`, or `JSON_GET_BOOL(properties, 'published')`.
+
+## Temporal types
+
+| Type | Description |
+|------|-------------|
+| `TIMESTAMPTZ` | Timestamp with time zone, stored and returned in UTC as ISO 8601 (`2026-09-06T18:32:15.143528+00:00`). The type of `created_at`, `updated_at`, `published_at` and `NOW()`. |
+| `INTERVAL` | A duration, written `INTERVAL '7 days'`. Used only in arithmetic with a timestamp. |
+
+A string is not implicitly a timestamp. Cast literals before comparing them with a timestamp column:
 
 ```sql
--- INT to BIGINT
-SELECT 42::INT + 1000000000000::BIGINT;  -- Result: BIGINT
-
--- INT to DOUBLE
-SELECT 10::INT / 3::DOUBLE;  -- Result: DOUBLE
+SELECT name FROM 'blog'
+WHERE created_at > '2020-01-01T00:00:00Z'::TIMESTAMPTZ AND created_at < NOW();
 ```
 
-### Text Coercion
+`TIMESTAMP` is accepted as a cast target and means the same as `TIMESTAMPTZ`. See [DateTime functions](./functions/datetime-functions.md) for what works with intervals.
+
+## PATH
+
+A hierarchical path such as `/news/first`. It is the type of the `path` column and of the results of `PARENT` and `ANCESTOR`. A TEXT literal coerces to PATH wherever a PATH is expected, so `WHERE path = '/news/first'` needs no cast. A path always starts with `/`; the workspace root is `/`.
+
+## JSONB
+
+A JSON value. The `properties`, `translations` and `relations` columns are JSONB, and so are the results of `->`, `properties || '{...}'`, `JSON_QUERY` and `JSONB_SET`.
+
+A string literal is TEXT until you cast it, and the DML type check requires JSONB for `properties`:
 
 ```sql
--- TEXT to PATH (for comparisons)
-SELECT * FROM nodes WHERE __path = '/content';  -- String coerced to PATH
+INSERT INTO 'blog' (path, node_type, properties)
+VALUES ('/news/fourth', 'raisin:Page', '{"title": "Fourth"}'::jsonb);
 ```
 
-### Explicit Casting
+Without the cast the statement is rejected with `Type mismatch: expected JSONB, got TEXT`. In a `WHERE` comparison the right-hand side of `@>` may stay uncast; the analyzer converts it.
+
+JSON scalars come back as their JSON type in results: `properties->'views'` returns `10`, `properties->>'views'` returns `"10"`.
+
+## GEOMETRY
+
+A GeoJSON geometry (Point, LineString, Polygon and the Multi* forms), produced by `ST_POINT`, `ST_GEOMFROMGEOJSON` and the other `ST_*` constructors, and read from a property that holds a geometry. Coordinates are longitude, latitude in WGS84 unless an SRID says otherwise. See [Geospatial functions](./functions/geospatial-functions.md).
+
+## VECTOR
+
+A fixed-width embedding vector. Vectors are produced by `EMBEDDING(text)` and `VECTOR_OF(...)` and compared with `VECTOR_L2_DISTANCE`, `VECTOR_COSINE_DISTANCE` and `VECTOR_INNER_PRODUCT`. `VECTOR` is not a cast target (`'[1,2]'::VECTOR(2)` is rejected). See [Vector functions](./functions/vector-functions.md).
+
+## TSVECTOR and TSQUERY
+
+Full-text search types used with the `@@` operator, `to_tsvector(language, text)` and `to_tsquery(language, text)`. Most full-text queries use `FULLTEXT_MATCH(query, language)` instead. See [Full-text functions](./functions/fulltext-functions.md).
+
+## Arrays
+
+`ARRAY_AGG` returns an array, rendered as a JSON array in results. Array literals (`ARRAY['a','b']`) and array casts (`'{a,b}'::text[]`) are not accepted by the analyzer; JSON arrays inside `properties` are the way to store lists.
+
+## NULL
+
+Every type is nullable. `NULL` compared with anything is NULL, so `WHERE x = NULL` matches nothing; use `IS NULL`, `IS NOT NULL` or `IS DISTINCT FROM`. A missing JSON key reads as NULL through `->>`, which makes `properties->>'summary' IS NULL` the usual way to find nodes without a property.
+
+## Casting
 
 ```sql
--- CAST syntax
-SELECT CAST('123' AS INT);
-SELECT CAST(NOW() AS TEXT);
-SELECT CAST(price AS BIGINT) FROM products;
-
--- :: syntax (PostgreSQL-style)
-SELECT '123'::INT;
-SELECT NOW()::TEXT;
-SELECT price::BIGINT FROM products;
+SELECT '123'::INT AS a, CAST('1.5' AS DOUBLE) AS b, 42::TEXT AS c,
+       '2024-01-15T10:00:00Z'::TIMESTAMPTZ AS d, 'true'::BOOLEAN AS e,
+       '{"a":1}'::jsonb AS j, '/a/b'::PATH AS p, NOW()::TEXT AS t;
 ```
 
----
+```json
+{"a":123,"b":1.5,"c":"42","d":"2024-01-15T10:00:00+00:00","e":true,"j":"{\"a\":1}","p":"/a/b","t":"2026-09-06T18:32:58.147227+00:00"}
+```
 
-## Type Comparison
+Accepted cast targets: `INT` / `INTEGER`, `BIGINT`, `DOUBLE` / `DOUBLE PRECISION`, `TEXT` / `VARCHAR` / `STRING`, `BOOLEAN`, `TIMESTAMP` / `TIMESTAMPTZ`, `JSON` / `JSONB`, `PATH`, `UUID`, `GEOMETRY`, `TSVECTOR`, `TSQUERY`, `INTERVAL`.
 
-| Type | Storage Size | Range/Precision | Use Case |
-|------|-------------|-----------------|----------|
-| INT | 4 bytes | ±2 billion | Counters, IDs |
-| BIGINT | 8 bytes | ±9 quintillion | Large numbers |
-| DOUBLE | 8 bytes | ~15 digits | Decimals, measurements |
-| TEXT | Variable | Unlimited | Strings, text |
-| BOOLEAN | 1 byte | true/false/NULL | Flags, conditions |
-| TIMESTAMPTZ | 8 bytes | Microsecond | Dates and times |
-| PATH | Variable | - | Hierarchy |
-| JSONB | Variable | - | Structured data |
-| GEOMETRY | Variable | - | Spatial data |
-| VECTOR(n) | 4n bytes | n dimensions | Embeddings |
-| TSVECTOR | Variable | - | Search documents |
-
----
-
-## Notes
-
-- Choose the smallest type that fits your data
-- Use NOT NULL when values are required
-- Use JSONB for flexible schemas
-- Use appropriate types for domain (TIMESTAMPTZ for dates, not TEXT)
-- Type constraints are enforced at INSERT and UPDATE
-- NULL is distinct from empty string or zero
-- System pseudo-columns have fixed types (UUID, PATH, TIMESTAMPTZ)
+Implicit coercions: INT to BIGINT to DOUBLE, TEXT to PATH, and any type to its nullable form. `properties->>'k'::String` is a RaisinDB spelling that keeps the key as a verbatim row-level filter; it is documented under [Operators](./operators.md#json-operators).

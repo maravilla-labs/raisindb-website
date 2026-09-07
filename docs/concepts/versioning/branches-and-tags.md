@@ -4,606 +4,175 @@ sidebar_position: 2
 
 # Branches and Tags
 
-**Branches** enable parallel lines of development, allowing teams to work on features, fixes, and experiments without affecting the main codebase. **Tags** mark specific points in history for releases, milestones, or important checkpoints.
+A **branch** is an isolated line of content and schema inside a repository. Every repository starts with `main`. You can fork a branch from another one, write to it without touching the source, compare it, merge it back, or promote selected nodes from it. A **tag** is an immutable name for one revision, used to mark releases and reviewed states.
 
-## Branches
+## What a branch is
 
-### What is a Branch?
+A branch record holds a name and a `head`, the HLC revision it currently points to, plus a little metadata:
 
-A branch is an independent line of development that diverges from a base branch:
-
-```sql
--- Main branch timeline
-main: A -> B -> C -> D
-
--- Feature branch from C
-feature: C -> E -> F
-
--- After merge
-main: A -> B -> C -> D -> G (merge of F)
+```json
+{
+  "name": "feature",
+  "head": "1788719742050-0",
+  "created_at": "2026-09-06T18:35:41.856317Z",
+  "created_by": "alice",
+  "created_from": "1788719729588-0",
+  "upstream_branch": "main",
+  "protected": false,
+  "description": null
+}
 ```
 
-Each branch maintains its own state, allowing isolated changes that don't affect other branches until merged.
+- `created_from` is the revision the branch was forked at, or `null` for a branch created from nothing.
+- `upstream_branch` is the branch it is compared against by default; `main` when unset.
+- `protected` blocks deletion, head changes and merges into the branch.
 
-## Creating Branches
+Every write on a branch creates a new revision and advances that branch's head only. See [Revisions](./revisions) for how revisions work.
 
-### Basic Creation
+## Creating a branch
 
-```sql
--- Create a branch from current HEAD of main
-CREATE BRANCH feature/new-login FROM main;
-
--- Create from specific revision
-CREATE BRANCH hotfix/bug-123 FROM main AT '2024-01-14T10:00:00Z';
-
--- Create from a tag
-CREATE BRANCH release/v1.0.1 FROM TAG v1.0;
-
--- Create empty branch (no history)
-CREATE BRANCH experimental FROM NULL;
-```
-
-### Branch Metadata
-
-Branches store metadata:
+Forking copies the source branch's content, indexes and schema (NodeTypes, archetypes, element types) as they are at the fork revision. The new branch is usable immediately, including for archetyped content, and the copy is a real copy: later writes on either side do not affect the other.
 
 ```sql
-SELECT
-  name,
-  base_branch,
-  created_at,
-  created_by,
-  head_revision,
-  protected
-FROM __branches__
-WHERE name = 'feature/new-login';
+CREATE BRANCH 'feature' FROM 'main';
 ```
 
-## Switching Branches
+```typescript
+await db.branches().create('feature', { fromBranch: 'main' });
+// fork at an earlier revision instead of the head:
+await db.branches().create('pin', { fromBranch: 'main', fromRevision: '1788719729588-0' });
+```
 
-### SET BRANCH
+```bash
+curl -X POST http://localhost:8080/api/management/repositories/default/myapp/branches \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"name": "feature", "upstream_branch": "main", "created_by": "alice"}'
+```
 
-Change your current working branch:
+Over HTTP the source is named by `upstream_branch`; add `from_revision` to fork at a specific revision. A request with neither creates an empty branch whose head is `0-0`.
+
+The commit history of the source is copied into the new branch by a background job, so the repository revision log for the branch fills in shortly after creation.
+
+## Working on a branch
+
+The branch is part of every address, so choosing a branch is choosing a URL segment, a SQL endpoint or a client scope. Nothing is switched globally.
+
+```bash
+# REST: the branch is the second path segment
+curl http://localhost:8080/api/repository/myapp/feature/head/content/hello -H "Authorization: Bearer $TOKEN"
+
+# SQL over HTTP: POST /api/sql/{repo}/{branch}
+curl -X POST http://localhost:8080/api/sql/myapp/feature -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"sql\":\"UPDATE 'content' SET properties = '{\\\"title\\\":\\\"Hello from feature\\\"}'::jsonb WHERE path = '/hello'\"}"
+```
+
+```typescript
+const feature = db.onBranch('feature');
+await feature.workspace('content').nodes().create({ type: 'raisin:Page', path: '/feature-only', properties: { title: 'Only on feature' } });
+await feature.executeSql("SELECT path, properties->>'title' AS title FROM 'content'");
+```
+
+Inside a SQL batch or a pgwire session, `USE BRANCH 'feature'` sets the branch for the statements that follow, and `SHOW CURRENT BRANCH` reports it. A `__branch = 'feature'` predicate routes a single query to another branch without changing the session. Details are in the [SQL branch reference](/docs/reference/sql/statements/branch).
+
+## Comparing branches
+
+`compare` counts commits ahead and behind and names the common ancestor. `diff` lists the nodes that changed since the fork.
+
+```bash
+curl http://localhost:8080/api/management/repositories/default/myapp/branches/feature/compare/main -H "Authorization: Bearer $TOKEN"
+# {"ahead":2,"behind":1,"common_ancestor":"1788719729588-0"}
+
+curl http://localhost:8080/api/management/repositories/default/myapp/branches/feature/diff/main -H "Authorization: Bearer $TOKEN"
+# {"common_ancestor":"1788719729588-0",
+#  "added":[{"node_id":"f29d5b20-...","workspace":"content","path":"/feature-only","operation":"added"}],
+#  "modified":[{"node_id":"260584c1-...","workspace":"content","path":"/hello","operation":"modified"}],
+#  "deleted":[]}
+```
+
+`SHOW DIVERGENCE 'feature' FROM 'main'` returns the same counts in SQL. The diff walks the commits since the fork rather than the whole repository, so it stays cheap on large content sets.
+
+## Merging
+
+A merge brings a source branch's changes into a target branch. Two strategies exist:
+
+- **Fast-forward** moves the target head to the source head. It is only allowed when the target has no commits of its own since the fork; otherwise the merge is rejected with `Fast-forward merge not possible: branches have diverged`.
+- **Three-way** (the default) compares both branches against their common ancestor. If a node was changed on both sides, the merge stops and reports conflicts. Otherwise it writes a merge commit on the target, with the target head as `parent` and the source head as `merge_parent`, and copies the source's changed nodes across. Reordering siblings on one branch does not count as a conflict.
 
 ```sql
--- Switch to feature branch
-SET BRANCH = 'feature/new-login';
-
--- Verify current branch
-SELECT CURRENT_BRANCH();
--- Returns: 'feature/new-login'
-
--- Switch back to main
-SET BRANCH = 'main';
+MERGE BRANCH 'feature' INTO 'main' MESSAGE 'Merge feature';
+-- result: Merge completed | revision 1788719765785 | fast_forward false | nodes_changed 2
 ```
 
-**Important**: Switching branches changes the visible data in all queries. All subsequent queries operate on the selected branch until changed.
+When a three-way merge finds conflicts the result carries them, one per node, with the node's properties at the base, on the target (`ours`) and on the source (`theirs`):
 
-### Branch Context
+```json
+{
+  "success": false,
+  "revision": null,
+  "conflicts": [{
+    "node_id": "260584c1-...",
+    "path": "",
+    "conflict_type": "BothModified",
+    "base_properties":   { "title": "Hello v3" },
+    "target_properties": { "title": "Title from main" },
+    "source_properties": { "title": "Title from c1" }
+  }],
+  "fast_forward": false,
+  "nodes_changed": 0
+}
+```
+
+`conflict_type` is one of `BothModified`, `BothAdded`, `DeletedBySourceModifiedByTarget` or `ModifiedBySourceDeletedByTarget`. The merge is completed by sending a resolution for each conflict (`keep-ours`, `keep-theirs` or `manual` with explicit properties) to the resolve endpoint; see [Merging Changes](/docs/guides/branching/merging-changes).
+
+A merge never rewrites the source branch. Delete it afterwards if it is no longer needed.
+
+## Promoting selected nodes
+
+A merge takes a whole branch. When one branch holds work in progress and another holds what is live, `copyNodes` moves named subtrees instead, preserving node ids so a second promotion updates the same targets:
+
+```typescript
+await db.branches().copyNodes('staging', 'main', {
+  workspace: 'content',
+  roots: ['/products/kettle'],
+  recursive: true,
+});
+// { copied: 1, deleted: 0, revision: '1788720003641-0', changes: [...] }
+```
+
+## Branch management
 
 ```sql
--- Query specific branch without switching
-SELECT * FROM default
-WHERE __branch = 'feature/new-login';
-
--- Compare data across branches
-SELECT
-  main_data.path,
-  main_data.properties AS main_props,
-  feature_data.properties AS feature_props
-FROM
-  (SELECT path, properties FROM default WHERE __branch = 'main') main_data
-FULL OUTER JOIN
-  (SELECT path, properties FROM default WHERE __branch = 'feature/new-login') feature_data
-  ON main_data.path = feature_data.path
-WHERE main_data.properties != feature_data.properties
-   OR main_data.path IS NULL
-   OR feature_data.path IS NULL;
+SHOW BRANCHES;                                   -- name, head, protected, upstream, created_at, created_by
+DESCRIBE BRANCH 'feature';                       -- adds created_from and description
+ALTER BRANCH 'release' SET PROTECTED TRUE;       -- no delete, no head reset, no merge into it
+ALTER BRANCH 'feature' SET UPSTREAM 'develop';   -- default comparison base
+ALTER BRANCH 'feature' SET DESCRIPTION 'Q3 redesign';
+DROP BRANCH IF EXISTS 'feature';
 ```
 
-## Merging Branches
-
-### Basic Merge
-
-```sql
--- Merge feature into main
-MERGE BRANCH feature/new-login INTO main;
-
--- Merge with message
-MERGE BRANCH feature/new-login INTO main
-MESSAGE 'Add new login functionality';
-
--- Merge creates a new revision on target branch
-SELECT __revision, __message
-FROM __revisions__
-WHERE __branch = 'main'
-ORDER BY __revision DESC
-LIMIT 1;
-```
-
-### Merge Strategies
-
-RaisinDB uses intelligent automatic merging:
-
-**1. Fast-Forward Merge**
-
-When target hasn't changed since branch creation:
-
-```sql
--- main: A -> B
--- feature: B -> C -> D
-
-MERGE BRANCH feature INTO main;
-
--- Result (fast-forward):
--- main: A -> B -> C -> D
-```
-
-**2. Three-Way Merge**
-
-When both branches have new commits:
-
-```sql
--- main: A -> B -> C
--- feature: B -> D -> E
-
-MERGE BRANCH feature INTO main;
-
--- Result (merge commit):
--- main: A -> B -> C -> M (merge of C and E)
-```
-
-**3. Property-Level Merge**
-
-Non-conflicting property changes auto-merge:
-
-```sql
--- main: {"title": "Updated", "author": "Jane"}
--- feature: {"title": "Updated", "tags": ["new"]}
-
--- Merged: {"title": "Updated", "author": "Jane", "tags": ["new"]}
-```
-
-### Handling Conflicts
-
-When the same property changes differently:
-
-```sql
--- Attempt merge
-MERGE BRANCH feature/redesign INTO main;
--- Error: Merge conflict detected
-
--- View conflicts
-SELECT
-  path,
-  property_name,
-  main_value,
-  feature_value
-FROM __merge_conflicts__
-WHERE merge_id = LAST_MERGE_ID();
-
--- Manually resolve
-SET BRANCH = 'main';
-UPDATE default
-SET properties = properties || '{"title": "Final Resolved Title"}'
-WHERE path = '/content/blog/post1';
-
--- Mark as resolved
-RESOLVE CONFLICT '/content/blog/post1' FOR MERGE LAST_MERGE_ID();
-
--- Complete merge
-COMMIT MERGE LAST_MERGE_ID();
-```
-
-### Abort Merge
-
-```sql
--- Start merge
-MERGE BRANCH feature/complex INTO main;
--- Conflicts detected...
-
--- Abort merge (rollback)
-ABORT MERGE LAST_MERGE_ID();
-
--- Branch state unchanged
-```
-
-## Branch Management
-
-### Listing Branches
-
-```sql
--- All branches
-SELECT name, created_at, head_revision
-FROM __branches__
-ORDER BY created_at DESC;
-
--- Active branches (with recent commits)
-SELECT name, MAX(__timestamp) AS last_commit
-FROM __branches__ b
-JOIN default d ON d.__branch = b.name
-GROUP BY name
-HAVING MAX(__timestamp) > NOW() - INTERVAL '7 days';
-
--- Branches by creator
-SELECT name, created_by
-FROM __branches__
-WHERE created_by = 'user@example.com';
-```
-
-### Branch Details
-
-```sql
--- Get branch information
-SELECT
-  name,
-  base_branch,
-  created_at,
-  created_by,
-  head_revision,
-  (SELECT COUNT(*) FROM default WHERE __branch = name) AS node_count
-FROM __branches__
-WHERE name = 'feature/new-login';
-```
-
-### Deleting Branches
-
-```sql
--- Delete a merged branch
-DROP BRANCH feature/new-login;
-
--- Force delete (even if unmerged)
-DROP BRANCH feature/abandoned FORCE;
-
--- Delete multiple branches
-DROP BRANCH feature/old-1, feature/old-2, feature/old-3;
-```
-
-### Renaming Branches
-
-```sql
--- Rename a branch
-ALTER BRANCH feature/temp RENAME TO feature/new-name;
-```
-
-### Branch Protection
-
-Prevent modifications to critical branches:
-
-```sql
--- Protect production branch
-ALTER BRANCH production SET PROTECTED = true;
-
--- Attempt to modify fails
-SET BRANCH = 'production';
-UPDATE default SET properties = '{}';
--- Error: Cannot modify protected branch 'production'
-
--- Allow only specific users (via access control)
-GRANT WRITE ON BRANCH production TO ROLE admin;
-```
+Branches cannot be renamed; create a new one and drop the old one. A protected branch answers deletion, merge and head changes with `403 Forbidden` until protection is removed.
 
 ## Tags
 
-### What is a Tag?
+A tag names one revision and never moves. Create one from a branch head, a history entry or a merge result:
 
-A tag is a named pointer to a specific revision, typically used for releases:
-
-```sql
--- Tag current HEAD
-CREATE TAG v1.0 ON main AT HEAD;
-
--- Tag specific revision
-CREATE TAG v1.0.1 ON main AT '2024-01-15T14:30:00Z';
-
--- Tag with annotation
-CREATE TAG v2.0 ON main AT HEAD
-MESSAGE 'Major release with new features';
+```typescript
+const head = await db.branches().getHead('main');
+await db.tags().create('v1.0', head.revision, 'First release');
+await db.tags().list();
+// [{ name: 'v1.0', revision: '1788719765785-0', created_at: '...', created_by: 'system',
+//    message: 'First release', protected: false }]
+await db.tags().delete('v1.0');
 ```
 
-### Tag Types
+The HTTP endpoints are `POST` and `GET /api/management/repositories/{tenant}/{repo}/tags` and `GET` or `DELETE .../tags/{name}`; the create body is `{"name", "revision", "message?", "created_by?", "protected?"}`. A protected tag cannot be deleted.
 
-**Lightweight Tags**
-
-Simple named pointers:
-
-```sql
-CREATE TAG milestone-1 ON main AT HEAD;
-```
-
-**Annotated Tags**
-
-With metadata and message:
-
-```sql
-CREATE TAG v1.0 ON main AT HEAD
-MESSAGE 'First stable release'
-METADATA '{
-  "release_notes": "https://example.com/v1.0-notes",
-  "build": "2024-01-15-001"
-}';
-```
-
-### Listing Tags
-
-```sql
--- All tags
-SELECT name, branch, revision, created_at, message
-FROM __tags__
-ORDER BY created_at DESC;
-
--- Tags on specific branch
-SELECT name, revision
-FROM __tags__
-WHERE branch = 'main'
-ORDER BY created_at DESC;
-
--- Find tag by revision
-SELECT name FROM __tags__
-WHERE revision = 'HLC_TIMESTAMP';
-```
-
-### Using Tags
-
-```sql
--- Create branch from tag
-CREATE BRANCH hotfix/v1.0-patch FROM TAG v1.0;
-
--- Query data at tagged revision
-SET __revision = (SELECT revision FROM __tags__ WHERE name = 'v1.0');
-SELECT * FROM default WHERE path = '/content/blog/post1';
-
--- Compare current to tagged version
-SELECT
-  current.properties AS current,
-  tagged.properties AS tagged
-FROM
-  (SELECT properties FROM default WHERE path = '/content/blog/post1') current,
-  (SELECT properties FROM default
-   WHERE path = '/content/blog/post1'
-     AND __revision = (SELECT revision FROM __tags__ WHERE name = 'v1.0')
-  ) tagged;
-```
-
-### Deleting Tags
-
-```sql
--- Delete a tag
-DROP TAG v1.0-beta;
-
--- Delete multiple tags
-DROP TAG v0.1, v0.2, v0.3;
-```
-
-### Moving Tags
-
-```sql
--- Move tag to different revision (not recommended for releases)
-ALTER TAG v1.0 SET REVISION = '2024-01-16T10:00:00Z';
-```
-
-## Branch Strategies
-
-### Feature Branch Strategy
-
-Each feature gets its own branch:
-
-```sql
--- Start feature
-CREATE BRANCH feature/user-auth FROM main;
-SET BRANCH = 'feature/user-auth';
-
--- Develop...
-INSERT INTO default (path, node_type, properties) VALUES
-  ('/config/auth', 'config:Auth', '{"enabled": true}');
-
--- Complete feature
-MERGE BRANCH feature/user-auth INTO main;
-DROP BRANCH feature/user-auth;
-```
-
-### Release Branch Strategy
-
-Maintain stable release branches:
-
-```sql
--- Create release branch
-CREATE BRANCH release/1.x FROM main;
-
--- Tag release
-CREATE TAG v1.0 ON release/1.x AT HEAD;
-
--- Continue development on main
-SET BRANCH = 'main';
--- ... new features for v2.0 ...
-
--- Hotfix on release
-SET BRANCH = 'release/1.x';
-UPDATE default SET properties = '{"hotfix": true}';
-
--- Tag hotfix
-CREATE TAG v1.0.1 ON release/1.x AT HEAD;
-
--- Merge hotfix to main
-MERGE BRANCH release/1.x INTO main;
-```
-
-### Environment Branch Strategy
-
-One branch per environment:
-
-```sql
--- Create environments
-CREATE BRANCH development FROM main;
-CREATE BRANCH staging FROM main;
-CREATE BRANCH production FROM main;
-
--- Develop on development
-SET BRANCH = 'development';
--- ... changes ...
-
--- Promote to staging
-MERGE BRANCH development INTO staging;
-
--- Test staging, then promote to production
-MERGE BRANCH staging INTO production;
-
--- Tag production deployment
-CREATE TAG deploy-2024-01-15 ON production AT HEAD;
-```
-
-### User Branch Strategy
-
-Personal branches for collaboration:
-
-```sql
--- Each user gets a branch
-CREATE BRANCH user/jane FROM main;
-CREATE BRANCH user/john FROM main;
-
--- Jane works on her branch
-SET BRANCH = 'user/jane';
-UPDATE default SET properties = '{"jane_edit": true}';
-
--- John works on his branch
-SET BRANCH = 'user/john';
-UPDATE default SET properties = '{"john_edit": true}';
-
--- Merge both to main
-MERGE BRANCH user/jane INTO main;
-MERGE BRANCH user/john INTO main;
-```
-
-## Advanced Branch Operations
-
-### Branch Comparison
-
-```sql
--- Nodes added in feature branch
-SELECT path, properties
-FROM default
-WHERE __branch = 'feature/new'
-  AND path NOT IN (
-    SELECT path FROM default WHERE __branch = 'main'
-  );
-
--- Nodes modified in feature branch
-SELECT
-  f.path,
-  m.properties AS main_props,
-  f.properties AS feature_props
-FROM
-  (SELECT path, properties FROM default WHERE __branch = 'main') m
-JOIN
-  (SELECT path, properties FROM default WHERE __branch = 'feature/new') f
-  ON m.path = f.path
-WHERE m.properties != f.properties;
-
--- Count changes
-SELECT
-  'added' AS change_type,
-  COUNT(*) AS count
-FROM default
-WHERE __branch = 'feature/new'
-  AND path NOT IN (SELECT path FROM default WHERE __branch = 'main')
-UNION ALL
-SELECT
-  'modified',
-  COUNT(*)
-FROM
-  (SELECT path FROM default WHERE __branch = 'main') m
-JOIN
-  (SELECT path, properties FROM default WHERE __branch = 'feature/new') f
-  ON m.path = f.path
-JOIN
-  (SELECT path, properties FROM default WHERE __branch = 'main') m2
-  ON m2.path = f.path
-WHERE f.properties != m2.properties;
-```
-
-### Branch Divergence
-
-Check how far branches have diverged:
-
-```sql
--- Revisions unique to each branch since divergence
-SELECT
-  COUNT(*) FILTER (WHERE __branch = 'main') AS main_commits,
-  COUNT(*) FILTER (WHERE __branch = 'feature/new') AS feature_commits
-FROM __revisions__
-WHERE __revision > (
-  SELECT MAX(r1.__revision)
-  FROM __revisions__ r1
-  JOIN __revisions__ r2 ON r1.__revision = r2.__revision
-  WHERE r1.__branch = 'main' AND r2.__branch = 'feature/new'
-);
-```
-
-### Stale Branch Detection
-
-Find inactive branches:
-
-```sql
--- Branches with no commits in 30 days
-SELECT name, MAX(__timestamp) AS last_commit
-FROM __branches__ b
-LEFT JOIN default d ON d.__branch = b.name
-GROUP BY name
-HAVING MAX(__timestamp) < NOW() - INTERVAL '30 days'
-   OR MAX(__timestamp) IS NULL;
-```
-
-## Best Practices
-
-1. **Use descriptive names**: `feature/user-login` not `my-branch`
-2. **Keep branches short-lived**: Merge within days, not weeks
-3. **Tag releases**: Mark every production deployment
-4. **Delete merged branches**: Keep branch list clean
-5. **Protect important branches**: Use protection on main/production
-6. **Document merge conflicts**: Leave notes for complex resolutions
-7. **Use consistent naming**: Establish conventions (feature/, fix/, release/)
-8. **Regular merging**: Sync with base branch frequently
-
-## Branching Patterns
-
-### Temporary Branches
-
-```sql
--- Quick experiment
-CREATE BRANCH experiment/test-idea FROM main;
--- ... test ...
-DROP BRANCH experiment/test-idea;  -- Discard
-```
-
-### Long-Running Branches
-
-```sql
--- Persistent environment branches
-CREATE BRANCH development FROM main;
-CREATE BRANCH production FROM main;
-
--- Never delete, continuously merge into them
-```
-
-### Branch Hierarchies
-
-```sql
--- Nested feature development
-CREATE BRANCH feature/redesign FROM main;
-CREATE BRANCH feature/redesign-header FROM feature/redesign;
-CREATE BRANCH feature/redesign-footer FROM feature/redesign;
-
--- Merge sub-features into parent
-MERGE BRANCH feature/redesign-header INTO feature/redesign;
-MERGE BRANCH feature/redesign-footer INTO feature/redesign;
-
--- Merge parent into main
-MERGE BRANCH feature/redesign INTO main;
-```
+To read content at a tag, use its revision with the `rev/` REST segment or a `__revision` predicate; to start work from it, fork a branch with `fromRevision`. There is no SQL syntax for tags.
 
 ## Next Steps
 
-- **[Git-Like Workflows](/docs/concepts/versioning/git-like-workflows)** - Common branching workflows
-- **[Revisions](/docs/concepts/versioning/revisions)** - Understand the revision model
-- **[Branching Guide](/docs/guides/branching/working-with-branches)** - Practical branching scenarios
-- **[Access Control](/docs/concepts/access-control)** - Control branch permissions
+- **[Git-Like Workflows](./git-like-workflows)** - Feature, environment and review workflows
+- **[Revisions](./revisions)** - The revision model behind branches
+- **[Working with Branches](/docs/guides/branching/working-with-branches)** - Step-by-step branch operations
+- **[Merging Changes](/docs/guides/branching/merging-changes)** - Merge, conflicts and comparison

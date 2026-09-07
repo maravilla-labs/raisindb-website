@@ -4,205 +4,179 @@ sidebar_position: 7.5
 
 # Coordinate Reference Systems (SRID)
 
-RaisinDB stores a geometry's coordinate reference system **with the geometry** and
-reprojects between systems for real. `ST_SRID` reports what a geometry is actually
-in, `ST_SETSRID` corrects a wrong label, and `ST_TRANSFORM` converts coordinates.
-
-:::info Previously
-`ST_SRID` returned the constant `4326` for every input and there was no
-`ST_TRANSFORM` at all. Both are now honest. A geometry with no CRS label still
-reports `4326`, so nothing about existing queries or existing data changes.
-:::
+A geometry carries its coordinate reference system with it. `ST_SRID` reports
+which CRS a geometry is in, `ST_SETSRID` changes the label without touching
+the coordinates, and `ST_TRANSFORM` reprojects the coordinates into another
+CRS.
 
 ## Where the SRID lives
 
-A geometry carries an optional `srid` member:
+A geometry may carry an `srid` member:
 
 ```json
 { "type": "Point", "coordinates": [2683000.0, 1247000.0], "srid": 2056 }
 ```
 
-The member is **omitted for EPSG:4326**, which keeps ordinary output strictly
-conformant with GeoJSON RFC 7946 (the RFC mandates 4326 and forbids declaring
-another CRS, so the `srid` member is a documented extension used only when it has
-to be). A geometry with no `srid` is *unlabelled*: it reports `4326`, and in a
-binary operation it **adopts** the other operand's CRS.
+The member is omitted for EPSG:4326, so ordinary output stays plain GeoJSON
+(RFC 7946 defines WGS84 as the only CRS). A geometry with no `srid` reports
+`4326`, and in a two-argument function it adopts the other operand's CRS.
 
-Because the SRID travels inside the value, it survives function composition —
-`ST_TRANSFORM(ST_UNION(a, b), 3857)` is meaningful. A sibling node property
-(`location_srid`) could not do that, which is why this form was chosen.
+Because the SRID is inside the value it survives function composition:
+`ST_TRANSFORM(ST_UNION(a, b), 3857)` is meaningful.
 
-You can also declare a default SRID per property in the NodeType schema, so a
-workspace working entirely in a projected CRS need not repeat it on every write.
+`ST_POINT` and `ST_MAKEPOINT` build 4326 points and check the coordinate
+ranges, so a point in a projected CRS is written as GeoJSON:
+
+```sql
+SELECT ST_SRID(ST_GEOMFROMGEOJSON(
+  '{"type":"Point","coordinates":[2683000,1247000],"srid":2056}'
+));
+-- 2056
+```
 
 ## The three functions
 
 | Function | Coordinates | Label | Use it when |
 |----------|-------------|-------|-------------|
-| `ST_SRID(g)` | untouched | read | you want to know what CRS something is in |
-| `ST_SETSRID(g, srid)` | **untouched** | overwritten | the label was wrong |
-| `ST_TRANSFORM(g, srid)` | **recomputed** | overwritten | you want the data in another CRS |
+| `ST_SRID(g)` | untouched | read | you want to know the CRS |
+| `ST_SETSRID(g, srid)` | untouched | overwritten | the label is wrong |
+| `ST_TRANSFORM(g, srid)` | recomputed | overwritten | you want the data in another CRS |
 
-:::danger ST_SETSRID does not move the geometry
-This is the most common way a multi-CRS dataset becomes quietly wrong.
+`ST_SETSRID` only relabels. If the numbers are already Swiss LV95 metres but
+arrived without a label, set the label; if they are WGS84 degrees and you want
+LV95 metres, transform:
 
 ```sql
--- The numbers are already Swiss LV95 easting/northing, they just arrived
--- unlabelled. Fix the LABEL:
-UPDATE 'sites' SET geom = ST_SETSRID(geom, 2056);
+-- relabel
+SELECT ST_SETSRID(properties->>'geom', 2056) FROM 'sites';
 
--- The numbers really are WGS84 degrees and you want LV95 metres.
--- CONVERT them:
-SELECT ST_TRANSFORM(geom, 2056) FROM 'sites';
+-- convert
+SELECT ST_TRANSFORM(properties->>'geom', 2056) FROM 'sites';
 ```
 
-If the numbers should change, you want `ST_TRANSFORM`. `ST_SETSRID` only
-re-describes them, so using it by mistake produces a geometry that *claims* one
-CRS while its coordinates describe another — with no error anywhere.
-:::
+Using `ST_SETSRID` where `ST_TRANSFORM` was meant produces a geometry whose
+label and coordinates disagree, with no error, so it is worth checking which
+one you need.
 
-Both functions accept the target CRS as an integer or as text:
-`4326`, `'EPSG:4326'`, `'epsg:4326'`, `'SRID=4326'`,
-`'urn:ogc:def:crs:EPSG::4326'`. Foreign authorities are rejected on purpose:
-`'ESRI:102100'` is *not* `EPSG:102100`, and silently treating it as one would be
-exactly the kind of guess this design removes.
+Both functions accept the target CRS as an integer or as text: `4326`,
+`'EPSG:4326'`, `'epsg:4326'`, `'SRID=4326'`, `'urn:ogc:def:crs:EPSG::4326'`.
+Other authorities such as `'ESRI:102100'` are rejected. The deprecated Web
+Mercator codes `3785` and `900913` are read as `3857`.
 
-Deprecated WebMercator synonyms are canonicalised — `3785` and `900913` both
-become `3857` — so `ST_SRID(a) = ST_SRID(b)` is not false for two geometries in the
-same CRS.
+```sql
+SELECT ST_SRID(ST_POINT(8.54, 47.37)) AS s,
+       ST_ASGEOJSON(ST_TRANSFORM(ST_POINT(8.54, 47.37), 3857)) AS mercator;
+```
+
+```json
+{"rows":[{"s":4326,
+          "mercator":"{\"type\":\"Point\",\"coordinates\":[950668.45,6002678.0],\"srid\":3857}"}]}
+```
 
 ## Axis order: always (longitude, latitude)
 
-**`(x, y)` is `(longitude, latitude)` for geographic CRSs and
-`(easting, northing)` for projected ones. Everywhere, for every EPSG code, on input
-and on output.**
+`(x, y)` is `(longitude, latitude)` for geographic CRSs and
+`(easting, northing)` for projected ones, on input and on output, for every
+EPSG code. This matches GeoJSON, PostGIS and web mapping libraries, and it
+differs from the EPSG registry's own axis definition of EPSG:4326
+(latitude first).
 
-This deliberately diverges from the EPSG authority, which defines EPSG:4326 as
-`(latitude, longitude)`. GeoJSON RFC 7946 §3.1.1, PostGIS, `geo-types`, the
-`geohash` crate and every web mapping library are lon/lat; honouring authority
-order would break interop with all of them and with data already stored. It is the
-same call PostGIS and GeoJSON made.
-
-Consequences worth knowing:
-
-* The OGC URN form does **not** flip the axes.
-  `ST_TRANSFORM(g, 'urn:ogc:def:crs:EPSG::4326')` means the same as
-  `ST_TRANSFORM(g, 4326)`.
-* There is no per-code axis flipping. If you supply an EPSG code whose
-  authority-defined order differs from ours, your coordinates are interpreted as
-  `(x, y)` regardless.
+- The URN form does not flip axes: `ST_TRANSFORM(g, 'urn:ogc:def:crs:EPSG::4326')`
+  is the same as `ST_TRANSFORM(g, 4326)`.
+- There is no per-code axis flipping.
 
 ### The swap guard
 
-`ST_POINT(47.37, 8.54)` — Zurich, reversed — used to pass silently and place the
-point in Somalia. Now:
+`ST_POINT` checks its arguments against the lon/lat ranges:
 
 | Input | Behaviour |
 |-------|-----------|
-| `ST_POINT(47.37, 185.4)` | **error**, naming the corrected call `ST_POINT(185.4, 47.37)` |
-| `ST_POINT(47.37, 8.54)` | accepted, with a one-time warning |
-| `ST_POINT(200, 0)` | error, spelling out the `(longitude, latitude)` convention |
+| `ST_POINT(47.37, 185.4)` | error: `ST_POINT takes (longitude, latitude); (47.37, 185.4) looks reversed — did you mean ST_POINT(185.4, 47.37)?` |
+| `ST_POINT(200, 0)` | error: `longitude 200 out of range [-180, 180]. Coordinate order is (longitude, latitude)` |
+| `ST_POINT(47.37, 8.54)` | accepted; the server logs a warning that the pair is ambiguous |
 
-The middle case is genuinely undetectable — both ordinates are valid latitudes — so
-it is accepted rather than rejected, because rejecting it would break every
-legitimate point in that band. But it is no longer *silent*.
+The last case cannot be detected, because both values are valid latitudes,
+so it is accepted with a warning rather than rejected.
 
-## What a default build can do
+## Which CRSs a build supports
 
-Coverage grows with Cargo features. **A default build needs no system libraries and
-no C toolchain**, and already covers the CRSs most applications use:
+Coverage grows with Cargo features. A default build needs no system libraries:
 
 | Tier | Cargo feature | Coverage | Build prerequisites |
 |------|---------------|----------|---------------------|
-| 1 | *(always on)* | EPSG:4326, EPSG:3857 (+3785/900913), all 120 WGS84 UTM zones | none |
-| 2 | `proj` | ~1000 EPSG codes, pure Rust, WASM-safe | none |
-| 3 | `proj-full` | full EPSG database + datum grids | see the warning below |
+| 1 | always on | EPSG:4326, EPSG:3857 (and 3785/900913), all 120 WGS84 UTM zones | none |
+| 2 | `proj` | about 1000 EPSG codes, pure Rust | none |
+| 3 | `proj-full` | full EPSG database and datum grids | libproj; see below |
 
-Tiers are tried highest-fidelity first, so enabling a wider one transparently
-improves accuracy without any change to your SQL.
+Tiers are tried highest-fidelity first, so enabling a wider one improves
+accuracy without changes to your SQL.
 
-:::warning `proj-full` is more expensive than it looks
-It links libproj. When `pkg-config` cannot find a system libproj, `proj-sys`
-**compiles libproj 9.6.2 from bundled source**, which needs a C/C++ toolchain plus
-sqlite3 and libtiff headers and is slow in CI. Neither projection feature is
-enabled by default.
+:::warning `proj-full` links libproj
+When `pkg-config` cannot find a system libproj, the build compiles libproj
+from bundled source, which needs a C/C++ toolchain plus sqlite3 and libtiff
+headers and is slow. Neither projection feature is on by default.
 :::
 
-### There is no silent fallback
-
-When no compiled backend can perform a requested pair, `ST_TRANSFORM` **errors**,
-and the message names both codes and the feature that would enable them:
+When no compiled backend can perform a requested transform, `ST_TRANSFORM`
+returns an error that names both codes and the feature that would enable
+them:
 
 ```
-no compiled backend can transform SRID 4326 -> SRID 31370.
+ST_TRANSFORM: no compiled backend can transform SRID 4326 -> SRID 2056.
 Rebuild raisin-server with --features proj4rs-backend (pure Rust)
 or proj-backend (needs libproj) to enable it
 ```
 
-(`proj4rs-backend` and `proj-backend` are the underlying crate's feature names;
-`raisin-server` exposes them as `proj` and `proj-full` respectively.)
+(`proj4rs-backend` and `proj-backend` are the underlying crate's feature
+names; `raisin-server` exposes them as `proj` and `proj-full`.)
 
-Returning the input unprojected, or projecting approximately, would produce a
-geometry wrong by hundreds of kilometres with nothing to indicate it. The same
-applies to a coordinate with no image in the target CRS — a point above 85.05°N
-against EPSG:3857, for example, where libproj otherwise returns a *finite*
-northing twelve times the height of the whole Mercator world and reports success.
+A coordinate with no image in the target CRS, such as a point above 85.05°N
+against EPSG:3857, is also an error, and a transform is all-or-nothing: one
+out-of-domain vertex fails the whole geometry.
 
-A transform is also **all-or-nothing**: one out-of-domain vertex fails the whole
-geometry rather than emitting a half-projected ring, which would be a structurally
-valid polygon describing nowhere.
+## The spatial index stores WGS84
 
-## Why the spatial index is stricter than ST_TRANSFORM
+The spatial index is built on geohash cells, which are defined on degrees, so
+a geometry is normalised to 4326 when it is written. That normalisation uses
+tier 1 only, even on a build with tier 2 or 3, so that every node in a cluster
+indexes the same replicated record the same way.
 
-The spatial index stores WGS84 lon/lat only — geohash cells are defined on degrees
-— so a geometry is normalised to 4326 at **write** time. That normalisation is
-restricted to **tier 1 alone, even on a build where tier 2 or 3 is compiled in**.
+- Storing a geometry whose SRID is outside tier 1 fails the write with a
+  message asking you to `ST_TRANSFORM(..., 4326)` first.
+- Querying with `ST_TRANSFORM` may use any compiled backend.
 
-The reason is cluster determinism. RaisinDB is masterless: every node builds its own
-local spatial index as replicated records arrive. If normalisation used "whatever
-backend happens to be compiled in", a node built with `proj-full` would index an
-EPSG:31370 geometry while a node without it would not — same replicated data,
-divergent local indexes, and the same query returning different answers depending
-on which node replied.
+## SRID mismatch in a two-argument function
 
-So:
-
-* **Storing** a geometry whose SRID is outside tier 1 **fails the write**, loudly,
-  with a message telling you to `ST_TRANSFORM(..., 4326)` first. It is never stored
-  silently unindexed, because that would make `ST_DWITHIN` miss rows forever with no
-  signal.
-* **Querying** with `ST_TRANSFORM` may use any compiled backend, because a query
-  result is per-request rather than shared state.
-
-## SRID mismatch on a binary operation
-
-Two geometries with **different explicit** SRIDs are an error, as in PostGIS:
-
-```
-ST_INTERSECTS: SRID mismatch (4326 vs 3857); wrap one side in ST_TRANSFORM
-```
-
-An implicit transform was rejected for two reasons: it silently changes the answer
-and hides a data-modelling error, and on a build without the required backend it
-would fail — making a query's success depend on which Cargo features the server was
-built with.
-
-The one exception is the adoption rule: an **unlabelled** geometry takes the other
-operand's SRID. That is what lets
+Two geometries with different explicit SRIDs are an error, as in PostGIS:
 
 ```sql
-WHERE ST_DWITHIN(properties->>'loc', ST_POINT(8.54, 47.37), 500)
+SELECT ST_INTERSECTS(
+  ST_GEOMFROMGEOJSON('{"type":"Point","coordinates":[1,1],"srid":2056}'),
+  ST_TRANSFORM(ST_POINT(8.54, 47.37), 3857));
+-- ST_INTERSECTS: SRID mismatch (2056 vs 3857); wrap one side in ST_TRANSFORM
 ```
 
-keep working when the stored value is labelled and the literal is not.
+A geometry in 4326 carries no label, so it counts as unlabelled and adopts
+the other operand's SRID instead of raising the error. That is what lets
+
+```sql
+SELECT name FROM 'places'
+WHERE ST_DWITHIN(properties->>'location', ST_POINT(8.54, 47.37), 500);
+```
+
+work when the stored value is labelled and the literal is not. It also means
+that comparing a 4326 geometry with a 3857 one is not caught: the degrees are
+read as metres and the result is simply wrong
+(`ST_INTERSECTS(ST_POINT(8.54, 47.37), ST_TRANSFORM(ST_POINT(8.54, 47.37), 3857))`
+returns `false`). Transform explicitly whenever one side is projected.
 
 ## Units per CRS class
 
-Measurements are **geodesic on geographic CRSs and planar on projected ones**:
+Measurements are geodesic on geographic CRSs and planar on projected ones:
 
 | Function | geographic (4326 …) | projected (3857, UTM …) |
 |----------|---------------------|-------------------------|
-| `ST_DISTANCE` | metres, geodesic | native CRS linear unit |
+| `ST_DISTANCE` | metres, geodesic | native linear unit |
 | `ST_DWITHIN(a, b, d)` | `d` in metres | `d` in native units |
 | `ST_LENGTH` / `ST_PERIMETER` | metres | native units |
 | `ST_AREA` | square metres | square native units |
@@ -211,16 +185,15 @@ Measurements are **geodesic on geographic CRSs and planar on projected ones**:
 | `ST_AZIMUTH` | radians, geodesic | radians, planar |
 | `__distance` on a spatial scan | metres | metres (the index is 4326) |
 
-Two things to be aware of:
+Two things to keep in mind:
 
-* **EPSG:3857 metres are Mercator-distorted.** The error is roughly `1/cos(latitude)`
-  — about 1.5× at 48°N — so a length measured in 3857 is not a ground distance.
-  This matches PostGIS. If you want ground truth, store 4326 or a UTM zone.
-* **Topological predicates are planar in the geometry's own coordinate space.** On
-  4326 that means straight lines in lon/lat, not great circles, so a polygon
-  spanning the antimeridian or a `contains` test across a large longitudinal span
-  behaves approximately — exactly as it does in PostGIS's `geometry` type. This is
-  a documented limitation, not a bug.
+- EPSG:3857 metres are Mercator-distorted by roughly `1/cos(latitude)`. The
+  same 0.01° of longitude at 47°N measures 753 m in 4326 and 1113 m in 3857.
+  Store 4326 or a UTM zone when you need ground distance.
+- Topological predicates are planar in the geometry's own coordinate space.
+  On 4326 that means straight lines in lon/lat, not great circles, so a
+  polygon spanning the antimeridian behaves approximately, as it does with
+  PostGIS's `geometry` type.
 
 See [Geospatial Functions](./geospatial-functions.md) for the full function
-reference and the table of deliberate divergences from PostGIS.
+reference.

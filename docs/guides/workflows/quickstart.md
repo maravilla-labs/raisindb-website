@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Workflow Quickstart
 
-Build the complete human-in-the-loop approval flow from the [`approval-flow` example](./examples.md#approval-flow): define a flow with an approval step, run it, watch it pause, complete the inbox task from the SDK, and stream the rest of the execution.
+Build the human-in-the-loop approval flow from the [`approval-flow` example](./examples.md#approval-flow): define a flow with an approval step, run it, watch it pause, complete the inbox task from the SDK, and stream the rest of the execution.
 
 ## Prerequisites
 
@@ -46,7 +46,7 @@ const workflowData = {
 
 ## 2. Deploy the Flow
 
-A flow is just a node: create a `raisin:Flow` node in the **functions** workspace with `workflow_data` set to the definition.
+A flow is a node. Create a `raisin:Flow` node in the `functions` workspace with `workflow_data` set to the definition. The workspace root only accepts folders, so the flow goes under a folder such as `/flows`.
 
 ```javascript
 import { RaisinHttpClient, FlowClient, InboxApi } from '@raisindb/client';
@@ -92,7 +92,7 @@ function authHeaders(client) {
 ```
 
 :::tip
-Flows can also be shipped as `.node.yaml` content files in [packages](/docs/guides/packages/creating-packages), or created visually in the admin console's flow designer.
+Flows can also ship as `.node.yaml` content files in [packages](/docs/guides/packages/creating-packages), or be created in the admin console's flow designer. Run `raisindb flow doctor <file-or-package>` to check a definition before deploying it.
 :::
 
 ## 3. Run It
@@ -108,7 +108,7 @@ const { instance_id } = await flows.run('/flows/order-approval', {
 console.log('Flow started:', instance_id);
 ```
 
-The flow runs until the approval step and pauses. Poll until it reaches `waiting`:
+The run call returns as soon as the instance is queued. The flow runs until the approval step and pauses. Poll until it reaches `waiting`:
 
 ```javascript
 let status;
@@ -116,12 +116,12 @@ do {
   await new Promise((r) => setTimeout(r, 500));
   status = await flows.getInstanceStatus(instance_id);
 } while (!['waiting', 'completed', 'failed'].includes(status.status));
-// status.status === 'waiting' — the flow is paused on the human task
+// status.status === 'waiting': the flow is paused on the human task
 ```
 
 ## 4. Find the Task in the Inbox
 
-The human-task step created a `raisin:InboxTask` node in the assignee's inbox:
+The human-task step created a `raisin:InboxTask` node in the assignee's inbox. Listing without an `assignee` returns the caller's own inbox; an admin can list another principal's inbox by passing `assignee`:
 
 ```javascript
 const { tasks } = await inbox.listTasks({ status: 'pending', assignee: '/users/admin' });
@@ -130,17 +130,40 @@ console.log(`Inbox task: "${task.title}" [${task.task_type}, P${task.priority}]`
 // Inbox task: "Approve order ORD-1042 (249 CHF)" [approval, P4]
 ```
 
+A task looks like this on the wire:
+
+```json
+{
+  "id": "IXjXHfYd2pE15yhZz9lzE",
+  "path": "/users/admin/inbox/task-approve-4dc88efa448c-it0",
+  "task_type": "approval",
+  "title": "Approve order ORD-1042 (249 CHF)",
+  "description": "A new order needs your approval before fulfillment.",
+  "assignee": "/users/admin",
+  "status": "pending",
+  "priority": 4,
+  "options": [
+    { "value": "approve", "label": "Approve", "style": "success" },
+    { "value": "reject", "label": "Reject", "style": "danger" }
+  ],
+  "flow_instance_id": "e878c91d-eacd-46b4-9ae1-a5c02cdb5c4f",
+  "step_id": "approve",
+  "created_at": "2026-09-06T18:37:01.369067+00:00"
+}
+```
+
 ## 5. Complete the Task and Stream the Rest
 
-Subscribe to the event stream **before** completing the task so no events are missed, then approve:
+Subscribe to the event stream before completing the task so no events are missed, then approve:
 
 ```javascript
 const stream = await flows.createEventStream(instance_id);
 
-await inbox.completeTask(task.id, {
+const result = await inbox.completeTask(task.id, {
   action: 'approve',
   comment: 'Approved from the SDK example',
 });
+// result.flow.instance_id and result.flow.job_id identify the resumed run
 
 for await (const event of stream.events) {
   switch (event.type) {
@@ -160,7 +183,16 @@ for await (const event of stream.events) {
 }
 ```
 
-Completing the task resumes the flow. The submitted response is available to downstream steps as the step's output (`steps.approve.*`) and as the `__human_response` variable.
+Completing the task resumes the flow. The submitted response, plus `completed_by` (the caller's user id; the dev-mode superadmin shows as `system`) and `task_path`, becomes the step's output (`steps.approve.*`) and the `__human_response` variable:
+
+```json
+{
+  "action": "approve",
+  "comment": "Approved from the SDK example",
+  "completed_by": "system",
+  "task_path": "/users/admin/inbox/task-approve-4dc88efa448c-it0"
+}
+```
 
 ## Full Script
 
@@ -173,6 +205,6 @@ npm install && npm start
 
 ## Next Steps
 
-- [Flow Definition Reference](./flow-definition.md) — add function steps, routing, and containers
-- [Human-in-the-Loop & the Inbox](./human-in-the-loop.md) — task types, agent assignees, escalation
-- [Examples](./examples.md) — a multi-step ticketing workflow with compensation and routing
+- [Flow Definition Reference](./flow-definition.md): add function steps, routing, and containers
+- [Human-in-the-Loop and the Inbox](./human-in-the-loop.md): task types, agent assignees, escalation
+- [Examples](./examples.md): a multi-step ticketing workflow with compensation and routing

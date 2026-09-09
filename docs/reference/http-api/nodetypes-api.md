@@ -53,6 +53,7 @@ Response `201 Created` with the stored definition:
   "allowed_children": ["raisin:Asset"],
   "initial_structure": null,
   "versionable": true,
+  "immutable": null,
   "publishable": true,
   "auditable": null,
   "indexable": null,

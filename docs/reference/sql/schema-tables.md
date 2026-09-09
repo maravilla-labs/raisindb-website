@@ -47,7 +47,7 @@ A function's `raisin.sql` binding is the route to schema information: the functi
 
 ### `NodeTypes`
 
-`id`, `name`, `strict`, `extends`, `mixins`, `overrides`, `description`, `icon`, `version`, `properties`, `allowed_children`, `required_nodes`, `initial_structure`, `versionable`, `publishable`, `auditable`, `indexable`, `index_types`, `created_at`, `updated_at`, `published_at`, `published_by`, `previous_version`, `__branch`.
+`id`, `name`, `strict`, `extends`, `mixins`, `overrides`, `description`, `icon`, `version`, `properties`, `allowed_children`, `required_nodes`, `initial_structure`, `versionable`, `immutable`, `publishable`, `auditable`, `indexable`, `index_types`, `created_at`, `updated_at`, `published_at`, `published_by`, `previous_version`, `__branch`.
 
 `properties` is a JSON array of property definitions (`name`, `type`, `required`, `default`, `unique`, `index`, `items`, `structure`, `meta`). `mixins` lists the mixin names applied to the type.
 

@@ -32,7 +32,7 @@ CREATE NODETYPE 'ns:Name'
   [ ALLOWED_CHILDREN ('ns:TypeA', 'ns:TypeB') ]
   [ REQUIRED_NODES ('ns:TypeA') ]
   [ COMPOUND_INDEX 'name' ON (column [ASC|DESC] [, ...]) ] [ ... ]
-  [ VERSIONABLE ] [ PUBLISHABLE ] [ AUDITABLE ] [ INDEXABLE ] [ STRICT ]
+  [ VERSIONABLE ] [ IMMUTABLE ] [ PUBLISHABLE ] [ AUDITABLE ] [ INDEXABLE ] [ STRICT ]
 ```
 
 Clauses can appear in any order. The whole clause list may be wrapped in parentheses, and a bare property list directly after the name is accepted as shorthand for `PROPERTIES (...)`:
@@ -74,7 +74,15 @@ SELECT name, extends, properties, allowed_children, versionable FROM NodeTypes W
  "allowed_children":["raisin:Asset"],"versionable":true}
 ```
 
-`EXTENDS` inherits the parent's properties and constraints; `raisin:Page` requires a `title`, so `docs:Article` does too. `ALLOWED_CHILDREN` limits which node types may be created under a node of this type (an empty list means no constraint). `REQUIRED_NODES` names child types that must exist. The flags switch on version history, publishing, audit logging, full-text indexing and strict property validation for the type.
+`EXTENDS` inherits the parent's properties and constraints; `raisin:Page` requires a `title`, so `docs:Article` does too. `ALLOWED_CHILDREN` limits which node types may be created under a node of this type (an empty list means no constraint). `REQUIRED_NODES` names child types that must exist. The flags switch on version history, immutability, publishing, audit logging, full-text indexing and strict property validation for the type. See [Behaviour flags](/docs/concepts/data-model/nodetypes#behaviour-flags) for what each one does.
+
+`IMMUTABLE` rejects any later write that changes a node's `properties`; structural changes (path, parent, `node_type`) and delete stay allowed:
+
+```sql
+CREATE NODETYPE 'audit:LedgerEntry'
+  PROPERTIES (amount Number REQUIRED, memo String)
+  IMMUTABLE;
+```
 
 ### Property types and modifiers
 
@@ -142,7 +150,7 @@ ALTER NODETYPE 'ns:Name' alteration [ alteration ... ]
 | `SET EXTENDS = 'ns:Parent'` / `SET EXTENDS = NULL` | |
 | `SET ALLOWED_CHILDREN = ('a', 'b')`, `SET REQUIRED_NODES = (...)` | |
 | `ADD MIXIN 'ns:Mixin'`, `DROP MIXIN 'ns:Mixin'` | |
-| `SET VERSIONABLE = true`, and likewise `PUBLISHABLE`, `AUDITABLE`, `INDEXABLE`, `STRICT` | |
+| `SET VERSIONABLE = true`, and likewise `IMMUTABLE`, `PUBLISHABLE`, `AUDITABLE`, `INDEXABLE`, `STRICT` | |
 | `ADD COMPOUND_INDEX ...`, `DROP COMPOUND_INDEX 'name'` | see above |
 
 Several alterations may follow each other in one statement:

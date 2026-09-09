@@ -27,6 +27,7 @@ This is the JSON the server stores and returns for a NodeType:
   "allowed_children": ["raisin:Asset"],
   "initial_structure": null,
   "versionable": true,
+  "immutable": null,
   "publishable": true,
   "auditable": null,
   "indexable": null,
@@ -75,7 +76,7 @@ auditable: true
 | `allowed_children` | string[] | NodeTypes allowed as direct children. An empty list allows any type; `"*"` also means any. |
 | `required_nodes` | string[] | Stored and returned; not enforced on write. |
 | `initial_structure` | object | Children to create automatically under every new node of this type. |
-| `versionable`, `publishable`, `auditable` | bool | Behaviour flags, see below. |
+| `versionable`, `immutable`, `publishable`, `auditable` | bool | Behaviour flags, see below. |
 | `indexable` | bool | Whether nodes of this type are indexed at all (absent means yes). |
 | `index_types` | array | Which indexes the type participates in: `Fulltext`, `Vector`, `Property`, `Spatial`. |
 | `compound_indexes` | array | Multi-column indexes for filter + `ORDER BY` queries. See the `COMPOUND_INDEX` clause in [DDL](/docs/reference/sql/statements/ddl). |
@@ -232,7 +233,8 @@ Creating `/news` of type `blog:Section` then yields `/news/drafts` and `/news/pu
 
 ## Behaviour flags
 
-- **`versionable`** marks the type as content whose revisions matter to editors. Every write to any node produces a revision regardless; the flag drives the version commands (`create_version`, `restore_version`) and editor UI.
+- **`versionable`** defaults to on (unset and `true` behave the same): every write to a node of this type allocates a fresh revision, which is what makes revision history meaningful and lets a node be read back as of an earlier point in time. Set it to `false` only for content that is rewritten often but whose history nobody needs — a connection's health-check timestamp, for example. A `false` write reuses the node's current revision instead of minting a new one, so the node's content still updates but no new history entry appears; it does not disable revision history outright, it just stops adding to it on every write. Most types should leave this unset.
+- **`immutable`** rejects any write that changes a node's `properties` after it is created. Structural changes — moving the node, renaming its path, changing its `node_type`, or deleting it — remain allowed; only the property payload is frozen. Use it for records that must never be edited in place once written, such as an append-only audit or ledger entry: create the record once, correct mistakes by creating a new one rather than overwriting the old.
 - **`publishable`** enables the `publish` / `unpublish` commands, which set `published_at` and `published_by` on the node.
 - **`auditable`** writes an audit-log entry on every change (who, what, when), readable at `GET /api/audit/{repo}/{branch}/{ws}/by-id/{id}`. Revision history exists for every node; the audit log is the opt-in part.
 - **`indexable`** and **`index_types`** control whether, and in which indexes, nodes of this type appear. A property is only indexed when its own `index` list names the index too.

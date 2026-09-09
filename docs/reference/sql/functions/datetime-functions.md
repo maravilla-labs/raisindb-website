@@ -6,7 +6,11 @@ sidebar_position: 4
 
 Timestamps are `TIMESTAMPTZ`, stored and returned in UTC as ISO 8601 with microseconds. `created_at`, `updated_at` and `published_at` are timestamp columns; dates inside `properties` are JSON strings.
 
-<!-- TODO(sql-ext): fill from engine report (CURRENT_TIMESTAMP/CURRENT_DATE, DATE_TRUNC, EXTRACT/DATE_PART, AGE, TO_CHAR, TO_TIMESTAMP, TO_DATE, MAKE_DATE, interval arithmetic on columns) -->
+<!-- HANDOVER(scalar-functions): this page is owned by the scalar-function
+     implementation pass. The library (CURRENT_TIMESTAMP/CURRENT_DATE, DATE_TRUNC, EXTRACT/DATE_PART, AGE, TO_CHAR, TO_TIMESTAMP, TO_DATE, MAKE_DATE, interval arithmetic on columns) was
+     not present on the server verified 2026-09-08 ("Function not found: ABS(INT)",
+     "Function not found: DATE_TRUNC(TEXT, TIMESTAMPTZ)"). Fill this page from that
+     pass's own executed results, then delete this comment. -->
 
 ## NOW
 

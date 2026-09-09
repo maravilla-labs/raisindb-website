@@ -54,13 +54,13 @@ This is a node as the HTTP API returns it (`GET /api/repository/docs-model/main/
 | `order_key` | The node's position among its siblings (an opaque, sortable string). Empty until a reorder or an ordered write assigns one. |
 | `has_children` | Computed on read. |
 | `parent` | The **name** of the parent node, or `"/"` for a root-level node. It is not the parent path. |
-| `version` | Currently always `1` (see the note below). |
+| `version` | The node's own edit counter: `1` when created, `+1` on every write that updates it. Server-stamped; a client cannot set it. It is not the revision (see the note below). |
 | `created_at`, `updated_at`, `created_by`, `updated_by` | Stamped by the server on every write. Writes without an authenticated actor record `"system"`. |
 | `published_at`, `published_by` | Set by the publish commands. |
 | `translations` | Per-locale overrides, see [Translations](/docs/guides/data-modeling/translations). |
 | `relations` | Typed links to other nodes, see [Graph Model](/docs/concepts/graph-model). |
 
-The two reserved properties are worth knowing about. `$supertypes` lists the node's type plus every type it extends and every mixin it carries, and `$mixins` lists just the mixins. The SQL functions `IS_A(properties, 'ns:Type')` and `HAS_MIXIN(properties, 'ns:Mixin')` read them, which makes polymorphic queries cheap.
+The two reserved properties are worth knowing about. `$supertypes` lists the node's type plus every type it extends and every mixin it carries, and `$mixins` lists just the mixins. The SQL functions `IS_A(properties, 'ns:Type')` and `HAS_MIXIN(properties, 'ns:Mixin')` read them, which makes polymorphic queries cheap. The server stamps both on every write — a `POST` to the workspace root or to a node path, a SQL `INSERT` or `UPDATE`, and a WebSocket create all go through the same validate-and-stamp step — and discards any `$` property a client sends.
 
 ## Paths and names
 
@@ -186,7 +186,9 @@ UPDATE 'blog' SET properties = '{"title":"Replaced"}'::jsonb WHERE path = '/hell
 UPDATE 'blog' SET properties = properties || '{"rating":2}'::jsonb WHERE path = '/hello';
 ```
 
-Every update writes a new revision. The node's `version` field stays at `1`; revisions, not `version`, are the history.
+Every update writes a new revision **and** bumps the node's `version` by one.
+
+The two count different things. The **revision** is a Hybrid Logical Clock that orders every write in the branch; it is what time-travel reads (`rev/{revision}`) and the history endpoint take, and it advances when any node in the branch changes. **`version`** counts writes to *this* node only, which is the number an optimistic-concurrency check wants: read `version`, send it back, and reject the write if it has moved. Revisions, not `version`, are the history.
 
 ## Moving, renaming, copying, reordering
 

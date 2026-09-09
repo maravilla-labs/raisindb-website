@@ -19,9 +19,7 @@ A node has no user-defined columns. A `views` property is JSON inside `propertie
 | `BIGINT` | 64-bit signed integer. Returned by `COUNT` and the ranking window functions. |
 | `DOUBLE` | 64-bit float. The type of a float literal and of every arithmetic result. |
 
-`NUMERIC` and `DECIMAL` are not accepted as cast targets in the current build; use `DOUBLE`.
-
-<!-- TODO(sql-ext): fill from engine report (NUMERIC/CAST additions) -->
+`NUMERIC` and `DECIMAL` are not accepted as cast targets; `'1.5'::NUMERIC` fails with `Unsupported SQL type: Numeric(None)`. Use `DOUBLE`.
 
 ```sql
 SELECT 1 + 2 AS a, 7 / 2 AS b, 7 % 3 AS c, (properties->>'views')::INT * 2 AS d

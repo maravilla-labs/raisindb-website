@@ -201,6 +201,8 @@ GET /api/management/docs-model/main/nodetypes/blog:Guide/resolved
 
 A node of type `blog:Guide` gets `"$supertypes": ["blog:Guide", "blog:Article"]`, so `WHERE IS_A(properties, 'blog:Article')` matches guides and articles alike.
 
+`$supertypes` and `$mixins` are stamped by the server on every write, whichever door the write came through: a `POST` to the workspace root or to a node path, a SQL `INSERT` or `UPDATE`, and a WebSocket create all stamp them from the same resolution. Any `$`-prefixed property a client sends is discarded first, so the sets cannot be forged.
+
 ## Mixins
 
 A mixin is a NodeType with `is_mixin: true`, managed under `/api/management/{repo}/{branch}/mixins`. Listing a mixin in another type's `mixins` merges its properties in, and the mixin's name appears in `resolved_mixins` and in each node's `$mixins`. `HAS_MIXIN(properties, 'app:Seo')` selects nodes that carry it. See [Using Mixins](/docs/guides/data-modeling/using-mixins).
@@ -226,7 +228,7 @@ Creating `/news` of type `blog:Section` then yields `/news/drafts` and `/news/pu
 
 ## Allowed children
 
-`allowed_children` restricts which types may be created directly under a node of this type. An empty list means no restriction, and `"*"` means the same. See the note on which write paths check it in [Paths and Hierarchy](/docs/concepts/data-model/paths-and-hierarchy#allowed-children).
+`allowed_children` restricts which types may be created directly under a node of this type. An empty list means no restriction, and `"*"` means the same. A named entry matches the child's whole family: a type that extends the named type, or carries it as a mixin, is allowed too. Every write path enforces it — see [Paths and Hierarchy](/docs/concepts/data-model/paths-and-hierarchy#allowed-children).
 
 ## Behaviour flags
 

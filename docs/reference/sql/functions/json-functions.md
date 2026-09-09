@@ -8,8 +8,6 @@ All node data lives in the `properties` JSONB column, so these functions run aga
 
 Two path notations appear below. JSONPath (`'$.author.city'`, `'$.tags[0]'`) is used by `JSON_VALUE`, `JSON_QUERY` and `JSON_EXISTS`. A plain key (`'title'`) is used by the `JSON_GET_*` family, and a brace path (`'{author,city}'`) by `JSONB_SET`.
 
-<!-- TODO(sql-ext): fill from engine report -->
-
 Example node:
 
 ```json

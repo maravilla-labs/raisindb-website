@@ -8,7 +8,9 @@ Atomic locks and inventory reservations over REST. All endpoints are `POST`,
 scoped to a repository and branch, and need the
 [locks subsystem](../configuration.md#locks) enabled. The caller must be
 authenticated and not anonymous (`403` otherwise); the lock owner is derived
-from the caller's identity, not from the request body.
+from the caller's identity, not from the request body. The built-in anonymous
+user is refused even where anonymous access is enabled and the anonymous role
+is granted elsewhere.
 
 A `409 Conflict` means the lock is currently held or the pool does not have
 enough units. It is the normal "you lost the race" outcome, not an error.

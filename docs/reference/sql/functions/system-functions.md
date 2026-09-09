@@ -6,8 +6,6 @@ sidebar_position: 10
 
 Functions that report on the server and the session, test a node's type membership, and drive the atomic lock and inventory primitives from SQL.
 
-<!-- TODO(sql-ext): fill from engine report -->
-
 ## Server and session
 
 | Function | Returns | Example result |

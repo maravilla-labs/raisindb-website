@@ -162,7 +162,9 @@ A move fails with `VALIDATION_FAILED` if a child with that name already exists a
 
 ## Allowed children
 
-A NodeType's `allowed_children` lists the types that may be created directly beneath it; an empty list or `"*"` allows anything. The workspace adds its own limits with `allowed_node_types` and `allowed_root_node_types`:
+A NodeType's `allowed_children` lists the types that may be created directly beneath it; an empty list or `"*"` allows anything. A named entry matches the child's whole family, not just its exact type: if a parent allows `raisin:Asset`, a NodeType that extends `raisin:Asset` or carries it as a mixin is allowed too.
+
+The workspace adds its own limits with `allowed_node_types` and `allowed_root_node_types`:
 
 ```json
 {
@@ -171,7 +173,9 @@ A NodeType's `allowed_children` lists the types that may be created directly ben
 }
 ```
 
-The workspace rules apply on every write path. The parent's `allowed_children` rule is checked by the node service's create path; a `POST` to a node path over HTTP, which runs as a transaction, does not currently check it.
+Both rules apply on every write path — a `POST` to a node path, a SQL `INSERT`, and a WebSocket create all run through the transaction layer, which checks them. A violation is a `VALIDATION_FAILED` naming the child type, the parent type, and the allowed list.
+
+One deliberate exception: if the parent node cannot be resolved at all, the child is written. `allowed_children` is a schema rule, not a referential one, and a node whose parent is missing has a different problem.
 
 ## Designing paths
 

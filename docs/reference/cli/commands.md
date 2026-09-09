@@ -314,11 +314,15 @@ raisindb create function greet-shout --into wasm/demo/greet --handler shout
 | Option | Description |
 |--------|-------------|
 | `-l, --lang <lang>` | `rust`, `go`, `assemblyscript`, `ts` (compiled to WebAssembly) or `js`, `starlark` (source) |
-| `--ns <namespace>` | Namespace under `content/functions/lib` (default: package name) |
+| `--ns <namespace>` | Namespace under `content/functions/lib`. Defaults to the namespace of the `--into` project, or to the package name |
 | `-d, --dir <path>` | Package directory (default: nearest `manifest.yaml` above cwd) |
 | `--handler <name>` | Handler name (default `default`, or the function name with `--into`) |
 | `--into <project>` | Add a second handler to an existing wasm project |
 | `--description <text>` | Description for the Function node |
+
+The node is always written under `content/`, creating that directory if the
+package does not have one yet. Only `content/{workspace}/...` is installed, so a
+node written anywhere else is packed and then silently ignored.
 
 See [Creating Functions](../../guides/functions/creating-functions.md).
 

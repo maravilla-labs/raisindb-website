@@ -169,8 +169,14 @@ is spelled `_raisin__access_control` as a directory name under `content/`.
 
 ## Content
 
-Content lives under `content/{workspace}/`. The directory structure is the node
-hierarchy, and the file name decides the node name:
+Content lives under `content/{workspace}/`. The installer reads nothing else, so
+a node placed outside `content/` is packed into the archive and then skipped at
+install time. The install still reports success, because no step in the chain
+has an opinion about a file it never looks at. The server logs a warning naming
+the stranded files when it sees any.
+
+The directory structure is the node hierarchy, and the file name decides the
+node name:
 
 | File | Becomes |
 |------|---------|

@@ -14,9 +14,7 @@ function(...) OVER (
 )
 ```
 
-Available today: `ROW_NUMBER()` and the aggregates `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`. `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE` and `NTILE` are not available in the current build (`LAG` and the others are rejected by the analyzer; `RANK` and `DENSE_RANK` are accepted but fail at execution).
-
-<!-- TODO(sql-ext): fill from engine report -->
+Available today: the ranking functions `ROW_NUMBER()`, `RANK()` and `DENSE_RANK()`, and the aggregates `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`. `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE` and `NTILE` are rejected by the analyzer (`Window function LAG is not supported`).
 
 The examples use the `blog` workspace: `hello` (depth 1, page), `news` (depth 1, folder), `first` and `second` (depth 2, pages).
 

@@ -23,6 +23,8 @@ Errors use the common shape `{"code": "...", "message": "...", "timestamp": "...
 POST /api/management/{repo}/{branch}/nodetypes
 ```
 
+`POST` is an **upsert**. Posting a name that already exists replaces that definition rather than failing, which is what package install and provisioning scripts rely on. The status code says which happened: `201 Created` when the name was free, `200 OK` when an existing definition was replaced. Use `PUT .../nodetypes/{name}` when you mean to update one.
+
 ```bash
 curl -X POST localhost:8090/api/management/docs-model/main/nodetypes \
   -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \

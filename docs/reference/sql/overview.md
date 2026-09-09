@@ -63,8 +63,8 @@ All user-defined data lives in `properties`. A Page's title is `properties->>'ti
 
 | Family | Statements | Reference |
 |--------|-----------|-----------|
-| Query | `SELECT` (joins, `GROUP BY`, `DISTINCT`, `ORDER BY`, `LIMIT`/`OFFSET`, `WITH`, window functions, `EXPLAIN`) | [SELECT](./statements/select.md) |
-| Data | `INSERT`, `UPSERT`, `UPDATE`, `DELETE` | [INSERT](./statements/insert.md), [UPDATE](./statements/update.md), [DELETE](./statements/delete.md) |
+| Query | `SELECT` (joins, `GROUP BY`, `HAVING`, `DISTINCT`, `UNION`/`INTERSECT`/`EXCEPT`, `ORDER BY`, `LIMIT`/`OFFSET`, `WITH`, subqueries, window functions, `EXPLAIN`) | [SELECT](./statements/select.md) |
+| Data | `INSERT` (including `INSERT ... SELECT`), `UPSERT`, `UPDATE`, `DELETE`, each with an optional `RETURNING` | [INSERT](./statements/insert.md), [UPDATE](./statements/update.md), [DELETE](./statements/delete.md) |
 | Schema | `CREATE / ALTER / DROP` for `NODETYPE`, `MIXIN`, `ARCHETYPE`, `ELEMENTTYPE` | [DDL](./statements/ddl.md) |
 | Branches | `CREATE / ALTER / DROP / MERGE BRANCH`, `USE BRANCH`, `SHOW BRANCHES`, `SHOW CURRENT BRANCH`, `SHOW CONFLICTS`, `SHOW DIVERGENCE`, `BEGIN` / `COMMIT` | [Branch statements](./statements/branch.md) |
 | Graph | `RELATE`, `UNRELATE`, `MOVE`, `COPY`, `ORDER`, `RESTORE`, `TRANSLATE` | [Graph DML](./statements/graph-dml.md) |
@@ -114,5 +114,9 @@ Keywords and function names are case-insensitive. Column names, workspace names,
 
 Each page under Functions lists the functions the server implements, with executed examples: [string](./functions/string-functions.md), [numeric](./functions/numeric-functions.md), [JSON](./functions/json-functions.md), [path](./functions/path-functions.md), [date and time](./functions/datetime-functions.md), [aggregate](./functions/aggregate-functions.md), [window](./functions/window-functions.md), [system](./functions/system-functions.md), plus full-text, vector, geospatial and graph.
 
-<!-- TODO(sql-ext): fill from engine report (scalar library, HAVING, set operations, EXISTS/scalar subqueries, regex operators, ANY/ALL, INSERT...SELECT, RETURNING) -->
+## Subqueries and set operations
+
+A `SELECT` can be filtered by `HAVING`, combined with another query using `UNION`, `UNION ALL`, `INTERSECT` or `EXCEPT`, and can carry subqueries in `FROM`, in `IN (SELECT ...)`, in `EXISTS`, behind `ANY` / `ALL`, and as a scalar value. Subqueries are independent: one cannot reference a column of the query that contains it. See [SELECT](./statements/select.md#set-operations).
+
+`INSERT` accepts a query as its source, and `INSERT`, `UPDATE` and `DELETE` each take a `RETURNING` list that reports the rows they wrote.
 

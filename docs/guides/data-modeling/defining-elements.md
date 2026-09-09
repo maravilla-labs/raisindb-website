@@ -191,7 +191,7 @@ const published = await db.elementTypes().list(true);
 
 Use `db.onBranch('staging')` to manage the schema of another branch.
 
-**SQL.** `CREATE ELEMENTTYPE 'arch:Quote' DESCRIPTION 'A quote' PUBLISHABLE` and `DROP ELEMENTTYPE 'arch:Quote'` work, but a `FIELDS (...)` clause is not stored, so the record comes back with `"fields": []`. Define fields over HTTP, the client or YAML.
+**SQL.** `CREATE ELEMENTTYPE 'arch:Quote' DESCRIPTION 'A quote' FIELDS (text String REQUIRED, attribution String)` stores the fields as well as the record, and `ALTER ELEMENTTYPE ... ADD FIELD / DROP FIELD / MODIFY FIELD` changes them. `DROP ELEMENTTYPE 'arch:Quote'` removes it. Two things the DDL grammar cannot say — which element types a `SectionField` accepts, and `ENCRYPTED` — still need HTTP, the client or YAML. See [DDL](/docs/reference/sql/statements/ddl).
 
 ## Next steps
 

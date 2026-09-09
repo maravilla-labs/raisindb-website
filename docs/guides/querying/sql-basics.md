@@ -180,9 +180,20 @@ FROM 'blog';
 SELECT DISTINCT properties->>'category' AS category FROM 'blog';
 ```
 
-<!-- TODO(sql-ext): HAVING is being implemented. Intended example:
-SELECT properties->>'category' AS c, COUNT(*) AS n FROM 'blog'
-GROUP BY properties->>'category' HAVING COUNT(*) > 1; -->
+`HAVING` filters the groups after they are folded, so it can test an aggregate
+the way `WHERE` tests a row:
+
+```sql
+SELECT properties->>'category' AS category, COUNT(*) AS n
+FROM 'blog'
+WHERE node_type = 'raisin:Page'
+GROUP BY properties->>'category'
+HAVING COUNT(*) > 1;
+```
+
+```json
+{"category":"news","n":2}
+```
 
 ## Arrays and JSON containment
 
@@ -221,9 +232,31 @@ WHERE properties->>'category' IN (
 );
 ```
 
-<!-- TODO(sql-ext): EXISTS and scalar subqueries are being implemented. Intended example:
-SELECT a.path FROM 'blog' a
-WHERE EXISTS (SELECT 1 FROM 'blog' c WHERE PARENT(c.path) = a.path); -->
+A subquery that returns a single row and a single column can be used as a value,
+in the select list or in a comparison:
+
+```sql
+-- the most-viewed page
+SELECT name FROM 'blog'
+WHERE (properties->>'views')::INT = (SELECT MAX((properties->>'views')::INT) FROM 'blog');
+```
+
+`EXISTS` tests whether a subquery returns any row at all, and `ANY` / `ALL`
+compare a value against every row a subquery returns:
+
+```sql
+SELECT name FROM 'blog'
+WHERE path = ANY (SELECT PARENT(path) FROM 'blog');
+-- rows: news
+
+SELECT name FROM 'blog' WHERE name <> ALL (SELECT name FROM 'blog' WHERE depth = 2);
+-- rows: hello, news
+```
+
+Subqueries stand on their own. A subquery cannot refer to a column of the query
+that contains it; RaisinDB rejects that with `Correlated subqueries that
+reference the outer query are not supported`. Write it as a join or an
+`IN (SELECT ...)` instead.
 
 ## Common table expressions
 
@@ -274,10 +307,6 @@ WHERE CHILD_OF('/posts');
 SELECT path, COALESCE(properties->>'views'::String, 'n/a') AS views, LOWER(name) AS slug
 FROM 'blog';
 ```
-
-<!-- TODO(sql-ext): math/string/date functions (ABS, FLOOR, CONCAT, SUBSTRING, TRIM,
-REPLACE, LENGTH, DATE_TRUNC, EXTRACT, CURRENT_TIMESTAMP, TO_CHAR) are being implemented.
-Intended example: SELECT SUBSTRING(properties->>'title', 1, 20), LENGTH(name) FROM 'blog'; -->
 
 ## Full-text search
 

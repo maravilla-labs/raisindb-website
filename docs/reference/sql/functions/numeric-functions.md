@@ -6,7 +6,11 @@ sidebar_position: 2
 
 Arithmetic in RaisinDB SQL uses the operators `+`, `-`, `*`, `/`, `%` and unary `-`; every result is DOUBLE, and division by zero is an error (see [Operators](../operators.md#arithmetic)). One numeric function is implemented today.
 
-<!-- TODO(sql-ext): fill from engine report (ABS, CEIL, FLOOR, TRUNC, SQRT, POWER, MOD, EXP, LN, LOG, PI, RANDOM, GREATEST, LEAST, ...) -->
+<!-- HANDOVER(scalar-functions): this page is owned by the scalar-function
+     implementation pass. The library (ABS, CEIL, FLOOR, TRUNC, SQRT, POWER, MOD, EXP, LN, LOG, PI, RANDOM, GREATEST, LEAST) was
+     not present on the server verified 2026-09-08 ("Function not found: ABS(INT)",
+     "Function not found: DATE_TRUNC(TEXT, TIMESTAMPTZ)"). Fill this page from that
+     pass's own executed results, then delete this comment. -->
 
 ## ROUND
 

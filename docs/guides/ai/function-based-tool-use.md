@@ -71,6 +71,21 @@ properties:
     - /lib/research/search_knowledge
 ```
 
+An entry may also be an object, which is how you reach a function in another
+workspace or advertise it under a different name:
+
+```yaml
+  tools:
+    - path: /lib/research/save_finding
+    - path: /lib/shared/lookup
+      workspace: shared
+      alias: knowledge_lookup
+      explicit: true
+```
+
+Only `path` is required. `workspace` defaults to `functions`, and `alias`
+replaces the name the model sees, which is otherwise the function's own `name`.
+
 Write the `description` for the model: it is what the model reads to decide
 when to call the tool.
 
@@ -89,6 +104,17 @@ export function handler(input) {
 
   // Children of a path (full node objects)
   const children = raisin.nodes.getChildren('knowledge', '/articles');
+
+  // A filter object, when a path is not enough. Values are bound, not
+  // interpolated. Reach for raisin.sql.query() for anything richer.
+  const published = raisin.nodes.query('knowledge', {
+    nodeType: 'research:Finding',
+    descendantOf: '/research',
+    properties: { status: 'published' },
+    orderBy: 'created_at',
+    order: 'desc',
+    limit: 20,
+  });
 
   // Create under a parent path: create(workspace, parentPath, data)
   raisin.nodes.create('knowledge', '/research/findings', {
@@ -149,6 +175,11 @@ Outbound requests go through `raisin.http.fetch(url, options)` with `method`,
 `headers` and `body` (an object is sent as JSON). The response has `status`,
 `headers` and `body`. The standard `fetch()` is also available and returns a
 `Response` you can `await`.
+
+`raisin.http.request(method, url, options)` and the shorthands
+`raisin.http.get`, `post`, `put`, `patch` and `delete` are the same call with
+the method filled in, and they fail the same way: a failed request resolves to
+`{ error, status: 0, ok: false }` rather than throwing.
 
 ```javascript
 export async function handler(input) {

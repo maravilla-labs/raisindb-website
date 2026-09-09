@@ -16,13 +16,13 @@ FROM 'workspace' [ alias ] | ( subquery ) alias | table_function(...) alias
 [ JOIN 'workspace' alias ON condition ] [ ... ]
 [ WHERE condition ]
 [ GROUP BY expression [, ...] ]
+[ HAVING condition ]
+[ { UNION [ ALL ] | INTERSECT | EXCEPT } query ]
 [ ORDER BY expression [ ASC | DESC ] [, ...] ]
 [ LIMIT count ] [ OFFSET start ]
 ```
 
-`IN (SELECT ...)` subqueries and subqueries in `FROM` are supported; `HAVING`, `UNION`, `EXISTS` and scalar subqueries are not part of the current build.
-
-<!-- TODO(sql-ext): fill from engine report (HAVING, UNION/INTERSECT/EXCEPT, EXISTS, scalar subqueries, regex operators, ANY/ALL) -->
+Subqueries appear in `FROM`, in `IN (SELECT ...)`, in `EXISTS`, in `ANY` / `ALL` and as scalar values. A subquery cannot reference a column of the enclosing query; correlated subqueries are rejected at analysis time.
 
 ## Select list
 
@@ -171,15 +171,99 @@ FROM 'blog' GROUP BY properties->>'published' ORDER BY published;
 -- {"published":"false","n":1}, {"published":"true","n":2}, {"published":null,"n":1}
 ```
 
-`HAVING` is not supported; wrap the grouped query in a subquery and filter there:
+`HAVING` filters the groups, so it can test an aggregate:
 
 ```sql
-SELECT * FROM (
-  SELECT node_type, COUNT(*) AS n FROM 'blog' GROUP BY node_type
-) g WHERE n > 1;
+SELECT node_type, COUNT(*) AS n FROM 'blog' GROUP BY node_type HAVING COUNT(*) > 1;
+-- {"node_type":"raisin:Page","n":3}
+```
+
+The condition may also test a grouping key, and it works without `GROUP BY`, where the whole result is one group:
+
+```sql
+SELECT node_type, COUNT(*) AS n FROM 'blog' GROUP BY node_type HAVING node_type = 'raisin:Page';
+SELECT COUNT(*) AS n FROM 'blog' WHERE node_type = 'raisin:Page' HAVING COUNT(*) > 2;
 ```
 
 Aggregate functions and `FILTER (WHERE ...)` are described under [Aggregate functions](../functions/aggregate-functions.md).
+
+## Set operations
+
+Two queries can be combined with `UNION`, `UNION ALL`, `INTERSECT` or `EXCEPT`. Both sides must produce the same number of columns; the column names come from the left side. `UNION`, `INTERSECT` and `EXCEPT` remove duplicates, `UNION ALL` keeps them. `ORDER BY` and `LIMIT` written after the last query apply to the combined result.
+
+```sql
+SELECT name FROM 'blog' WHERE depth = 1
+UNION
+SELECT name FROM 'blog' WHERE node_type = 'raisin:Folder'
+ORDER BY name;
+-- hello, news
+
+SELECT name FROM 'blog' WHERE depth = 1
+UNION ALL
+SELECT name FROM 'blog' WHERE node_type = 'raisin:Folder'
+ORDER BY name;
+-- hello, news, news
+
+SELECT name FROM 'blog' WHERE depth = 1
+INTERSECT
+SELECT name FROM 'blog' WHERE node_type = 'raisin:Page';
+-- hello
+
+SELECT name FROM 'blog' WHERE node_type = 'raisin:Page'
+EXCEPT
+SELECT name FROM 'blog' WHERE depth = 2;
+-- hello
+```
+
+Mismatched arity is rejected: `each UNION query must have the same number of columns: left has 1, right has 2`.
+
+## Subqueries
+
+A subquery in `FROM` or `IN (SELECT ...)` is covered above. Three more forms are available, and none of them may reference a column of the enclosing query.
+
+### Scalar subqueries
+
+A query returning one row and one column is a value. It can sit in the select list or on either side of a comparison. An empty result reads as NULL; more than one row is an error.
+
+```sql
+SELECT name, (SELECT COUNT(*) FROM 'blog' WHERE node_type = 'raisin:Page') AS pages
+FROM 'blog' WHERE path = '/hello';
+-- {"name":"hello","pages":3}
+
+SELECT name FROM 'blog'
+WHERE (properties->>'views')::INT = (SELECT MAX((properties->>'views')::INT) FROM 'blog');
+-- first
+```
+
+### EXISTS
+
+`EXISTS (subquery)` is true when the subquery returns at least one row, `NOT EXISTS` when it returns none.
+
+```sql
+SELECT name FROM 'blog'
+WHERE EXISTS (SELECT 1 FROM 'blog' WHERE node_type = 'raisin:Folder') AND depth = 1
+ORDER BY name;
+-- hello, news
+```
+
+### ANY and ALL
+
+`expression op ANY (subquery)` is true when the comparison holds for at least one returned row; `ALL` requires every row. `SOME` is a synonym for `ANY`. The right-hand side must be a subquery.
+
+```sql
+SELECT name FROM 'blog' WHERE path = ANY (SELECT PARENT(path) FROM 'blog');
+-- news
+
+SELECT name FROM 'blog' WHERE name <> ALL (SELECT name FROM 'blog' WHERE depth = 2) ORDER BY name;
+-- hello, news
+```
+
+A correlated subquery is rejected before execution:
+
+```
+Correlated subqueries that reference the outer query are not supported;
+rewrite as a JOIN or an IN (SELECT ...) predicate
+```
 
 ## DISTINCT
 

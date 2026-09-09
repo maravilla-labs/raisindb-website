@@ -16,7 +16,7 @@ node.created_by == auth.user_id || auth.roles.contains('editor')
 |---------|-------|---------|
 | [Permission conditions](/docs/concepts/access-control#conditions) | `condition` on a permission | `node.created_by == auth.user_id` |
 | [Workflow decision steps](/docs/guides/workflows/data-and-templates#rel-conditions) | `condition` (`yes_branch` / `no_branch`) | `input.priority >= 5 \|\| input.urgent == true` |
-| [Workflow `or` containers](/docs/guides/workflows/flow-definition#or--rel-routed-exactly-one-child) | rule `condition` | `input.region == 'eu'` |
+| [Workflow `or` containers](/docs/guides/workflows/flow-definition#or-routed-by-rel-rules-exactly-one-child) | rule `condition` | `input.region == 'eu'` |
 | Workflow loop steps | `condition` (while loops) and `until` | `visits.draft < 3` |
 | Workflow templates | `${...}` and `{{...}}` in data mappings | `"${steps.classify.label}"` |
 | Human task groups | `response_condition` | `response.approved == true` |
@@ -257,7 +257,7 @@ The server builds the context from the authenticated caller and the node being c
 | `auth.local_user_id` | String or null | The caller's `raisin:User` node id in this repository |
 | `auth.email` | String or null | |
 | `auth.home` | String or null | Path of the caller's `raisin:User` node |
-| `auth.is_anonymous` | Boolean | |
+| `auth.is_anonymous` | Boolean | True only when no user was resolved. It is **false** for the built-in anonymous user, which is a resolved user like any other; test `auth.roles.contains('anonymous')` instead |
 | `auth.is_system` | Boolean | |
 | `auth.roles` | Array of strings | Effective role ids |
 | `auth.groups` | Array of strings | Group ids |
@@ -268,6 +268,12 @@ The server builds the context from the authenticated caller and the node being c
 Property values map to REL values as follows: strings, numbers, booleans, arrays and objects directly; dates and decimals as strings; a reference as the referenced node id; a URL as its string; a resource as its uuid; a vector as an array of floats. Element, composite and geometry values appear as `null`.
 
 Permission evaluation is fail-closed. A parse error or an evaluation error (an undefined variable, a type error, a `RELATES` without a resolver) makes the condition `false`, and the permission does not apply. The error is logged as a warning.
+
+`==` compares `null` to `null` as equal, which matters when both sides can be absent. `node.created_by == auth.user_id` is true for every node with no recorded author whenever the caller has no user id, so an ownership condition must guard on the caller first:
+
+```
+auth.user_id != null && node.created_by == auth.user_id
+```
 
 ### Workflow conditions and templates
 

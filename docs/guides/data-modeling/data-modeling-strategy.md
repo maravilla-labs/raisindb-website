@@ -54,8 +54,9 @@ properties:
     type: URL
 ```
 
-Nodes of a subtype can be found by their base type: the server stamps every
-node written through the node API with `$supertypes`, and `IS_A` queries it.
+Nodes of a subtype can be found by their base type: the server stamps
+`$supertypes` on every node, whichever door the write came through — the node
+API, SQL, or WebSocket — and `IS_A` queries it.
 
 ```sql
 SELECT name, node_type FROM 'content' WHERE IS_A(properties, 'content:Base');

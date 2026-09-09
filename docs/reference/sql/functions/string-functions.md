@@ -6,7 +6,11 @@ sidebar_position: 1
 
 The string functions implemented today, plus the `||` operator and `LIKE` / `ILIKE`. All of them return NULL when given NULL.
 
-<!-- TODO(sql-ext): fill from engine report (CONCAT, SUBSTRING/SUBSTR, TRIM family, REPLACE, POSITION/STRPOS, LEFT/RIGHT, LPAD/RPAD, SPLIT_PART, REGEXP_*, INITCAP, MD5, LENGTH, ...) -->
+<!-- HANDOVER(scalar-functions): this page is owned by the scalar-function
+     implementation pass. The library (CONCAT, SUBSTRING/SUBSTR, TRIM family, REPLACE, POSITION/STRPOS, LEFT/RIGHT, LPAD/RPAD, SPLIT_PART, REGEXP_*, INITCAP, MD5, LENGTH) was
+     not present on the server verified 2026-09-08 ("Function not found: ABS(INT)",
+     "Function not found: DATE_TRUNC(TEXT, TIMESTAMPTZ)"). Fill this page from that
+     pass's own executed results, then delete this comment. -->
 
 ## UPPER
 

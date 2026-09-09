@@ -11,11 +11,10 @@ sidebar_position: 4
 ```sql
 DELETE FROM 'workspace'
 WHERE condition
+[ RETURNING expression [ AS alias ] [, ...] ]
 ```
 
 The table name is the workspace. A `WHERE` clause is required; `DELETE FROM 'blog'` on its own is rejected with `DELETE requires a WHERE clause`. There is no `PURGE` or `USING`.
-
-<!-- TODO(sql-ext): fill from engine report (RETURNING) -->
 
 ## Delete one node
 
@@ -103,3 +102,17 @@ DELETE FROM 'blog' WHERE DEPTH(path) > 3 AND node_type = 'raisin:Asset';
 ## After a delete
 
 A deleted node no longer resolves by path or id, and `RESTORE NODE path='...' TO REVISION HEAD~1` answers `not found` for it: `RESTORE` rewinds a live node to an earlier revision, it does not undelete. To keep a safety net, do the deletion on a branch and merge it, or copy the subtree first with [`COPY`](./graph-dml.md).
+
+## RETURNING
+
+`RETURNING` reports the rows that were removed instead of a count, which is the way to record what a delete took with it:
+
+```sql
+DELETE FROM 'blog' WHERE path = '/draft' RETURNING path, name;
+```
+
+```json
+{"columns":["path","name"],"rows":[{"path":"/draft","name":"draft"}],"row_count":1,"execution_time_ms":2}
+```
+
+Aggregates are rejected (`aggregate functions are not allowed in RETURNING`).

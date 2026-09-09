@@ -12,11 +12,10 @@ sidebar_position: 3
 UPDATE 'workspace'
 SET column = expression [, ...]
 WHERE condition
+[ RETURNING expression [ AS alias ] [, ...] ]
 ```
 
-The table name is the workspace. A `WHERE` clause is required; `UPDATE 'blog' SET ...` without one is rejected with `UPDATE requires a WHERE clause`. The result is one row with `affected_rows`.
-
-<!-- TODO(sql-ext): fill from engine report (RETURNING) -->
+The table name is the workspace. A `WHERE` clause is required; `UPDATE 'blog' SET ...` without one is rejected with `UPDATE requires a WHERE clause`. The result is one row with `affected_rows`, unless `RETURNING` is given.
 
 ## Updating properties
 
@@ -148,3 +147,20 @@ Add `__branch = '...'` to the `WHERE` clause to update a node on another branch;
 UPDATE 'blog' SET properties = properties || '{"title": "Draft 2"}'
 WHERE __branch = 'staging' AND path = '/draft';
 ```
+
+## RETURNING
+
+`RETURNING` reports the rows the statement wrote instead of a count, one row per updated node:
+
+```sql
+UPDATE 'blog'
+SET properties = properties || '{"views": 5}'::jsonb
+WHERE path = '/draft'
+RETURNING path, properties->>'views' AS views;
+```
+
+```json
+{"columns":["path","views"],"rows":[{"path":"/draft","views":"5"}],"row_count":1,"execution_time_ms":1}
+```
+
+The list is projected from the node as the statement leaves it, before the server stamps its own columns, so `updated_at`, `updated_by` and `__revision` read as NULL here. Select the node afterwards if you need them. Aggregates are rejected (`aggregate functions are not allowed in RETURNING`).

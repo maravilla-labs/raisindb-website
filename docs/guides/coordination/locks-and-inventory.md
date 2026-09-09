@@ -125,6 +125,13 @@ is not capped at `capacity`, so release only what you claimed.
 The same operations exist over REST, scoped to a repository and branch. They
 require an authenticated, non-anonymous caller.
 
+Enabling anonymous access for a repository does not open the lock endpoints.
+An unauthenticated request is resolved onto the built-in anonymous user, and
+that user is refused here whatever it is granted elsewhere: a held lock is a
+denial-of-service vector, so a caller who cannot be named cannot take one. The
+same rule applies to the WebSocket lock requests and to the SQL lock
+functions.
+
 ```bash
 # Acquire a lock: 200 = got it, 409 = held by someone else
 curl -X POST http://localhost:8090/api/myapp/main/locks/acquire \

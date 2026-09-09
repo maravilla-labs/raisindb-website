@@ -75,7 +75,7 @@ diverged from its base, and offers create, delete, merge and tag actions.
 
 The merge dialog previews the changes a merge brings across, grouped as
 **Added**, **Modified**, **Reordered** and **Deleted**, so
-[reordered siblings](/docs/concepts/data-model/paths-and-hierarchy#child-ordering)
+[reordered siblings](/docs/concepts/data-model/paths-and-hierarchy#sibling-order)
 are visible before you merge. When a merge reports conflicts, a resolution panel
 lets you choose a side per node (and per translation locale) and commit the
 result.

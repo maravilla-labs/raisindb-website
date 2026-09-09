@@ -203,7 +203,7 @@ await db.archetypes().publish('arch:Post', { message: 'publish post' });
 const resolved = await db.archetypes().getResolved('arch:Post');
 ```
 
-**SQL.** `CREATE ARCHETYPE 'arch:Post' BASE_NODE_TYPE 'blog:Article' TITLE 'Post' PUBLISHABLE` creates a published archetype record and `DROP ARCHETYPE 'arch:Post'` removes it. A `FIELDS (...)` clause is parsed but not stored, so add fields over HTTP, the client or YAML.
+**SQL.** `CREATE ARCHETYPE 'arch:Post' BASE_NODE_TYPE 'blog:Article' TITLE 'Post' FIELDS (heading String REQUIRED) PUBLISHABLE` creates a published archetype record with its fields, `ALTER ARCHETYPE ... ADD FIELD / DROP FIELD / MODIFY FIELD` changes them, and `DROP ARCHETYPE 'arch:Post'` removes it. Which element types a `SectionField` accepts still needs HTTP, the client or YAML. See [DDL](/docs/reference/sql/statements/ddl).
 
 ## Next steps
 

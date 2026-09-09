@@ -10,14 +10,13 @@ sidebar_position: 2
 
 ```sql
 INSERT INTO 'workspace' (path, node_type [, name] [, id] [, archetype] [, properties] [, __branch])
-VALUES (...) [, (...) ...]
+{ VALUES (...) [, (...) ...] | query }
+[ RETURNING expression [ AS alias ] [, ...] ]
 
 UPSERT INTO 'workspace' (...) VALUES (...)
 ```
 
-The table name is the workspace. `path` and `node_type` are required; everything else has a default. Values must be literals or bound parameters (`$1`); expressions such as `JSONB_SET(...)` or `'{}'::jsonb || '{}'::jsonb` in `VALUES` are rejected with `Complex expressions in DML VALUES are not yet supported`. `INSERT ... SELECT` and `RETURNING` are not part of the current build.
-
-<!-- TODO(sql-ext): fill from engine report (INSERT...SELECT, RETURNING) -->
+The table name is the workspace. `path` and `node_type` are required; everything else has a default. Values in a `VALUES` list must be literals or bound parameters (`$1`); expressions such as `JSONB_SET(...)` or `'{}'::jsonb || '{}'::jsonb` there are rejected with `Complex expressions in DML VALUES are not yet supported`. Use `INSERT ... SELECT` when you need an expression.
 
 ## Basic INSERT
 
@@ -84,6 +83,64 @@ INSERT INTO 'blog' (path, node_type, name, properties) VALUES
 {"sql": "INSERT INTO 'blog' (path, node_type, properties) VALUES ($1, 'raisin:Page', $2::jsonb)",
  "params": ["/news/fourth", {"title": "Fourth"}]}
 ```
+
+## INSERT ... SELECT
+
+A query can stand in for the `VALUES` list, which is how you copy or derive nodes and how you use an expression in an inserted value.
+
+Select items are matched to the target columns by **name**, so alias every literal and every computed item after the column it fills. A bare column reference already carries the right name.
+
+```sql
+INSERT INTO 'blog' (path, node_type, name, properties)
+SELECT '/archive/' || name AS path,
+       'raisin:Page' AS node_type,
+       name,
+       properties
+FROM 'blog'
+WHERE node_type = 'raisin:Page' AND depth = 2;
+```
+
+```json
+{"columns":["affected_rows"],"rows":[{"affected_rows":2}],"row_count":1,"execution_time_ms":3}
+```
+
+```sql
+SELECT path, name, properties->>'title' AS title FROM 'blog' WHERE PATH_STARTS_WITH(path, '/archive') ORDER BY path;
+-- {"path":"/archive/first","name":"first","title":"First"}
+-- {"path":"/archive/second","name":"second","title":"Second"}
+```
+
+Leaving a literal unaliased makes it land on the wrong column, and the failure names a value rather than the mistake:
+
+```sql
+INSERT INTO 'blog' (path, node_type, name) SELECT '/c-' || name, 'raisin:Page', name FROM 'blog' WHERE path = '/news/first';
+-- Workspace 'blog' does not allow root nodes of type 'first'
+```
+
+Every inserted row is validated the same way as a `VALUES` row, so the query must produce a free path and a permitted node type.
+
+## RETURNING
+
+`RETURNING` replaces the `affected_rows` result with one row per node written, projected through the expressions you list. `*` returns the full node column list.
+
+```sql
+INSERT INTO 'blog' (path, node_type, name, properties)
+VALUES ('/draft', 'raisin:Page', 'draft', '{"title": "Draft", "views": 0}'::jsonb)
+RETURNING id, path, version;
+```
+
+```json
+{"columns":["id","path","version"],"rows":[{"id":"011e7e30-0b37-4029-955f-9b6088f9e4e8","path":"/draft","version":1}],"row_count":1,"execution_time_ms":6}
+```
+
+The expressions are evaluated against the node the statement built, before the server fills in the columns it stamps itself. `created_at`, `updated_at`, `created_by`, `updated_by`, `depth`, `parent_path` and `__revision` therefore come back NULL in a `RETURNING` list. Read the node back with a `SELECT` when you need them:
+
+```sql
+SELECT id, created_at, updated_at FROM 'blog' WHERE path = '/draft';
+-- {"id":"011e7e30-...","created_at":"2026-09-08T12:15:45.090386+00:00","updated_at":"2026-09-08T12:15:45.090386+00:00"}
+```
+
+Aggregates are not allowed in `RETURNING` (`aggregate functions are not allowed in RETURNING`). `UPDATE` and `DELETE` accept the same clause; see [UPDATE](./update.md#returning) and [DELETE](./delete.md#returning).
 
 ## UPSERT
 

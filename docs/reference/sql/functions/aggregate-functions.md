@@ -4,9 +4,7 @@ sidebar_position: 5
 
 # Aggregate Functions
 
-Aggregates fold the rows of a query, or of each `GROUP BY` group, into one value. Six are implemented: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` and `ARRAY_AGG`. All of them also work as [window functions](./window-functions.md) with an `OVER` clause.
-
-<!-- TODO(sql-ext): fill from engine report (HAVING; any further aggregates) -->
+Aggregates fold the rows of a query, or of each `GROUP BY` group, into one value. Six are implemented: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX` and `ARRAY_AGG`. All of them also work as [window functions](./window-functions.md) with an `OVER` clause, and any of them can be tested in a [`HAVING`](../statements/select.md#group-by-and-aggregates) clause to filter the groups.
 
 The example workspace `blog` holds a folder `/news` (no `views`) and three pages with `views` 101, 42 and 8.
 
@@ -31,7 +29,14 @@ SELECT node_type, COUNT(*) AS n FROM 'blog' GROUP BY node_type ORDER BY n DESC;
 
 `FILTER (WHERE ...)` is the way to count a subset in the same pass. The `COUNT(CASE WHEN ... THEN 1 END)` idiom is accepted by the parser but returns a wrong number in the current build; use `FILTER`.
 
-In the current build `COUNT(expression)` counts every row, including rows where the expression is NULL, and `COUNT(DISTINCT expression)` counts every row rather than distinct values. Use `FILTER (WHERE expression IS NOT NULL)` and `SELECT DISTINCT` in a subquery for those two questions.
+`COUNT(DISTINCT expression)` counts distinct values as you would expect:
+
+```sql
+SELECT COUNT(DISTINCT node_type) AS types FROM 'blog';
+-- {"types":2}   (four rows, two distinct node types)
+```
+
+In the current build `COUNT(expression)` counts every row, including rows where the expression is NULL. Use `COUNT(*) FILTER (WHERE expression IS NOT NULL)` when you want only the rows that have a value.
 
 ## SUM
 

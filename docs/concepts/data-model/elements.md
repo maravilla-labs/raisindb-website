@@ -190,7 +190,7 @@ With `strict: true` on the type, an element carrying a key that is not a resolve
 
 ## SQL
 
-`CREATE ELEMENTTYPE 'arch:Quote' DESCRIPTION 'A quote' PUBLISHABLE` creates the record and `DROP ELEMENTTYPE 'arch:Quote'` removes it. A `FIELDS (...)` clause is accepted by the parser but the fields are not stored, so define fields over HTTP, the client or YAML.
+`CREATE ELEMENTTYPE 'arch:Quote' DESCRIPTION 'A quote' FIELDS (text String REQUIRED)` creates the record with its fields, `ALTER ELEMENTTYPE ... ADD FIELD / DROP FIELD / MODIFY FIELD` changes them, and `DROP ELEMENTTYPE 'arch:Quote'` removes it. Which element types a `SectionField` accepts still needs HTTP, the client or YAML. See [DDL](/docs/reference/sql/statements/ddl).
 
 ## Next steps
 

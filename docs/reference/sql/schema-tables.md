@@ -96,7 +96,7 @@ SELECT name, fields FROM Archetypes WHERE name LIKE 'news:%';
 `fields` and `properties` are stored as declared: `extends` is a name, not a merged result. To see the inheritance-merged schema, walk the `extends` chain yourself or use the resolved-archetype endpoint of the HTTP API.
 
 :::note FIELDS declared with DDL
-`CREATE ARCHETYPE ... FIELDS (...)` and `CREATE ELEMENTTYPE ... FIELDS (...)` are accepted, but the field list is not stored: `Archetypes.fields` reads back as NULL and `ElementTypes.fields` as `[]`. Archetype and element type fields defined in package YAML are stored in full.
+`CREATE ARCHETYPE ... FIELDS (...)` and `CREATE ELEMENTTYPE ... FIELDS (...)` store the field list, so `Archetypes.fields` and `ElementTypes.fields` read back the converted `FieldSchema` entries. The DDL type vocabulary is the property one and is mapped onto field variants; see [DDL](/docs/reference/sql/statements/ddl) for the table. What DDL still cannot express — a `SectionField`'s `allowed_element_types`, and `ENCRYPTED` — needs package YAML.
 :::
 
 ## Answering "what can be created here?"

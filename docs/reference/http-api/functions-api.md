@@ -81,6 +81,10 @@ curl -X POST http://localhost:8090/api/functions/myapp/greet/invoke \
 }
 ```
 
+The `execution_id` in the response is the same id the function sees as
+`raisin.context.execution_id` and the same one the execution log records, so a
+log line can be traced back to the call that produced it.
+
 **Synchronous** (`"sync": true`) runs the function inline. The function's
 `execution_mode` must be `sync` or `both`, otherwise the call fails with 400.
 

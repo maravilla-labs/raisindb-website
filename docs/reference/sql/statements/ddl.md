@@ -220,10 +220,14 @@ SELECT name, base_node_type, title, fields FROM Archetypes;
 ```
 
 ```json
-{"name":"docs:BlogPost","base_node_type":"docs:Article","title":"Blog Post","fields":null}
+{"name":"docs:BlogPost","base_node_type":"docs:Article","title":"Blog Post",
+ "fields":[{"$type":"SectionField","name":"hero"},
+           {"$type":"SectionField","name":"body","multiple":true}]}
 ```
 
-The `FIELDS` list is parsed but not stored by the SQL path today (`fields` reads back as NULL). Declare archetype fields in package YAML when you need them; `BASE_NODE_TYPE`, `TITLE`, `DESCRIPTION`, `ICON` and `PUBLISHABLE` are stored.
+`FIELDS` is stored, as are `BASE_NODE_TYPE`, `TITLE`, `DESCRIPTION`, `ICON` and `PUBLISHABLE`. `ADD FIELD`, `DROP FIELD` and `MODIFY FIELD` on `ALTER ARCHETYPE` all take effect: `ADD FIELD` on a name that already exists replaces it, and `DROP` or `MODIFY` on a name that does not exist is an error rather than a silent no-op.
+
+The `=` in the `SET` clauses is optional, so `SET DESCRIPTION 'text'` and `SET DESCRIPTION = 'text'` both work.
 
 ## CREATE ELEMENTTYPE
 
@@ -246,10 +250,31 @@ SELECT name, description, fields FROM ElementTypes WHERE name LIKE 'docs:%';
 ```
 
 ```json
-{"name":"docs:Hero","description":"Hero block","fields":[]}
+{"name":"docs:Hero","description":"Hero block",
+ "fields":[{"$type":"TextField","name":"heading","required":true,"translatable":true},
+           {"$type":"MediaField","name":"image"}]}
 ```
 
-As with archetypes, `FIELDS` is accepted but stored empty by the SQL path; use package YAML for element type fields.
+`FIELDS` is stored, and `ALTER ELEMENTTYPE`'s `ADD FIELD` / `DROP FIELD` / `MODIFY FIELD` behave as they do for archetypes.
+
+### How a DDL type becomes a field
+
+Fields are a tagged set (`$type`), while the DDL type vocabulary is the property one. The mapping:
+
+| DDL type | Field |
+|---|---|
+| `String`, `URL` | `TextField` |
+| `Number` | `NumberField` |
+| `Boolean` | `BooleanField` |
+| `Date` | `DateField` |
+| `Reference`, `NodeType` | `ReferenceField` |
+| `Resource` | `MediaField` |
+| `Object` | `JsonObjectField` |
+| `Element` | `SectionField`, accepting any element type |
+| `Composite` | `SectionField`, `multiple` |
+| `Array<T>` | the field for `T`, `multiple` |
+
+`REQUIRED`, `TRANSLATABLE`, the index list, the default value, the label and the description all carry through. Two things the DDL grammar cannot yet say: which element types a `SectionField` accepts, and `ENCRYPTED`. Declare those in package YAML.
 
 ## Reading the result
 

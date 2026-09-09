@@ -103,6 +103,17 @@ properties:
 | `except_fields` | All properties except these are returned on reads |
 | `condition` | REL expression; see [Row-Level Security](./row-level-security.md) |
 
+The key is `condition`, singular. `conditions` is accepted as an alias and is
+translated to the equivalent expression, including the shorthand
+`conditions: {owner: "$user.id"}` for "the caller's own content"; see
+[the `conditions` spelling](/docs/concepts/access-control#the-conditions-spelling).
+A grant with a condition that cannot be understood never applies, so a typo
+denies rather than opens the grant up.
+
+Guard every ownership condition with `auth.user_id != null`. REL treats
+`null == null` as true, so the bare `node.created_by == auth.user_id` matches
+every node with no recorded author when the caller has no user id.
+
 ### Path patterns
 
 A leading `/` is optional. `*` matches any characters except `/`, so it stays

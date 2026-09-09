@@ -67,7 +67,7 @@ A merge carries the child order of sibling nodes along with their content.
 Reordering a node on one branch is reported in the diff as `reordered` but is
 not treated as a conflict, even when the other branch edited that node's
 content; the order from the source branch is applied. See
-[Child Ordering](/docs/concepts/data-model/paths-and-hierarchy#child-ordering).
+[Child Ordering](/docs/concepts/data-model/paths-and-hierarchy#sibling-order).
 
 In the [Admin Console](/docs/guides/admin-console/using-admin-console) merge
 dialog, the preview groups affected nodes as **Added**, **Modified**,

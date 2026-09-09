@@ -46,7 +46,69 @@ SELECT name FROM 'blog' WHERE created_at > '2020-01-01T00:00:00Z'::TIMESTAMPTZ;
 SELECT name FROM 'blog' WHERE properties->>'summary' IS NULL;
 ```
 
-<!-- TODO(sql-ext): fill from engine report (regex operators ~ ~* SIMILAR TO, ANY/ALL) -->
+## Regular expressions
+
+| Operator | Meaning |
+|----------|---------|
+| `~` | matches a regular expression |
+| `~*` | matches, ignoring case |
+| `!~` | does not match |
+| `!~*` | does not match, ignoring case |
+| `SIMILAR TO`, `NOT SIMILAR TO` | matches a SQL regular expression |
+
+The `~` family takes a normal regular expression. `SIMILAR TO` takes the SQL flavour, where `%` and `_` are the `LIKE` wildcards and the rest of the pattern is regex.
+
+```sql
+SELECT name FROM 'blog' WHERE name ~ '^(he|se)' ORDER BY name;
+-- rows: hello, second
+
+SELECT name FROM 'blog' WHERE name ~* '^HE';
+-- rows: hello
+
+SELECT name FROM 'blog' WHERE name !~ 's$' ORDER BY name;
+-- rows: first, hello, second
+
+SELECT name FROM 'blog' WHERE name SIMILAR TO '(first|second)' ORDER BY name;
+-- rows: first, second
+
+SELECT name FROM 'blog' WHERE name NOT SIMILAR TO '%s%';
+-- rows: hello
+```
+
+Both sides must be text, so read a property with `->>` rather than `->`:
+
+```sql
+SELECT name FROM 'blog' WHERE properties->>'title' ~ '^S';
+-- rows: second
+```
+
+A constant pattern is compiled when the statement is analysed, so a malformed one fails before any row is read:
+
+```
+invalid regular expression '(': regex parse error: unclosed group
+```
+
+`RLIKE` and `REGEXP` are not accepted; use `~` or `SIMILAR TO`.
+
+## Quantified comparisons
+
+`ANY` and `ALL` compare a value against every row a subquery returns. `SOME` is a synonym for `ANY`. Any comparison operator works in front of them.
+
+```sql
+SELECT name FROM 'blog' WHERE path = ANY (SELECT PARENT(path) FROM 'blog');
+-- rows: news
+
+SELECT name FROM 'blog' WHERE name <> ALL (SELECT name FROM 'blog' WHERE depth = 2) ORDER BY name;
+-- rows: hello, news
+
+SELECT name FROM 'blog'
+WHERE (properties->>'views')::INT < ANY (SELECT (properties->>'views')::INT FROM 'blog' WHERE name = 'first')
+ORDER BY name;
+-- rows: hello, second
+```
+
+The right-hand side must be a subquery. A list or `ARRAY[...]` on the right is rejected with `Invalid comparison operator`; use `IN (...)` for a literal list.
+
 
 ## Logical
 

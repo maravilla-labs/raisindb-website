@@ -50,8 +50,28 @@ scope.
 | `auth.email` | String | Email address |
 | `auth.roles` | Array | Effective role ids |
 | `auth.groups` | Array | Group ids |
-| `auth.is_anonymous` | Boolean | True for the anonymous user |
+| `auth.is_anonymous` | Boolean | See the warning below -- not the test you want |
 | `auth.is_system` | Boolean | True for internal system calls |
+
+:::warning `auth.is_anonymous` does not detect the anonymous user
+
+When anonymous access is enabled, an unauthenticated request runs as the
+built-in anonymous `raisin:User` node, and that is a resolved user like any
+other: `auth.is_anonymous` is **false** for it, and `auth.user_id` holds that
+node's id. The flag is true only for a context that was never resolved onto a
+user at all.
+
+To recognise the anonymous caller in a condition, test the role instead:
+
+```
+auth.roles.contains('anonymous')
+```
+
+To require any signed-in caller, test `auth.user_id != null` together with
+that role check. Note also that REL treats `null == null` as true, so
+`node.created_by == auth.user_id` matches every unattributed node for a caller
+with no user id -- always guard an ownership test with `auth.user_id != null`.
+:::
 
 **`node`, the node being checked:**
 
@@ -209,6 +229,11 @@ whether anonymous access is enabled:
 2. otherwise per tenant, by `anonymous_enabled` in
    `PUT /api/tenants/{tenant}/auth/config`;
 3. otherwise by the server configuration.
+
+Locks and inventory are the exception to "anonymous runs as the anonymous
+user": the lock endpoints refuse that principal outright, whatever the
+`anonymous` role grants. See
+[Locks & Inventory](../coordination/locks-and-inventory.md).
 
 The `raisin:SecurityConfig` node at `/config/default` in
 `raisin:access_control` (managed with `ALTER SECURITY CONFIG` and

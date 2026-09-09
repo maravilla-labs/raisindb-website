@@ -199,7 +199,7 @@ copyTree(fromPath: string, toParentPath: string, newName?: string): Promise<Node
 
 ## Ordering
 
-Siblings have an explicit order (see [Child Ordering](/docs/concepts/data-model/paths-and-hierarchy#child-ordering)). Order is per branch and is carried by a merge. You name a position or a neighbour and the server assigns the order key. Children are identified by **name**.
+Siblings have an explicit order (see [Child Ordering](/docs/concepts/data-model/paths-and-hierarchy#sibling-order)). Order is per branch and is carried by a merge. You name a position or a neighbour and the server assigns the order key. Children are identified by **name**.
 
 ### reorder()
 

@@ -159,7 +159,7 @@ Use `revision` with the `rev/` route to fetch the full snapshot.
 
 ## Audit log
 
-Audit entries are recorded only for NodeTypes with `auditable: true` (see [NodeTypes](/docs/concepts/data-model/nodetypes#auditable)).
+Audit entries are recorded only for NodeTypes with `auditable: true` (see [NodeTypes](/docs/concepts/data-model/nodetypes#behaviour-flags)).
 
 ```
 GET /api/audit/{repo}/{branch}/{workspace}/by-id/{id}

@@ -30,6 +30,12 @@ code stored in a child asset node. Two properties tie them together:
 - `entry_file` is `<file>:<handler>`: the asset beside the node and the
   function inside it to call. The default is `index.js:handler`.
 
+  The handler half is optional. A bare file name takes the language's default
+  handler, which is `handler` for JavaScript and Starlark and `default` for
+  WebAssembly, so `main.wasm` and `main.wasm:default` mean the same thing. A
+  bare name with no extension is read the old way, as a handler inside
+  `index.js`.
+
 ```yaml
 # content/functions/lib/docs/greet/.node.yaml
 node_type: raisin:Function
@@ -143,9 +149,9 @@ Every function sees the same API. The main namespaces:
 
 | Namespace | Methods |
 |-----------|---------|
-| `raisin.nodes` | `get`, `getById`, `getChildren`, `create`, `createDeep`, `upsertDeep`, `update`, `updateProperty`, `delete`, `move`, `history`, `beginTransaction` |
+| `raisin.nodes` | `get`, `getById`, `getChildren`, `query`, `create`, `createDeep`, `upsertDeep`, `update`, `updateProperty`, `delete`, `move`, `history`, `beginTransaction` |
 | `raisin.sql` | `query`, `execute` |
-| `raisin.http` | `fetch(url, options)`; the global `fetch()` is also available in JavaScript |
+| `raisin.http` | `fetch(url, options)`, plus `request(method, url, options)` and `get` / `post` / `put` / `patch` / `delete`; the global `fetch()` is also available in JavaScript |
 | `raisin.events` | `emit(type, data)` |
 | `raisin.secrets`, `raisin.email` | read vaulted secrets, send [email](../../reference/function-api/email.md) |
 | `raisin.locks`, `raisin.inventory` | [lease locks and counting reservations](../coordination/locks-and-inventory.md) |
@@ -161,8 +167,34 @@ server. Email and secrets are gated the same way by `email_policy` and
 
 In JavaScript, most `raisin.*` calls report failure through their return value
 instead of throwing: `sql.query` returns `{ error, rows: [] }`, `sql.execute`
-returns `-1`, `events.emit` returns `false` and `http.fetch` returns
-`{ error, status: 0, ok: false }`. Check for `error` when it matters.
+returns `-1`, `events.emit` returns `false` and every `raisin.http` method
+returns `{ error, status: 0, ok: false }`. Check for `error` when it matters.
+
+## Querying nodes without writing SQL
+
+`raisin.nodes.query(workspace, filter)` takes a small filter object and returns
+the matching nodes. Everything in it is bound as a parameter, so a value
+carrying a quote is a value and not syntax.
+
+```js
+const articles = raisin.nodes.query('content', {
+  nodeType: 'blog:Article',
+  descendantOf: '/blog',
+  properties: { status: 'published' },
+  orderBy: 'created_at',
+  order: 'desc',
+  limit: 20,
+});
+```
+
+The recognised keys are `path`, `id`, `nodeType`, `childOf`, `descendantOf`,
+`properties`, `orderBy`, `order`, `limit` and `offset`. Snake_case spellings
+work too. Property values are compared as text, because the underlying operator
+yields text, so write `{ seq: 0 }` and it is matched against `'0'`.
+
+`orderBy` accepts `path`, `name`, `node_type`, `created_at`, `updated_at`,
+`revision`, `__order` and `__tree_order`, and rejects anything else. Reach for
+`raisin.sql.query()` when the filter object cannot express what you need.
 
 In Starlark the same methods use snake_case names and errors stop the handler:
 

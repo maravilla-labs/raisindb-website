@@ -180,13 +180,6 @@ SELECT name FROM 'content' WHERE IS_A(properties, 'myapp:Reviewed');
 Both take the `properties` column and a name, and return a boolean. Function
 names are case-insensitive.
 
-:::note
-Nodes written with SQL `INSERT` or `UPDATE` are validated against the resolved
-schema but do not receive the `$mixins` and `$supertypes` stamps, so
-`HAS_MIXIN` and `IS_A` do not match them. Write through the node API when you
-rely on these checks.
-:::
-
 ### In functions
 
 Nodes returned by `raisin.nodes.get` and the other node reads carry two

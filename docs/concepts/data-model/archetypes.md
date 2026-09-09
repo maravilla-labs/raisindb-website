@@ -102,7 +102,7 @@ When a node carries an `archetype`, the write is checked against the resolved ar
 - Every field with `required: true` must be present in `properties`.
 - A `SectionField` value must be a list of elements whose `element_type` is in `allowed_element_types`, and each element is validated against its element type (required fields, strict mode).
 - An `ElementField` value must be an element of the declared `element_type`.
-- With `strict: true`, any property not named in the resolved fields is rejected.
+- With `strict: true`, any property not named in the resolved fields is rejected. The server's own reserved `$` properties (`$mixins`, `$supertypes`) are exempt, as they are under a strict NodeType.
 
 Examples of the errors, as returned by `POST /api/repository/{repo}/{branch}/head/{ws}/`:
 
@@ -114,10 +114,6 @@ Examples of the errors, as returned by `POST /api/repository/{repo}/{branch}/hea
 
 Field-level settings such as `max_length` or `min_value` live in each field's `config` and are editor hints. The server does not enforce them.
 
-:::note Strict archetypes over HTTP
-The server stamps the reserved `$mixins` and `$supertypes` properties on every node before the archetype check runs, and the strict check does not exempt them. A `strict: true` archetype therefore currently rejects every node written through the REST API with `Undefined property '$mixins' in strict archetype ...`. Use `strict` on element types, or leave the archetype non-strict, until this is resolved.
-:::
-
 ## Switching archetypes
 
 Because the archetype is just a column on the node, changing it is an ordinary update. A `blog:Article` written with `arch:LandingPage` can be re-saved with `arch:CampaignPage`; the properties stay where they are and the next write is validated against the new archetype. This is what lets one data model serve different editors and front ends. See [DCAD](/docs/concepts/dcad).
@@ -126,7 +122,7 @@ Because the archetype is just a column on the node, changing it is an ordinary u
 
 - **HTTP**: `/api/management/{repo}/{branch}/archetypes` with the same verbs as NodeTypes. Bodies are wrapped as `{"archetype": {...}}`. See [Using Archetypes](/docs/guides/data-modeling/using-archetypes).
 - **Packages**: one YAML file per archetype under `package/archetypes/`, installed with the package.
-- **SQL**: `CREATE ARCHETYPE 'arch:Post' BASE_NODE_TYPE 'blog:Article' TITLE 'Post' PUBLISHABLE` creates the record and `DROP ARCHETYPE 'arch:Post'` removes it. The `FIELDS (...)` clause is parsed but not stored, so define fields over HTTP or YAML.
+- **SQL**: `CREATE ARCHETYPE 'arch:Post' BASE_NODE_TYPE 'blog:Article' TITLE 'Post' FIELDS (heading String REQUIRED) PUBLISHABLE` creates the record with its fields, `ALTER ARCHETYPE ... ADD FIELD / DROP FIELD / MODIFY FIELD` changes them, and `DROP ARCHETYPE 'arch:Post'` removes it. Two things the DDL grammar cannot say — which element types a `SectionField` accepts, and `ENCRYPTED` — still need HTTP or YAML. See [DDL](/docs/reference/sql/statements/ddl).
 
 ## Next steps
 

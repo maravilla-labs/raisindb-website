@@ -8,7 +8,11 @@ One RaisinDB server can serve many tenants. Each tenant has its own repositories
 
 ## How a request is assigned to a tenant
 
-The HTTP server reads the tenant from the `x-tenant-id` request header. When the header is absent the request belongs to the tenant named `default`, which is what a single-organisation installation uses without ever setting the header.
+The HTTP server reads the tenant from the `x-tenant-id` request header, and checks it against the credential the request carries.
+
+A token is issued for one tenant, and that binding wins. If the header names a different tenant the request is refused with `403`. If the header is absent the request belongs to the token's tenant — not to `default`, which is what an unauthenticated request with no header gets, and what a single-organisation installation uses without ever setting the header.
+
+Two credentials are allowed to name any tenant in the header, because acting across tenants is their purpose: the operator superadmin bearer token, and an admin token whose `can_impersonate` flag is set. Everything else is bound.
 
 ```bash
 # Explicit tenant
@@ -61,7 +65,7 @@ Workspaces organise content and can be secured per role, but they are not a tena
 
 ## Provisioning a tenant
 
-A tenant comes into existence the first time a request names it, and it can be set up explicitly by the operator. The management endpoint creates the tenant's `admin` user and initialises the built-in NodeTypes:
+A tenant is created by the operator, explicitly. Naming an unknown tenant in `x-tenant-id` does **not** bring it into existence: an unregistered tenant is served, but nothing is registered or seeded on its behalf. The management endpoint creates the tenant's `admin` user and initialises the built-in NodeTypes:
 
 ```bash
 curl -X POST http://localhost:8080/management/admin/tenants \
@@ -86,7 +90,9 @@ curl http://localhost:8080/api/management/registry/tenants -H "Authorization: Be
 ## Security notes
 
 - Isolation is enforced by key prefixes in the storage layer and applies equally to REST, WebSocket, SQL and the PostgreSQL wire protocol.
+- The `x-tenant-id` header cannot overrule the tenant a token was issued for; a disagreement is a `403`.
 - Tenant-scoped management endpoints answer `404` rather than `403` when a path names a tenant other than the request's tenant, so the response does not reveal whether the other tenant exists.
+- A tenant is never auto-created from a request header. Provisioning is an explicit operator call.
 - Revision metadata records the actor of every change, so a tenant's change history can be reviewed from the revision list.
 
 ## Next steps

@@ -155,6 +155,35 @@ direction.
 A condition that fails to parse or evaluate counts as false, so a
 misconfigured grant denies rather than allows.
 
+### The `conditions` spelling
+
+The key the grant is read from is `condition`, singular. A grant written with
+`conditions` is also accepted and is translated to the equivalent REL
+expression, so roles authored either way behave the same:
+
+```yaml
+# These two grants are identical.
+- path: "**"
+  operations: ["update", "delete"]
+  conditions:
+    owner: "$user.id"
+
+- path: "**"
+  operations: ["update", "delete"]
+  condition: "auth.user_id != null && (node.owner_id == auth.user_id || (node.owner_id == null && node.created_by == auth.user_id))"
+```
+
+`owner` is the ownership test rather than a property lookup: a node's owner is
+`owner_id` when that is set, and its author otherwise. Any other key becomes a
+property comparison, so `status: "published"` means
+`node.status == 'published'`. The values `$user.id`, `$user.local_id`,
+`$user.email` and `$user.home` resolve to the matching `auth` variable, and
+anything else is a literal.
+
+Translation fails closed. A `conditions` block that cannot be translated -- an
+unrecognised `$variable`, for instance -- becomes a grant that never applies,
+never a grant with no condition at all.
+
 ## Built-in roles
 
 Every repository starts with these roles:
@@ -166,10 +195,15 @@ Every repository starts with these roles:
 | `authenticated_user` | Read and update of the caller's own user node, profile, inbox, outbox, sent and notifications; friends' profiles through `FRIENDS_WITH`; `display_name` of every user |
 | `viewer` | `read` on every path |
 | `editor` | `create`, `read`, `update`, `delete` and `translate` on every path |
-| `author` | `create` and `read` on every path, plus `update` and `delete` intended for the author's own content |
+| `author` | `create` and `read` on every path, plus `update` and `delete` on the author's own content only |
 
 `viewer`, `author` and `editor` come from the built-in `raisin-auth` package.
 Use `DESCRIBE ROLE 'author'` to see the exact grants before relying on them.
+
+The `author` role's ownership rule is a condition on its `update` and `delete`
+grant, and a node counts as the caller's own when `owner_id` names them, or
+when `owner_id` is unset and `created_by` names them. A node with neither
+belongs to nobody, so no author can modify it.
 
 ## Workspace layout
 

@@ -148,7 +148,7 @@ properties:
 ```
 
 ```bash
-curl -X POST http://localhost:8090/api/triggers/myapp/hello-http/orders/42 \
+curl -X POST "http://localhost:8090/api/triggers/myapp/hello-http/orders/42?locale=de" \
   -H "Content-Type: application/json" -d '{"name":"Web"}'
 ```
 
@@ -160,15 +160,19 @@ The function receives the request under `http`:
     "method": "POST",
     "path": "orders/42",
     "params": {},
-    "query": {},
+    "query": { "locale": "de" },
     "headers": { "content-type": "application/json", "host": "localhost:8090" },
     "body": { "name": "Web" }
   }
 }
 ```
 
-Query-string parameters are not currently passed through; `query` arrives
-empty. A method that is not in `config.methods` is rejected with 400.
+`query` holds the decoded query string. A repeated key keeps its last value, a
+`+` decodes to a space, and a key with no value arrives as an empty string. A
+method that is not in `config.methods` is rejected with 400.
+
+The `execution_id` in the response is the same id the function sees as
+`raisin.context.execution_id`.
 
 A synchronous call answers with the result:
 

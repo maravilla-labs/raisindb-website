@@ -76,11 +76,24 @@ The job runs these phases in order:
 3. Workspaces
 4. Processing rules
 5. Workspace patches from the manifest
-6. Content nodes, binaries and translation overlays
-7. Package assets (`README.md`, `static/`), attached under the package node
+6. Package migrations from `migrations/*.yaml`
+7. Content nodes, binaries and translation overlays
+8. Package assets (`README.md`, `static/`), attached under the package node
 
 Schema definitions are upserted in every mode. The install mode only governs
 workspaces, processing rules and content.
+
+## Migrations during install
+
+Package migrations run automatically for normal installs, reinstalls and force
+installs. They are intended for schema/content transitions that must touch
+already-stored data, such as replacing a deleted node type, moving a subtree, or
+patching role/config nodes before stricter content writes run.
+
+Each migration is stored as an applied record on the package node with its `id`
+and content hash. Reinstalling skips the same migration. If a migration file is
+edited after it was applied, install fails instead of silently running a changed
+operation under the old id.
 
 ## Install modes
 

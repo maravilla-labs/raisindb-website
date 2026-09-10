@@ -25,6 +25,8 @@ my-package/
     blog.yaml
   processing-rules/          # asset-processing rules (optional)
     assets.yaml
+  migrations/                # declarative install-time migrations
+    2026-09-contact-to-party-person.yaml
   content/                   # content, grouped by workspace
     blog/                    # workspace name
       posts/
@@ -98,6 +100,7 @@ workspace_patches:
 | `dependencies` | no | List of `{name, version}` entries. Informational today; see [Dependencies](#dependencies). |
 | `provides` | no | Declares what the package contributes. The server reads `nodetypes`, `mixins`, `workspaces`, `content` and `mcp_servers`; other keys such as `functions` or `triggers` are accepted and ignored. |
 | `workspace_patches` | no | Changes applied to existing workspaces at install time. |
+| `migrations/` | no | Ordered YAML files that migrate existing installed data before content is installed. |
 | `sync` | no | Configuration for the export tooling. The install job does not read it; the install policy lives in `.raisin-sync.yaml`. |
 
 ## Mixins and node types
@@ -289,6 +292,52 @@ What happens to a workspace that already exists depends on the
   the package. `raisindb deploy --install` uses `sync` by default and, after the
   install, re-applies `allowed_node_types` and `allowed_root_node_types` from
   each `workspaces/*.yaml` to workspaces that already existed.
+
+## Package migrations
+
+Put declarative migration files under `migrations/` when a package release must
+repair existing installed data before new content can pass stricter validators.
+Migration files are ordered by filename, run after schema definitions and
+`workspace_patches`, and run before content nodes, binaries and translations.
+
+```yaml
+# migrations/2026-09-contact-to-party-person.yaml
+id: 2026-09-contact-to-party-person
+title: Contact to party person
+operations:
+  - replace_node_type:
+      workspace: people
+      from: studio:Contact
+      to: party:Person
+      archetype_from: studio:ContactPage
+      archetype_to: party:PersonPage
+  - patch_nodes:
+      workspace: raisin:access_control
+      path: /roles/editors
+      properties:
+        permissions:
+          add:
+            - action: create
+              node_types: [party:Person]
+  - move_node:
+      workspace: people
+      from: /contacts
+      to: /people
+      on_collision: skip
+  - delete_node:
+      workspace: people
+      path: /legacy/tmp
+      if_empty: true
+```
+
+Supported operations are `replace_node_type`, `patch_nodes`, `move_node`, and
+`delete_node`. `delete_node` defaults to `if_empty: true`; recursive delete is
+available only when the operator installs in `overwrite` mode. Applied
+migrations are recorded on the package node by `id` and file hash. A reinstall
+skips an already-applied migration with the same hash and rejects a migration
+whose file changed after it was applied.
+
+The admin console shows shipped/applied migrations on the package detail page.
 
 ## Install policy: `.raisin-sync.yaml`
 

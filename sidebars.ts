@@ -184,6 +184,7 @@ const sidebars: SidebarsConfig = {
             'guides/ai/rag-patterns',
             'guides/ai/function-based-tool-use',
             'guides/ai/agent-plans-and-tools',
+            'guides/ai/delegated-agent-workflows',
           ],
         },
         {

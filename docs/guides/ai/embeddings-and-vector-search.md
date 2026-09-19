@@ -31,7 +31,9 @@ Embedding job queued (per node)
 Text collected: name, path (if enabled) + fields marked `index: [Vector]`
         |
         v
-Chunked (default 256 tokens, 64 overlap) and embedded, one vector per chunk
+Chunked and embedded, one vector per chunk
+        (a document body defaults to 512 tokens / 64 overlap;
+         a node's own fields are unchunked unless configured)
         |
         v
 Stored per (tenant, repo, branch, workspace, model, kind, node, chunk)

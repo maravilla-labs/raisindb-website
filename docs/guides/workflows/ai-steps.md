@@ -39,11 +39,12 @@ One agent, one answer, no conversation persistence. Tools configured on the agen
 
 ### Giving Agents Context
 
-An agent only sees what reaches its prompt. There are three complementary ways to give it workflow context:
+An agent only sees what reaches its prompt. There are four complementary ways to give it workflow context:
 
 1. **Templates (precise):** inject exactly the fields the agent needs, such as `{{ input.customer }}`, `{{ steps.reserve.total }}`, or whole objects: `"Order data: {{ input }}"`.
 2. **`include_context` (broad):** set `include_context: "input"` (the flow input) or `include_context: "full"` (input, all step outputs, trigger info, and flow variables) on the step. The engine appends the workflow state to the prompt as a fenced JSON block under a `# Workflow context` heading. `true` means `full`. Available on `ai_agent` steps, `ai_sequence` containers (inside `ai_config`), `or` routers, and `competition` referees. Agent-as-assignee human tasks always inject the full context.
 3. **Tools (pull):** give the agent node-read or search tools and let it fetch details on demand. Best when the relevant data is large or unknown upfront.
+4. **Skills (procedures):** a step gets its agent's [skills](../ai/agent-skills) and can add its own with `skills:`, for that step only. The prompt carries a one-line index per skill and the agent loads the full instructions with `load-skill` when it needs them. Use this for *how to do* something, where templates and `include_context` supply *what to work on*.
 
 ```yaml
 - id: review

@@ -126,12 +126,13 @@ agents keep their inbox, outbox, memory and sent folders.
   `raisin:AIPlan`, `raisin:AITask`, `raisin:AIThought`, `raisin:AIToolCall`,
   `raisin:AIToolResult`, `raisin:AIToolSingleCallResult`,
   `raisin:AIToolResultAggregator`, `raisin:AICostRecord`,
-  `raisin:AICompaction`, `raisin:AgentUserContext`.
+  `raisin:AICompaction`, `raisin:AgentUserContext`, and
+  [`raisin:Skill`](../ai/agent-skills).
 - Workspace `ai`, seeded with an `agents` folder and a `sample-assistant`.
 - Functions under `/lib/raisin/ai`: `agent-handler`,
   `agent-continue-handler`, `create-plan`, `add-task`, `update-task`,
   `get-plan-status`, `remember`, `read-user-context`, `forget`, `weather`,
-  `plan-approval-handler`.
+  `plan-approval-handler`, `load-skill`.
 - Triggers `/triggers/raisin/ai/on-user-message` and `on-tool-result`.
 
 ```sql

@@ -110,7 +110,7 @@ Which mode applies depends on how you install:
 - `raisindb deploy --install` sends `--mode sync` unless you pass
   `--mode skip` or `--mode overwrite`. After the install it re-applies each
   `workspaces/*.yaml`'s allowed types to workspaces that already exist; from
-  CLI 0.1.39 it only ADDS the package's types and keeps every type the server
+  CLI 0.5.6 it only ADDS the package's types and keeps every type the server
   already allows, so a type added at runtime (an app defined over SQL, an
   operator's addition) survives a deploy. Older CLIs replaced the lists.
 - The HTTP endpoints take `?mode=`.

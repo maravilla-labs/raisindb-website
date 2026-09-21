@@ -93,7 +93,7 @@ A function's `raisin.sql` binding is the route to schema information: the functi
 
 `Workspaces` is repository-scoped rather than branch-scoped: workspaces are shared across branches and carry no revision history, so branch filters do not apply.
 
-From v0.6.39 a workspace can be created and changed over SQL. The write goes through the same service as the workspace API, so it also builds the workspace's table and bootstraps its root; the new workspace is queryable in the next statement. Writable columns are `name` (insert only), `description`, `allowed_node_types`, `allowed_root_node_types` and `depends_on`. A name is lowercase letters, digits and `_`, starting with a letter. Every root type must also be an allowed type:
+From v0.6.39 a workspace can be created and changed over SQL (a workspace that restricts its allowed types needs v0.6.40: before it, the workspace's own root failed the type check). The write goes through the same service as the workspace API, so it also builds the workspace's table and bootstraps its root; the new workspace is queryable in the next statement. Writable columns are `name` (insert only), `description`, `allowed_node_types`, `allowed_root_node_types` and `depends_on`. A name is lowercase letters, digits and `_`, starting with a letter. Every root type must also be an allowed type:
 
 ```sql
 INSERT INTO Workspaces (name, description, allowed_node_types, allowed_root_node_types)

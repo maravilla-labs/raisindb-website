@@ -100,7 +100,7 @@ operation under the old id.
 | Mode | Existing content nodes | Existing workspaces and rules |
 |------|------------------------|-------------------------------|
 | `skip` | Left untouched; only missing nodes are created. | Kept. A workspace gains the package's `allowed_node_types` add-only. |
-| `sync` | Updated from the package; missing nodes created; nodes the package does not define are left alone. | Replaced by the package definition. |
+| `sync` | Updated from the package; missing nodes created; nodes the package does not define are left alone. | Replaced by the package definition, except that the allowed node types and root types are never narrowed: types the installation added since stay allowed (v0.6.39). |
 | `overwrite` | Replaced unconditionally. Also ignores the package's own `.raisin-sync.yaml`. | Replaced by the package definition. |
 
 Which mode applies depends on how you install:
@@ -108,7 +108,11 @@ Which mode applies depends on how you install:
 - `raisindb package install` sends no mode, so the server default `skip`
   applies.
 - `raisindb deploy --install` sends `--mode sync` unless you pass
-  `--mode skip` or `--mode overwrite`.
+  `--mode skip` or `--mode overwrite`. After the install it re-applies each
+  `workspaces/*.yaml`'s allowed types to workspaces that already exist; from
+  CLI 0.1.39 it only ADDS the package's types and keeps every type the server
+  already allows, so a type added at runtime (an app defined over SQL, an
+  operator's addition) survives a deploy. Older CLIs replaced the lists.
 - The HTTP endpoints take `?mode=`.
 - The admin console's Install and Reinstall buttons let you pick the mode.
 

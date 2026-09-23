@@ -8,7 +8,7 @@ Five ways to put AI into a workflow:
 
 | Construct | Use for | Conversation | Tools |
 |-----------|---------|--------------|-------|
-| `ai_agent` step | Classify, extract, summarize | None (one answer) | The agent's own tools, in a bounded internal loop |
+| `ai_agent` step | Classify, extract, summarize | A durable agent run, one answer | The agent's own tools |
 | `ai_sequence` container | Agentic work where the agent decides which tools to call | Within the loop | Yes (tool loop plus workflow-level tool steps) |
 | AI-routed `or` container | Let an agent pick the branch when no REL rule matched | None | No |
 | `competition` container | Several agents answer the same task and a referee judges | None | Each competitor's own tools |
@@ -20,7 +20,25 @@ Agents themselves are `raisin:AIAgent` nodes (system prompt, provider, model, te
 
 ## `ai_agent` Steps
 
-One agent, one answer, no conversation persistence. Tools configured on the agent node are executed in a bounded internal loop (default 5 iterations, `max_tool_iterations` to change). Use `ai_sequence` when you need workflow-level tools, explicit tool steps, or orchestration. The model to keep in mind: an agent's tools travel with the agent; an `ai_sequence`'s children are extra workflow tools layered on top.
+One agent, one answer. The step runs the agent as a durable
+[agent run](../../concepts/agent-runs.md): the same runtime every conversation
+uses, with the agent's own tools, budgets, leases and recovery. The step does
+not call the model itself:
+
+1. On entry it calls `/lib/raisin/ai/flow-agent-run` (from `ai-tools`), which
+   opens a conversation with the prompt and creates a run pointed back at this
+   flow instance.
+2. The flow parks on an `agent_run` wait. The run can be followed, steered or
+   stopped like any other run while it works.
+3. When the run ends, a resume job hands its result to the flow, on whichever
+   cluster node picks it up. The flow accepts only the result of the run it is
+   waiting for.
+
+A failed or stopped run fails the step through the ordinary error handling
+(retries, error edge, rollback). Use `ai_sequence` when you need
+workflow-level tools, explicit tool steps, or orchestration. The model to keep
+in mind: an agent's tools travel with the agent; an `ai_sequence`'s children
+are extra workflow tools layered on top.
 
 ```yaml
 - id: summarize
@@ -30,12 +48,17 @@ One agent, one answer, no conversation persistence. Tools configured on the agen
     step_type: ai_agent
     agent_ref: /agents/summarizer
     prompt: "Summarize this refund request: {{ input.reason }} ({{ input.amount }} CHF)"
-    # max_tool_iterations: 5    # bound for the internal tool loop (default 5)
+    # max_model_calls: 8        # the run's model-call budget (default 8)
+    # timeout_ms: 300000        # how long the flow waits for the run
 ```
 
-- `prompt` is template-resolved against the flow context. Without a `prompt`, the handler falls back to the triggering node's `content` property (`input.node.properties.content` for a trigger-started flow), then `input.message`, then `input.input`.
-- Output: `{ response, model, finish_reason, usage }`. Reference the text downstream as `{{ steps.summarize.response }}`. When tools ran, `tools_used` (name, function_ref, error) and `tool_iterations` are included.
-- `response_format` requests structured output from the provider. The content is parsed as JSON and added as `structured_output`.
+- `prompt` (or `message`) is template-resolved against the flow context. Without one, the handler falls back to the triggering node's `content` property (`input.node.properties.content` for a trigger-started flow), then `input.message`, then `input.input`.
+- `agent_workspace` names the workspace of `agent_ref` (default `functions`).
+- `max_model_calls` bounds the run (default 8). The older `max_tool_iterations: n` is still read, as `n + 1` model calls. The run's budgets are set to fail rather than pause, so an exhausted budget fails the step instead of parking the flow.
+- Output: `{ response, agent_run_id, outcome, usage }`. `response` is the run's final answer; reference it downstream as `{{ steps.summarize.response }}`. `outcome` is the run's outcome kind (for example `succeeded`, `partial` or `blocked`), and `agent_run_id` lets a client open the run and its events.
+- `response_format` is passed to the run as the output schema. The final answer is parsed as JSON and added as `structured_output`.
+- Each visit of the step in a loop starts a new run.
+- The run acts as the agent. The user who triggered the flow is not passed through to it, so give the agent the rights its tools need.
 
 ### Giving Agents Context
 

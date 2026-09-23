@@ -181,7 +181,7 @@ Creates an inbox task and pauses the flow until it is completed. Covered in dept
 
 ## AI Agent Step
 
-One agent, one answer, no conversation persistence. Tools configured on the agent node run in a bounded internal loop. Covered in depth in [AI Steps](./ai-steps.md#ai_agent-steps).
+One agent, one answer. The step runs the agent as a durable [agent run](../../concepts/agent-runs.md) with the agent's own tools, and the flow waits until the run ends. Covered in depth in [AI Steps](./ai-steps.md#ai_agent-steps).
 
 ```yaml
 - id: summarize
@@ -193,10 +193,10 @@ One agent, one answer, no conversation persistence. Tools configured on the agen
     prompt: "Summarize this refund request: {{ input.reason }} ({{ input.amount }} CHF)"
     # include_context: input     # or full: append the workflow context to the prompt
     # response_format: json_object
-    # max_tool_iterations: 5     # bound for the internal tool loop (default 5)
+    # max_model_calls: 8         # the run's model-call budget (default 8)
 ```
 
-Output: `{ response, model, finish_reason, usage }`. Reference the text downstream as `{{ steps.summarize.response }}`. With `response_format`, the parsed JSON is added as `structured_output`. When tools ran, `tools_used` and `tool_iterations` are included.
+Output: `{ response, agent_run_id, outcome, usage }`. Reference the text downstream as `{{ steps.summarize.response }}`. With `response_format`, the parsed JSON is added as `structured_output`. A failed or stopped run fails the step.
 
 ## Wait Step
 

@@ -124,6 +124,15 @@ const sidebars: SidebarsConfig = {
         'concepts/multi-tenancy',
         'concepts/replication',
         'concepts/virtual-nodes',
+        {
+          type: 'category',
+          label: 'Agent Runtime',
+          items: [
+            'concepts/agent-runs',
+            'concepts/agent-delegation',
+            'concepts/node-development',
+          ],
+        },
       ],
     },
 
@@ -186,6 +195,7 @@ const sidebars: SidebarsConfig = {
             'guides/ai/agent-plans-and-tools',
             'guides/ai/agent-skills',
             'guides/ai/delegated-agent-workflows',
+            'guides/ai/drive-an-agent-run',
           ],
         },
         {
@@ -354,6 +364,8 @@ const sidebars: SidebarsConfig = {
         'reference/http-api/functions-api',
         'reference/http-api/query-api',
         'reference/http-api/locks-api',
+        'reference/http-api/agent-runs-api',
+        'reference/http-api/node-dev-api',
         'reference/http-api/mcp-api',
         'reference/http-api/mcp-connections-api',
         'reference/http-api/resource-serving-api',
@@ -376,6 +388,8 @@ const sidebars: SidebarsConfig = {
         'reference/javascript-client/flows',
         'reference/javascript-client/functions',
         'reference/javascript-client/uploads',
+        'reference/javascript-client/agent-runs',
+        'reference/javascript-client/node-dev',
       ],
     },
     {
@@ -385,6 +399,8 @@ const sidebars: SidebarsConfig = {
         'reference/function-api/crypto',
         'reference/function-api/email',
         'reference/function-api/wasm-abi',
+        'reference/function-api/agent-runs',
+        'reference/function-api/node-dev',
       ],
     },
     {
@@ -405,6 +421,7 @@ const sidebars: SidebarsConfig = {
     },
     'reference/virtual-node-adapters',
     'reference/rel',
+    'reference/agent-run-contracts',
     'reference/configuration',
   ],
 };

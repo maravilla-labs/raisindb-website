@@ -129,11 +129,31 @@ agents keep their inbox, outbox, memory and sent folders.
   `raisin:AICompaction`, `raisin:AgentUserContext`, and
   [`raisin:Skill`](../ai/agent-skills).
 - Workspace `ai`, seeded with an `agents` folder and a `sample-assistant`.
-- Functions under `/lib/raisin/ai`: `agent-handler`,
-  `agent-continue-handler`, `create-plan`, `add-task`, `update-task`,
-  `get-plan-status`, `remember`, `read-user-context`, `forget`, `weather`,
-  `plan-approval-handler`, `load-skill`.
-- Triggers `/triggers/raisin/ai/on-user-message` and `on-tool-result`.
+- Every conversation with an agent runs as a durable
+  [agent run](../../concepts/agent-runs.md). `agent-handler` (called by the
+  `raisin-messaging` chat trigger) starts the conversation's run, or steers a
+  new message into the live one.
+- Agent-run functions under `/lib/raisin/ai`: `agent-run-reducer` (the default
+  reducer), `agent-run-model-turn`, `agent-run-project`, `agent-run-control`,
+  `request-conversation-stop`, `plan-approval-handler`, and `flow-agent-run`
+  (used by the flow `ai_agent` step).
+- Delegation tools: `spawn-agent`, `inspect-agent`, `message-agent`,
+  `wait-for-agents`, `interrupt-agent`, `delegate-task`,
+  `get-delegation-status`. See
+  [Delegated Agent Workflows](../ai/delegated-agent-workflows.md).
+- Planning, memory and knowledge tools: `create-plan`, `add-task`,
+  `update-task`, `get-plan-status`, `remember`, `read-user-context`, `forget`,
+  `load-skill`, `search-documents`, `ask`, `graph-context`,
+  `extract-entities`, `weather`.
+- Node-development tools under `/lib/raisin/node-dev`: `node-stat`,
+  `node-list`, `node-read`, `node-diff`, `node-watch`, `node-dry-run`,
+  `node-propose`, `node-apply`, `node-changeset`, `node-branch`. See
+  [Node Development](../../concepts/node-development.md).
+
+An agent node can tune its run with `run_reducer` (default
+`/lib/raisin/ai/agent-run-reducer`), `model_turn_function`, `run_budgets`
+(default 60 model calls, 300 operations, one hour, pause when exceeded),
+`run_config`, `delegation` and a `node_dev.roots` write grant.
 
 ```sql
 SELECT path, properties->>'title' AS title

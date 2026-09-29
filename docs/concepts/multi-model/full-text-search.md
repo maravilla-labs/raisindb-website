@@ -132,6 +132,18 @@ curl http://localhost:8090/api/admin/management/database/default/myrepo/fulltext
 derived data: it is rebuilt locally on every node of a cluster and never
 replicated, so a node that joined late runs `rebuild` to catch up.
 
+Base content is indexed under the repository's `default_language`, so
+`FULLTEXT_SEARCH('flugplan', 'de')` finds the pages of a repository created
+with `de`. Locale overlay text is not indexed. `rebuild` and `reconcile` read
+the repository's `default_language` and `supported_languages`, as indexing on
+write always has; up to v0.6.45 they filed every document under `en`, so run
+`rebuild` once on a newer server if a non-English repository was rebuilt
+before. Run it as well after recreating a repository or changing its
+languages.
+
+Deleting a repository removes its full-text and vector index directories, so a
+repository recreated under the same id starts with empty indexes.
+
 ## Compared to vector search
 
 | | Full-text search | Vector search |

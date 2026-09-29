@@ -304,6 +304,13 @@ These statements work over the HTTP SQL endpoint and over pgwire (`psql`), and
 the same operations exist as management endpoints under
 `/api/admin/management/database/{tenant}/{repo}/vector/`.
 
+Rebuilding and regenerating are different repairs:
+
+| Endpoint | Does |
+|---|---|
+| `POST …/vector/rebuild` | re-adds the stored embeddings to the index; no embedding provider calls |
+| `POST …/vector/regenerate` | queues re-embedding for nodes whose stored vector has the wrong dimensions; `?force=true` re-embeds every node |
+
 ## How the index behaves
 
 - Partitions are keyed by model and kind so that vectors from different models
@@ -313,6 +320,11 @@ the same operations exist as management endpoints under
 - Changed indexes are written to disk about every 60 seconds and on shutdown, so
   a write followed immediately by a restart can report a mismatch that
   `REBUILD VECTOR INDEX` repairs.
+- Index files are written to a temporary file and renamed into place, so a save
+  that fails part way (a full disk, a crash) leaves the previous files intact.
+  An index file that cannot be read is renamed to `*.unreadable-<timestamp>`
+  (never deleted), replaced by an empty index, and rebuilt from the stored
+  embeddings in the background.
 - Storage precision is `F32` by default; `F16` and `Int8` can be selected in the
   embedding configuration.
 

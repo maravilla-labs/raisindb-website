@@ -369,6 +369,10 @@ regeneration jobs:
 POST /api/admin/management/database/{tenant}/{repo}/vector/regenerate
 ```
 
+It re-embeds nodes whose stored vector does not match the configured
+dimensions; `?force=true` re-embeds every node. Only one regeneration runs per
+tenant at a time.
+
 The same management prefix also offers `vector/health`, `vector/verify`,
 `vector/rebuild`, `vector/optimize` and `vector/restore`.
 

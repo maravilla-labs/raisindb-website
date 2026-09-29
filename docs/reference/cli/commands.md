@@ -445,6 +445,9 @@ These commands call the HTTP API with the stored token.
 ```bash
 raisindb repo create myapp --description "My app"
 raisindb repo create myapp --exists-ok
+raisindb repo create website --default-language de --languages de,fr,en
+raisindb repo languages website
+raisindb repo languages website --add it
 raisindb repo list
 raisindb repo list --json
 raisindb repo delete myapp --yes
@@ -452,12 +455,24 @@ raisindb repo delete myapp --yes
 
 | Command | Options |
 |---------|---------|
-| `repo create <name>` | `-d, --description <text>`; `--exists-ok` succeeds if it already exists |
+| `repo create <name>` | `-d, --description <text>`; `--exists-ok` succeeds if it already exists; `--default-language <code>` base language of the content (server default `en`); `--languages <codes>` comma-separated supported languages, requires `--default-language` |
+| `repo languages <name>` | `--add <codes>` adds supported languages; `--json` |
 | `repo list` | `--json` |
 | `repo delete <name>` | `-y, --yes` (required) |
 
-`repo list` prints the repository id, default branch, creation time and
-description.
+`repo list` prints the repository id, default branch, languages, creation time
+and description.
+
+The default language is fixed when the repository is created: base content is
+stored in it and every other language is a translation overlay (see
+[Translations](/docs/guides/data-modeling/translations)). `repo languages` shows
+it and can only add supported languages. With `--exists-ok`, `repo create`
+fails if the existing repository has a different default language and warns
+about supported languages it lacks.
+
+`repo delete` currently removes only the repository's registry entry and its
+full-text and vector index directories; a repository recreated under the same
+id starts with empty indexes.
 
 ## AI provider configuration
 

@@ -138,6 +138,12 @@ WHERE DESCENDANT_OF('/news') AND node_type = 'raisin:Page' AND properties->>'pub
 ORDER BY name;
 ```
 
+A `CHILD_OF` or `DESCENDANT_OF` listing that selects and filters only node-record columns (`id`, `path`, `name`, `node_type`, `archetype`, `created_at`, `updated_at`, `created_by`, `updated_by`, `published_at`, `published_by`, `version`, `depth`, `parent_name`, `locale`, `__order`, `__tree_order`) does not decode node properties, which makes it about 20% faster. Properties are still loaded for `SELECT *`, when the select list or a filter reads a property, and when row-level security has grants with conditions.
+
+```sql
+SELECT path, name, archetype FROM 'blog' WHERE DESCENDANT_OF('/news');   -- properties not decoded
+```
+
 In `UPDATE` and `DELETE`, a `DESCENDANT_OF` or `CHILD_OF` predicate makes the statement a bulk job ([UPDATE](../statements/update.md#how-the-where-clause-is-executed)).
 
 ## REFERENCES

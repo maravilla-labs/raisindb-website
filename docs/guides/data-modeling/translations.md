@@ -40,6 +40,26 @@ The default language cannot be changed and is always kept in
 in `supported_languages`, so add the languages first if you send the two
 settings in separate requests.
 
+### Choose the default language at creation
+
+The default language is set when the repository is created, and the base node
+holds content in that language. A German site in a repository created with the
+server default `en` stores its German text as English base content, and a `de`
+overlay then sits on top of it. Pass the language when you create the
+repository:
+
+```bash
+raisindb repo create website --default-language de --languages de,fr,en
+raisindb repo languages website            # default + supported languages
+raisindb repo languages website --add it   # supported languages can be added later
+```
+
+Over HTTP, send `default_language` and `supported_languages` in the
+`POST /api/repositories` body. To change the default language, delete and
+recreate the repository. Full-text search indexes base content under the
+default language, so after recreating a repository or changing its languages,
+run a [full-text rebuild](/docs/concepts/multi-model/full-text-search#index-maintenance).
+
 A locale with a region always falls back to its language on its own
 (`fr-CA` to `fr`) even without a configured chain. Configured chains extend
 that with any further steps you want.

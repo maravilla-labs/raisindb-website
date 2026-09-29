@@ -56,7 +56,8 @@ raisindb repo languages website --add it   # supported languages can be added la
 
 Over HTTP, send `default_language` and `supported_languages` in the
 `POST /api/repositories` body. To change the default language, delete and
-recreate the repository. Full-text search indexes base content under the
+recreate the repository; from v0.6.46 a delete removes all of the repository's
+data, so re-import the content afterwards. Full-text search indexes base content under the
 default language, so after recreating a repository or changing its languages,
 run a [full-text rebuild](/docs/concepts/multi-model/full-text-search#index-maintenance).
 

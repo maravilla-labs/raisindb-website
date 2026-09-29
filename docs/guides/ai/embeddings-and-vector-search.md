@@ -309,7 +309,7 @@ Rebuilding and regenerating are different repairs:
 | Endpoint | Does |
 |---|---|
 | `POST …/vector/rebuild` | re-adds the stored embeddings to the index; no embedding provider calls |
-| `POST …/vector/regenerate` | queues re-embedding for nodes whose stored vector has the wrong dimensions; `?force=true` re-embeds every node |
+| `POST …/vector/regenerate` | queues re-embedding for nodes whose stored vector has the wrong dimensions and (v0.6.46+) for embedding-eligible nodes with no stored embedding, skipping nodes with a pending job; `?force=true` also re-embeds every stored embedding |
 
 ## How the index behaves
 

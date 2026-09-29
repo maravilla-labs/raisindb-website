@@ -370,8 +370,12 @@ POST /api/admin/management/database/{tenant}/{repo}/vector/regenerate
 ```
 
 It re-embeds nodes whose stored vector does not match the configured
-dimensions; `?force=true` re-embeds every node. Only one regeneration runs per
-tenant at a time.
+dimensions and, from v0.6.46, every node eligible for an embedding (the same
+rule as on write) that has none stored, for example because its job hit max
+retries while the embedding provider was down. Nodes that already have a
+pending embedding job are skipped; the job result reports `missing`,
+`missing_queued` and `missing_already_pending`. `?force=true` also re-embeds
+every stored embedding. Only one regeneration runs per tenant at a time.
 
 The same management prefix also offers `vector/health`, `vector/verify`,
 `vector/rebuild`, `vector/optimize` and `vector/restore`.

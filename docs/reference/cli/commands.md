@@ -470,9 +470,17 @@ it and can only add supported languages. With `--exists-ok`, `repo create`
 fails if the existing repository has a different default language and warns
 about supported languages it lacks.
 
-`repo delete` currently removes only the repository's registry entry and its
-full-text and vector index directories; a repository recreated under the same
-id starts with empty indexes.
+`repo delete` is irreversible. From v0.6.46 it removes all of the
+repository's data: nodes, revisions, branches, tags, translations, types,
+embeddings and every index, the registry entry, the repository's jobs
+(including queued full-text and embedding jobs) and its full-text and vector
+index directories. In a cluster each peer removes its own copy. It keeps
+tenant-wide data (identities, sessions, admin users, tenant AI, auth and
+embedding configuration), the query-embedding cache, and uploaded binaries in
+the binary store, which can be referenced from more than one place. A
+repository recreated under the same id starts empty. Up to v0.6.45 the delete
+removed only the registry entry, and a recreated repository came back with the
+old data.
 
 ## AI provider configuration
 

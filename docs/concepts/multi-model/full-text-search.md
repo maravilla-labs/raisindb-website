@@ -137,12 +137,14 @@ Base content is indexed under the repository's `default_language`, so
 with `de`. Locale overlay text is not indexed. `rebuild` and `reconcile` read
 the repository's `default_language` and `supported_languages`, as indexing on
 write always has; up to v0.6.45 they filed every document under `en`, so run
-`rebuild` once on a newer server if a non-English repository was rebuilt
+`rebuild` once on v0.6.46 or later if a non-English repository was rebuilt
 before. Run it as well after recreating a repository or changing its
 languages.
 
-Deleting a repository removes its full-text and vector index directories, so a
-repository recreated under the same id starts with empty indexes.
+Deleting a repository removes its full-text and vector index directories along
+with the rest of its data (v0.6.46+, see
+[repo delete](/docs/reference/cli/commands#repository-administration)), so a
+repository recreated under the same id starts empty.
 
 ## Compared to vector search
 

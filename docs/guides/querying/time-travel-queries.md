@@ -57,6 +57,9 @@ filter and applied to the scan.
 
 `__revision IS NULL`, or leaving it out, reads the current head.
 
+Translations follow the revision too: a past-revision query in a locale returns
+each translation as it was at that revision.
+
 `SET`-style session pinning is not available; put `__revision` in each query.
 
 ### Reading a deleted node

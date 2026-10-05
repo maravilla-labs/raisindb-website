@@ -167,6 +167,14 @@ root_structure:
     title: Posts
 ```
 
+A workspace file can also declare the workspace's own `compound_indexes` and
+switch off its built-in folder index with
+`config: { builtin_indexes: { children_by_created_at: false } }`; see
+[Indexing](/docs/concepts/indexing#declaring-one-on-a-workspace). Folder listings
+by `created_at` are index-served without declaring anything. In `skip` install
+mode an existing workspace keeps its own definition, so a changed index
+declaration only lands with `sync` or `overwrite` (below).
+
 A workspace whose name contains a namespace, such as `raisin:access_control`,
 is spelled `_raisin__access_control` as a directory name under `content/`.
 
@@ -191,6 +199,20 @@ node name:
 
 A node file carries the type and properties. A top-level `name:` overrides the
 name derived from the path; `properties.name` does not.
+
+A translation overlay holds the translated fields at the top level. The reserved
+key `__node_name` sets the node's name in that locale, which becomes its segment
+in [localized paths](../data-modeling/localized-paths.md):
+
+```yaml
+# content/blog/posts/welcome/.node.de.yaml
+__node_name: willkommen
+title: Willkommen im Blog
+```
+
+When the repository enforces unique localized names, an overlay whose
+`__node_name` collides with a sibling's is rejected and reported, and the rest
+of the package still installs.
 
 ```yaml
 # content/blog/posts/welcome/.node.yaml

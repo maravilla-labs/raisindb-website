@@ -75,7 +75,7 @@ POST /api/sql/{repo}/{branch}
 {"sql": "SELECT id, path, properties->>'title' AS title FROM 'content' WHERE node_type = $1 LIMIT 10", "params": ["raisin:Page"]}
 ```
 
-The workspace is the table, written as a quoted string. Placeholders `$1`, `$2`, ... bind to `params`.
+The workspace is the table, written as a quoted string. Placeholders `$1`, `$2`, ... bind to `params`. A statement sent again with different `params` reuses its plan, so keep values in `params` rather than in the SQL text.
 
 ```json
 {

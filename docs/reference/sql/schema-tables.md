@@ -88,12 +88,14 @@ A function's `raisin.sql` binding is the route to schema information: the functi
 | `allowed_root_node_types` | JSONB | Node types permitted at the workspace root |
 | `depends_on` | JSONB | Workspaces this one depends on |
 | `initial_structure` | JSONB | Nodes seeded when the workspace is created |
-| `config` | JSONB | Workspace configuration (default branch, node type pins) |
+| `config` | JSONB | Workspace configuration (default branch, node type pins, built-in index switches) |
+| `compound_indexes` | JSONB | The workspace's own [compound indexes](../../concepts/indexing.md#declaring-one-on-a-workspace), an array shaped like a NodeType's `compound_indexes`; `NULL` when it declares none |
+| `builtin_indexes` | JSONB | The [built-in index](../../concepts/indexing.md#built-in-folder-index) switches in force, defaults included, e.g. `{"children_by_created_at": true}` |
 | `created_at`, `updated_at` | TEXT | Timestamps |
 
 `Workspaces` is repository-scoped rather than branch-scoped: workspaces are shared across branches and carry no revision history, so branch filters do not apply.
 
-From v0.6.39 a workspace can be created and changed over SQL (a workspace that restricts its allowed types needs v0.6.40: before it, the workspace's own root failed the type check). The write goes through the same service as the workspace API, so it also builds the workspace's table and bootstraps its root; the new workspace is queryable in the next statement. Writable columns are `name` (insert only), `description`, `allowed_node_types`, `allowed_root_node_types` and `depends_on`. A name is lowercase letters, digits and `_`, starting with a letter. Every root type must also be an allowed type:
+From v0.6.39 a workspace can be created and changed over SQL (a workspace that restricts its allowed types needs v0.6.40: before it, the workspace's own root failed the type check). The write goes through the same service as the workspace API, so it also builds the workspace's table and bootstraps its root; the new workspace is queryable in the next statement. Writable columns are `name` (insert only), `description`, `allowed_node_types`, `allowed_root_node_types`, `depends_on`, `compound_indexes` and `builtin_indexes`. A name is lowercase letters, digits and `_`, starting with a letter. Every root type must also be an allowed type:
 
 ```sql
 INSERT INTO Workspaces (name, description, allowed_node_types, allowed_root_node_types)
@@ -104,7 +106,22 @@ UPDATE Workspaces SET allowed_node_types = '["crm:Deal","crm:Contact","raisin:Fo
  WHERE name = 'crm';
 ```
 
-`DELETE` is refused: removing a workspace discards every node in it. Configuration (`config`, the default branch) stays with the workspace API.
+Workspace compound indexes and the built-in index switches are set the same way. Setting `compound_indexes` queues a build of each index on every server; setting `builtin_indexes` to `NULL` restores the defaults (all on):
+
+```sql
+UPDATE Workspaces
+SET compound_indexes = '[{"name":"folder_by_status","columns":[
+      {"property":"__parent_path","column_type":"String"},
+      {"property":"status","column_type":"String"},
+      {"property":"__created_at","column_type":"Timestamp"}],
+    "has_order_column":true}]'::JSONB
+WHERE name = 'crm';
+
+UPDATE Workspaces SET builtin_indexes = '{"children_by_created_at": false}'::JSONB
+ WHERE name = 'crm';
+```
+
+`DELETE` is refused: removing a workspace discards every node in it. The rest of the configuration (`config`, the default branch, node type pins) stays with the workspace API.
 
 A package install in `sync` mode that re-states a workspace keeps the types an installation added since, so a runtime `UPDATE` survives the next deploy; `overwrite` mode replaces the definition entirely.
 

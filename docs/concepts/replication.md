@@ -102,9 +102,19 @@ Both the node id and the port are required; with only one of them the server log
 
 At startup the node discovers the tenant and repository pairs that exist locally and syncs those. Extra pairs can be listed in `RAISIN_CLUSTER_SYNC_EXTRA_REPOS`. The example configs under `examples/cluster/` and the script `./scripts/start-cluster.sh` start a three-node cluster on one machine.
 
-Two things to plan for in a cluster:
+Three things to plan for in a cluster:
 
-- **Derived indexes and embeddings are built on every node.** Each replica indexes the content it receives, so an embedding provider must be reachable from every node and embedding cost scales with the node count.
+- **Derived indexes and embeddings are built on every node.** Each replica indexes the content it receives, so an embedding provider must be reachable from every node and embedding cost scales with the node count. For the same reason an [index repair](../reference/http-api/index-repairs-api.md) has to run on every node. Give each peer an `http_url` (the base URL of its HTTP API) and one request to any node starts the repair cluster-wide:
+
+  ```toml
+  [[replication.peers]]
+  peer_id = "node2"
+  address = "127.0.0.1"
+  port = 9002
+  http_url = "http://127.0.0.1:8081"
+  ```
+
+- **Every node runs the same release.** Upgrade all nodes together. Operations from older releases that a node no longer understands, including ones in a saved operation log, are skipped. See [Upgrading](../guides/installation.md#upgrading).
 - **Locks need a shared backend.** The in-process lock manager serializes within one node only. A cluster that uses `raisin.locks` or inventory claims must set `[locks] backend = "redis"`; the server warns when replication is on and the backend is `inprocess`.
 
 ## Next Steps

@@ -58,6 +58,21 @@ get(id: string): Promise<Node | null>
 getByPath(path: string): Promise<Node | null>
 ```
 
+### getByLocalizedPath()
+
+Find a node by its [localized path](../../guides/data-modeling/localized-paths.md), the path built from translated node names in a locale.
+
+```typescript
+getByLocalizedPath(locale: string, path: string): Promise<LocalizedNode | null>
+```
+
+```typescript
+const hit = await nodes.getByLocalizedPath('fr', '/produits/chaise');
+if (hit?.redirect) redirect301(`/fr${hit.canonical_localized_path}`);
+```
+
+`LocalizedNode` carries `node` (translated into the locale), `canonical_path`, `canonical_localized_path`, `redirect`, `alternates` (locale to path, for `hreflang`) and `served_by`. The result is `null` when nothing resolves, the node is hidden in the locale, or the caller cannot read it.
+
 ### update()
 
 `properties` replaces the stored properties.

@@ -339,8 +339,9 @@ Project: 1 expressions
 ```
 
 Indexes are maintained automatically; there is no `CREATE INDEX` statement.
-Every property gets an equality index, and NodeTypes can declare compound
-indexes. See [Indexing](/docs/concepts/indexing).
+Every property gets an equality index, every workspace has a built-in index
+for `CHILD_OF(...) ORDER BY created_at`, and workspaces and NodeTypes can declare
+compound indexes. See [Indexing](/docs/concepts/indexing).
 
 ## Next Steps
 

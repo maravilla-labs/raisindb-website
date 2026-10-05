@@ -48,7 +48,7 @@ ORDER BY path;
  "row_count":4,"execution_time_ms":2}
 ```
 
-`SELECT *` returns every node column, listed in the [overview](../overview.md#node-columns). An unaliased expression gets a generated name such as `column1`, so alias anything you will read by name.
+`SELECT *` returns every node column, listed in the [overview](../overview.md#node-columns), except a few opt-in columns that are returned only when you name them: `embedding`, the spatial columns `__distance` and `__matched_path`, and the localized-path columns `__node_name` and `__localized_path`. An unaliased expression gets a generated name such as `column1`, so alias anything you will read by name.
 
 `TO_JSON(alias)` turns a whole row into one JSON object:
 
@@ -348,7 +348,7 @@ Limit: limit=5, offset=0
     PropertyOrderScan: __created_at DESC limit_hint=5
 ```
 
-The scan node tells you which index served the query: `PathIndexScan` for `path = ...`, `PropertyOrderScan` for an `ORDER BY` on an indexed column, `ReferenceIndexScan` for `REFERENCES(...)`, `TableScan` when nothing applied.
+The scan node tells you which index served the query: `PathIndexScan` for `path = ...`, `PropertyOrderScan` for an `ORDER BY` on an indexed column, `ReferenceIndexScan` for `REFERENCES(...)`, `CompoundIndexScan` for a [compound index](../../../concepts/indexing.md#compound-indexes), `LocalizedPathLookup` for `locale = ... AND __localized_path = ...`, `TableScan` when nothing applied. A `CompoundIndexScan` line names the index (a workspace index as `@name`, the built-in folder index as `@__children_by_created_at`), the direction in which it reads it (`index-order` or `reverse-index-order`), and its owner: `(owner: workspace stories)` or `(owner: node type site:NewsItem)`.
 
 ## Reading another branch
 

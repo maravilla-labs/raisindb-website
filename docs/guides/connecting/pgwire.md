@@ -167,6 +167,8 @@ SELECT path FROM 'content' WHERE node_type = $1 \bind 'raisin:Page' \g
 
 `PREPARE` / `EXECUTE` statements are not supported; drivers' prepared statements are (they use the protocol, not the statement).
 
+Prefer parameters over values spliced into the SQL text: the server plans a statement once and reuses the plan for every new set of values, so a prepared or parameterized query that runs often skips planning.
+
 ## GUI clients
 
 Use the PostgreSQL connection type and fill in:

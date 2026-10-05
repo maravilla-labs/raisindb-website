@@ -79,7 +79,7 @@ auditable: true
 | `versionable`, `immutable`, `publishable`, `auditable` | bool | Behaviour flags, see below. |
 | `indexable` | bool | Whether nodes of this type are indexed at all (absent means yes). |
 | `index_types` | array | Which indexes the type participates in: `Fulltext`, `Vector`, `Property`, `Spatial`. |
-| `compound_indexes` | array | Multi-column indexes for filter + `ORDER BY` queries. See the `COMPOUND_INDEX` clause in [DDL](/docs/reference/sql/statements/ddl). |
+| `compound_indexes` | array | Multi-column indexes for filter + `ORDER BY` queries. They hold only this type's nodes, so they serve only queries that name the type (`node_type =` or `IS_A`); for untyped listings declare the index on the workspace. See [Indexing](/docs/concepts/indexing#who-owns-an-index) and the `COMPOUND_INDEX` clause in [DDL](/docs/reference/sql/statements/ddl). |
 | `version`, `previous_version`, `published_at`, `published_by`, `created_at`, `updated_at` | | Managed by the server. |
 
 Unknown top-level keys and unknown property keys are dropped silently on save. Put editor hints in `meta`.

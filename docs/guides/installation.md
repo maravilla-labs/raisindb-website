@@ -230,6 +230,86 @@ raisindb shell                          # interactive SQL shell
 
 See the [CLI Reference](/docs/reference/cli/commands) for all commands and options.
 
+## Upgrading
+
+With the CLI, `raisindb server update` fetches the latest release; restart the
+server afterwards. With a downloaded binary, stop the server, replace the
+binary and start it again on the same data directory.
+
+Some maintenance runs by itself after an upgrade. It starts shortly after the
+server is up, never blocks startup, runs one branch at a time and resumes after
+a restart: recording node paths in the current format, rebuilding the property
+index, building the [localized name index](./data-modeling/localized-paths.md),
+cleaning up translations of deleted blocks, and building compound indexes
+(the built-in folder index, and compound indexes built by an older release).
+Queries are answered correctly
+throughout; some are slower until the work finishes. Follow it with the
+[Index Repairs API](../reference/http-api/index-repairs-api.md) status endpoint,
+and see the [configuration reference](../reference/configuration.md#index-and-query-switches)
+for the switches that turn most of them off (the built-in folder index is
+switched off per workspace instead).
+
+### Notes for the localized-paths release
+
+These apply when you upgrade to the release that introduced
+[localized paths](./data-modeling/localized-paths.md) (October 2026), or past it.
+
+- **Downgrading is not supported.** The release changes how node records and
+  replicated translations are stored, and an older binary cannot read them
+  correctly. Back up the data directory before upgrading.
+- **Upgrade every node of a cluster.** All nodes must run the same release.
+  Replication operations from older releases that the new one no longer
+  understands, including any still sitting in a saved operation log, are
+  skipped. Translations now replicate as a single operation type; if a replica
+  is missing translations, run the `resync_translations` repair. To start
+  repairs on all nodes from one request, give each peer an `http_url` in
+  `[[replication.peers]]`.
+- **Existing compound indexes are rebuilt automatically.** A compound index
+  built by an earlier release is not used until it is rebuilt; until then its
+  queries scan, with correct results. About two minutes after start, each node's
+  `compound_builds` repair rebuilds them in the background, one branch at a
+  time, paced and only with enough free disk (twice the compound index's size).
+  The same job builds the new [built-in folder index](../concepts/indexing.md#built-in-folder-index)
+  on every workspace. Follow it with
+  `GET /api/management/{repo}/repairs/compound_builds/status`.
+
+  To keep the rebuild under your control instead, start the nodes with
+  `RAISIN_COMPOUND_FORMAT_REBUILD=0` and rebuild per node at a quiet time, per
+  workspace:
+
+  ```bash
+  curl -s -X POST "http://localhost:8080/api/admin/management/database/default/myrepo/reindex/start?branch=main" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -d '{"workspace": "content", "index_types": ["compound"]}'
+  ```
+
+  Compound indexes created after the upgrade are built as usual.
+- **Folder listings by creation time get faster on their own.**
+  `CHILD_OF(...) ORDER BY created_at` is served by the built-in folder index
+  once it is built on a node; it scans until then. A node written by a very old
+  release may lack `created_at`; while a workspace holds such a node, the
+  built-in index is not used there and its listings keep scanning (correct,
+  slower) until those nodes are rewritten.
+
+Behaviour changes you may notice:
+
+- `SELECT *` no longer includes the `embedding` column. Name it explicitly when
+  you need the vector.
+- `ARRAY_AGG(x ORDER BY y DESC)` now sorts descending. It used to sort
+  ascending.
+- Time-travel reads (`rev/…` routes, `__revision` in SQL) return translations
+  as they were at that revision.
+- Deleting a node ends all of its translations, including those of its blocks.
+- `RESOLVE` applies row-level security to every target it inlines, and a
+  statement that would inline too much fails with an error instead of returning
+  a partly resolved document. See
+  [RESOLVE](../reference/sql/functions/path-functions.md#resolve).
+- In functions, `raisin.sql.query` and `raisin.sql.execute` accept a `SELECT`
+  without `FROM`, as the HTTP and PostgreSQL interfaces already did.
+- `EXPLAIN` of a compound index scan prints `index-order` or
+  `reverse-index-order` for the direction it reads the index, and the index
+  owner: `(owner: workspace stories)` or `(owner: node type site:NewsItem)`.
+
 ## Troubleshooting
 
 ### Port already in use

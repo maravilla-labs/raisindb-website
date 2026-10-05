@@ -48,6 +48,8 @@ A workspace record looks like this:
 | `initial_structure` | Nodes created once, when the workspace is created (`{"children": [...]}`). |
 | `config.default_branch` | The branch used when the workspace is first initialized. |
 | `config.node_type_pins` | Optional map of NodeType name to revision. A pinned workspace keeps resolving that NodeType at the pinned revision even after the NodeType is republished. |
+| `config.builtin_indexes` | Optional switches for the built-in indexes, all on when absent. `{"children_by_created_at": false}` turns off the [built-in folder index](/docs/concepts/indexing#built-in-folder-index) that serves `CHILD_OF(...) ORDER BY created_at`. |
+| `compound_indexes` | Optional [compound indexes](/docs/concepts/indexing#declaring-one-on-a-workspace) owned by the workspace. They hold every node of the workspace whatever its type, so they also serve queries that name no node type. Absent when the workspace declares none. |
 | `depends_on` | Informational list of other workspaces this one relies on; it is stored but not enforced. |
 
 ## Built-in workspaces
@@ -83,7 +85,7 @@ NodeTypes, archetypes and element types are not nodes. They live in their own st
 
 ## Creating a workspace
 
-There is no SQL statement for workspaces. Create or replace one with a `PUT` to the workspaces endpoint (operator or superadmin token required). The name in the URL wins over the name in the body, and a successful call returns `204 No Content`.
+There is no DDL statement for workspaces; besides the API below, `INSERT` and `UPDATE` on the [`Workspaces` schema table](/docs/reference/sql/schema-tables#workspaces) create and change one. Create or replace one with a `PUT` to the workspaces endpoint (operator or superadmin token required). The name in the URL wins over the name in the body, and a successful call returns `204 No Content`.
 
 ```bash
 curl -X PUT http://localhost:8080/api/workspaces/myrepo/site \
@@ -126,6 +128,30 @@ curl -X PUT http://localhost:8080/api/workspaces/myrepo/site/config \
   -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
   -d '{"default_branch": "main", "node_type_pins": {}}'
 ```
+
+A workspace can carry its own compound indexes in the same body:
+
+```json
+{
+  "name": "site",
+  "allowed_node_types": ["raisin:Folder", "blog:Article"],
+  "allowed_root_node_types": ["raisin:Folder"],
+  "compound_indexes": [
+    {
+      "name": "folder_by_updated",
+      "columns": [
+        { "property": "__parent_path", "column_type": "String" },
+        { "property": "__updated_at", "column_type": "Timestamp" }
+      ],
+      "has_order_column": true
+    }
+  ]
+}
+```
+
+To switch the built-in folder index off, set `"config": { "builtin_indexes": { "children_by_created_at": false } }` in the same body (or `PUT` the config block alone).
+
+Every folder listing ordered by creation time is index-served without any of this; a workspace index is for other sort columns or extra filters, and an `__updated_at` index is rewritten on every update. See [Indexing](/docs/concepts/indexing#who-owns-an-index).
 
 Packages can also ship workspaces: a `workspaces/site.yaml` file with the same fields is created on install, and a manifest's `workspace_patches` block can add allowed NodeTypes to a workspace that already exists. See [Define the Schema](/docs/tutorials/content-app/define-schema).
 

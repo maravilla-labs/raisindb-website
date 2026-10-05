@@ -35,10 +35,9 @@ curl -s -X PATCH http://localhost:8090/api/repositories/myrepo/translation-confi
   -d '{"supported_languages":["en","fr","fr-CA","de"],"locale_fallback_chains":{"fr-CA":["fr","en"]}}'
 ```
 
-The default language cannot be changed and is always kept in
-`supported_languages`. Every locale named in a fallback chain must already be
-in `supported_languages`, so add the languages first if you send the two
-settings in separate requests.
+The default language is always kept in `supported_languages`. Every locale
+named in a fallback chain must already be in `supported_languages`, so add the
+languages first if you send the two settings in separate requests.
 
 ### Choose the default language at creation
 
@@ -55,11 +54,17 @@ raisindb repo languages website --add it   # supported languages can be added la
 ```
 
 Over HTTP, send `default_language` and `supported_languages` in the
-`POST /api/repositories` body. To change the default language, delete and
-recreate the repository; from v0.6.46 a delete removes all of the repository's
-data, so re-import the content afterwards. Full-text search indexes base content under the
-default language, so after recreating a repository or changing its languages,
-run a [full-text rebuild](/docs/concepts/multi-model/full-text-search#index-maintenance).
+`POST /api/repositories` body.
+
+To switch an existing repository to another default language, send
+`default_language` to the translation config endpoint. The switch is refused
+with `409 DEFAULT_LANGUAGE_CONFLICT` while translation overlays in the new
+language exist, because they would collide with the base content; delete those
+translations first. A successful switch queues a full-text rebuild of every
+branch. Full-text search indexes base content under the default language, so
+after recreating a repository or changing its languages, run a
+[full-text rebuild](/docs/concepts/multi-model/full-text-search#index-maintenance)
+if one was not queued for you.
 
 A locale with a region always falls back to its language on its own
 (`fr-CA` to `fr`) even without a configured chain. Configured chains extend
@@ -156,6 +161,28 @@ the locale to target another branch. Both forms write the same overlay.
 - `POST .../raisin:cmd/hide-in-locale` with `{"locale":"de"}` hides the node
   in that locale: a read with `?lang=de` returns 404 and the node is left out
   of listings for that locale. `unhide-in-locale` reverses it.
+
+Deleting a node ends all of its translations, including the translations of its
+blocks. A read of the node at an earlier revision still sees them.
+
+## Translations and history
+
+Translations are versioned with the node. A time-travel read (the `rev/…`
+routes, or `__revision = …` in SQL) returns each locale's translation as it was
+at that revision, not the current one. See
+[Time-Travel Queries](../querying/time-travel-queries.md).
+
+## Translated node names
+
+The reserved field `__node_name` is the node's name in a locale. It drives
+localized URLs such as `/fr/produits/chaise`:
+
+```sql
+UPDATE site FOR LOCALE 'fr' SET __node_name = 'bienvenue' WHERE path = '/home';
+```
+
+The REST pointer is `/__node_name`, and a package overlay accepts a top-level
+`__node_name` key. See [Localized Paths](./localized-paths.md).
 
 ## Repeatable content needs UUIDs
 

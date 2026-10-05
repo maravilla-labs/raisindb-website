@@ -203,6 +203,20 @@ SELECT path FROM 'content' WHERE DESCENDANT_OF('/blog/2026/03');
 SELECT path FROM 'content' WHERE PATH_STARTS_WITH(path, '/blog/2026/03/');
 ```
 
+The newest entries of one folder, whatever their node types, are index-served
+without declaring anything, by the built-in folder index every workspace
+carries:
+
+```sql
+SELECT path FROM 'content' WHERE CHILD_OF('/blog/2026/03')
+ORDER BY created_at DESC LIMIT 20;
+```
+
+For a folder listing sorted or filtered by something else (a `status`, or
+`updated_at`), declare a compound index on the workspace. A NodeType's compound
+index serves only queries that name that type. See
+[Indexing](/docs/concepts/indexing#who-owns-an-index).
+
 ### Categorical paths
 
 Group by concept rather than date:

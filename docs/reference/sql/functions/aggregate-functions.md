@@ -110,7 +110,16 @@ SELECT node_type, ARRAY_AGG(name) AS names FROM 'blog' GROUP BY node_type ORDER 
 -- {"node_type":"raisin:Folder","names":["news"]}, {"node_type":"raisin:Page","names":["hello","first","second"]}
 ```
 
-`ARRAY_AGG(DISTINCT x)` and `ARRAY_AGG(x ORDER BY ...)` parse but the modifiers are ignored: duplicates stay and the order is the scan order. Sort or deduplicate in a subquery before aggregating.
+`DISTINCT` drops duplicate values, and an `ORDER BY` inside the call sorts the array, with `ASC` or `DESC` per key:
+
+```sql
+ARRAY_AGG([DISTINCT] expression [ORDER BY key [ASC | DESC] [, ...]]) → ARRAY
+```
+
+```sql
+SELECT ARRAY_AGG(name ORDER BY name DESC) AS names FROM 'blog' WHERE node_type = 'raisin:Page';
+-- {"names":["second","hello","first"]}
+```
 
 ## GROUP BY
 

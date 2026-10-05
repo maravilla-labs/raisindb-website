@@ -80,6 +80,27 @@ Query parameters:
 
 A node the caller cannot read returns `404`, the same as a missing node.
 
+## Read by localized path
+
+```
+GET /api/repository/{repo}/{branch}/head/{workspace}/by-localized-path/{locale}/{path}
+```
+
+Finds a node by its path in a locale, built from the nodes' translated names (`__node_name`), and returns it translated into that locale:
+
+```json
+{
+  "node": {"id": "…", "path": "/products/chair", "properties": {"title": "Chaise en chêne"}},
+  "canonical_path": "/products/chair",
+  "canonical_localized_path": "/produits/chaise",
+  "redirect": false,
+  "alternates": {"en": "/products/chair", "fr": "/produits/chaise"},
+  "served_by": "index"
+}
+```
+
+`redirect` is `true` when the request did not use `canonical_localized_path`; answer with a 301 to it. `alternates` lists, for `hreflang`, the node's path in each supported language where it is visible and readable by the caller. `served_by` is `default_language`, `index` or `fallback`. A missing node, a node hidden in the locale and a node the caller cannot read all return `404`. See [Localized Paths](../../guides/data-modeling/localized-paths.md).
+
 ## Update
 
 ```

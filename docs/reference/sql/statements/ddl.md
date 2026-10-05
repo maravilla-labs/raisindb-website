@@ -135,6 +135,8 @@ ALTER NODETYPE 'docs:Article' DROP COMPOUND_INDEX 'by_status_created';
 
 Index columns are property names of the type plus the system columns `__node_type`, `__created_at` and `__updated_at`; each may carry `ASC` (default) or `DESC`. Adding an index to a type that already has nodes schedules a background job that builds it. The planner uses the index for equality on a leading prefix of the columns with an optional `ORDER BY` on the next one. In SQL the timestamp columns are spelled `created_at` / `updated_at`; the `__created_at` spelling belongs to the index declaration only. `EXPLAIN` shows which scan a query gets.
 
+A NodeType index holds only that type's nodes, so it serves only queries that name the type (`node_type = 'docs:Article'` or `IS_A('docs:Article')`). For listings across types, declare the index on the workspace instead; there is no DDL for that, see [workspace compound indexes](../../../concepts/indexing.md#declaring-one-on-a-workspace). Folder listings by creation time need no declaration at all: the [built-in folder index](../../../concepts/indexing.md#built-in-folder-index) serves them.
+
 ## ALTER NODETYPE
 
 ```sql

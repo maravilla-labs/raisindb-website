@@ -192,6 +192,35 @@ SELECT RESOLVE(properties->'related') AS target FROM 'blog' WHERE path = '/news/
 
 The result flattens the target's columns and properties into one object. `RESOLVE` must be the outermost expression of its select-list item: `RESOLVE(...)->>'name'` is not evaluated (`Unknown function: RESOLVE`), so read the field from the returned object on the client.
 
+A third argument limits which properties are kept on each inlined node, as a comma-separated list; `id`, `name`, `path` and `node_type` are always kept:
+
+```sql
+RESOLVE(reference_json, depth, fields) → JSONB
+```
+
+```sql
+SELECT RESOLVE(properties, 2, 'title,file,alt') AS doc FROM 'blog' WHERE path = '/news/first';
+```
+
+Every target is read at the statement's snapshot, translated into the query's locale, and checked against row-level security. A target that is missing, hidden in the locale, or not readable by the caller leaves the reference as it was; the three cases look the same, so `RESOLVE` does not reveal whether a node you cannot read exists. A target shared by many rows is read once per statement.
+
+One statement's `RESOLVE` calls together may read at most 5,000 distinct targets, inline at most 50,000 references and at most 32 MB. Exceeding a limit fails the statement with `RESOLVE() budget exceeded`, rather than returning a document with some references left unresolved. Lower the depth, pass a `fields` list, or select fewer rows.
+
+## RESOLVE_PATH
+
+The id of the node at a [localized path](../../../guides/data-modeling/localized-paths.md), or NULL.
+
+```sql
+RESOLVE_PATH(workspace, locale, path) → TEXT
+```
+
+```sql
+SELECT RESOLVE_PATH('pages', 'fr', '/produits/chaise') AS id FROM 'pages' LIMIT 1;
+-- {"id":"…"}
+```
+
+Each segment is matched against the translated node names (`__node_name`) along the locale's fallback chain, then the canonical name. A path that does not resolve, a node hidden in the locale, and a node the caller cannot read all return NULL.
+
 ## NEIGHBORS
 
 A table function over graph relations created with [`RELATE`](../statements/graph-dml.md).

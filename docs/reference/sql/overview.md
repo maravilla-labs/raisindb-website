@@ -56,6 +56,7 @@ Every workspace table has the same columns. `SELECT *` returns them in this orde
 | `locale` | TEXT | Locale the row was rendered in. |
 | `__revision`, `__branch`, `__workspace` | TEXT | Revision id, branch name and workspace name of the row. `__branch` is also usable in `WHERE` to read another branch. |
 | `__order`, `__tree_order` | TEXT | Editorial (drag-and-drop) sort keys. See [SELECT](./statements/select.md#editorial-order-columns). |
+| `__node_name`, `__localized_path` | TEXT | The node's translated name and its localized path in the row's locale. Filled only when selected by name. See [Localized Paths](../../guides/data-modeling/localized-paths.md). |
 
 All user-defined data lives in `properties`. A Page's title is `properties->>'title'`, not a `title` column.
 

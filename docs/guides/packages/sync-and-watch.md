@@ -126,10 +126,170 @@ raisindb sync ./package --repo myapp --push
 raisindb sync ./package --repo myapp --push --dry-run     # list what would be pushed
 ```
 
-`--force` retries a rejected create as an update. `--pull` downloads server
-changes to local files and refuses to overwrite a local file that contains
-`{env:...}` tokens unless `--force` is given (see
+`--force` retries a rejected create as an update.
+
+## Pulling the latest content from a server
+
+Editors keep changing content on the running site. `raisindb pull` (the same
+as `raisindb sync --pull`) brings those changes back into the package folder,
+as the same files `deploy` installs, so a local server can be rebuilt from them
+and the change history lives in Git:
+
+```bash
+raisindb pull ./package --repo myapp --dry-run     # report exactly what would change
+raisindb pull ./package --repo myapp               # apply
+raisindb pull ./package --repo myapp --diff        # show a diff per updated or conflicting file
+```
+
+A run reads every root at full depth (paged, with no depth limit), then
+reports and applies one decision per file:
+
+```text
+Read stories:/my-site: 412 node(s)
+Read assets:/website: 96 node(s)
+
+new (3):
+  + stories/my-site/news/season-opener/.node.yaml
+  ...
+updated (12):
+  ~ stories/my-site/home/.node.yaml
+  ...
+local edits kept (1):
+  L stories/my-site/contact/.node.yaml
+
+3 new, 12 updated, 492 unchanged, 1 local edits
+```
+
+### What is pulled
+
+By default, what the package already contains: for each `content/<workspace>/`
+directory, the top-most nodes the package defines there and everything below
+them. A workspace you share with Studio or another package (for example
+`stories` or `functions`) contributes only your subtrees. Top-level server
+nodes outside them are listed, not pulled. To choose the roots yourself:
+
+```bash
+raisindb pull ./package --path stories:/my-site --path sponsors:/   # sponsors:/ = whole workspace
+```
+
+or keep them in `.raisindb-cli.yaml`:
+
+```yaml
+pull:
+  roots: [ "stories:/my-site", "sponsors:/", "assets:/website" ]
+  exclude: [ "stories:/my-site/archive" ]
+```
+
+Node types, archetypes, element types, workspaces and the manifest are never
+pulled: the package is their source.
+
+### The files it writes
+
+| Server | Package file |
+|--------|--------------|
+| a node | `content/<ws>/<path>/.node.yaml` (or the `{name}.yaml` / `SKILL.md` the package already uses) |
+| an asset | the bytes at `content/<ws>/<path>`, streamed to disk and checked against the server's `content_hash`; `.node.<file>.yaml` only for metadata the installer cannot derive (title, alt text, …) |
+| a translation | `.node.<locale>.yaml` next to the node, holding only what the locale changes; `hidden: true` for a hidden node |
+
+References are written in path form (`raisin:ref: /my-brand`), never as the
+server's uuid, so the folder installs on another server. Server bookkeeping
+(`$supertypes`, `__*`) and renditions are left out. A bare folder the installer
+would create anyway gets no `.node.yaml`.
+
+### Your edits are safe
+
+An existing file is updated value by value. Comments, formatting and
+`{env:...}` tokens stay where they are; a token is package configuration and
+matches whatever value the server holds (see
 [Environment Variables](./environment-variables.md#pulling-tokens-are-protected)).
+
+`.raisindb/pull-state.json` remembers what the last pull wrote, so each file is
+decided three ways:
+
+| Local file since last pull | Server since last pull | Result |
+|---|---|---|
+| unchanged | changed | **updated** |
+| changed | unchanged | **local edit**, kept (push or deploy it) |
+| changed | changed | **conflict** |
+
+On the first pull there is no baseline yet, so any file that differs from the
+server is a conflict. Conflicts follow `conflict_strategy` in
+`.raisindb-cli.yaml`: `prompt` asks at a terminal (take server, keep local,
+show diff, or decide for all), `server`, `local`, or `newest`. `--force` takes
+the server version for every conflict; `--yes` never prompts and leaves them.
+Running the same pull twice writes nothing the second time, and an interrupted
+pull resumes where it stopped: files are written atomically and the baselines
+are saved as it goes.
+
+### `.raisin-sync.yaml` decides what is yours
+
+The package's install policy is read exactly as the server reads it:
+
+- `mode: replace` paths belong to the **package**: a deploy overwrites them, so
+  your files are their source and pull skips them. `--include-owned` pulls them
+  too, for example to see what drifted on the server.
+- `direction: push_only` or `local_only`, and `exclude` patterns, are never
+  pulled.
+- Everything else (`defaults: {mode: skip}` is the usual case) is content the
+  installation owns, and that is what pull is for.
+
+The ignore list in `.raisindb-cli.yaml` and `.rapignore` apply as for push.
+
+### Deletions
+
+A local file whose node no longer exists on the server is reported as *gone
+from server*. Pass `--delete` to remove those files. A root that comes back
+empty never counts as a deletion.
+
+### Empty results mean credentials
+
+A read without valid credentials returns **no rows**, not an error. A pull
+that reads nothing therefore stops:
+
+```text
+Error: The server returned no nodes for any root. RaisinDB answers a read without
+valid credentials with an EMPTY result, not an error — so this usually means the
+token is missing, expired, or for another server/repository. ...
+```
+
+Check `raisindb repo list` and `--repo`. Use `--allow-empty` only if the server
+really is empty.
+
+### Wrong repository, unsafe names
+
+A repository that does not exist stops the pull before anything is read and
+lists the ones that do:
+
+```text
+Error: Repository 'default' not found on https://db.example.com. Available: studio.
+```
+
+Refused credentials (HTTP 401/403) and a listing that is empty because nothing
+was sent are named as such. A `remote_path` in `.raisindb-cli.yaml` that
+matches no node gets a warning; pull itself does not use it.
+
+Every file name a pull writes comes from the server, so it is checked: each
+path segment, workspace and locale must be a plain file name (no `..`, path
+separators, encoded dots, control characters or drive letters), the result must
+stay inside the package, and nothing is written or deleted through a symlink.
+Entries that fail are listed as `REFUSED` and never written.
+
+### Pulling from the live server
+
+Pass the live server and its credentials explicitly:
+
+```bash
+export RAISINDB_TOKEN=<API key of the live repository>
+raisindb pull ./package -s https://db.example.com --repo myapp --dry-run
+raisindb pull ./package -s https://db.example.com --repo myapp
+```
+
+`-s` beats the `server:` in `.raisindb-cli.yaml`, and `RAISINDB_TOKEN` is sent
+to whatever server the command targets. `RAISINDB_SERVER` does not override a
+`.raisindb-cli.yaml`, and `.raisinrc` is found by searching upward from the
+current directory, so `-s` is the reliable way to aim a pull. The CLI prints
+its target (`→ https://db.example.com (repo myapp, branch main)`) before it
+reads anything. A pull only reads from the server; it never writes to it.
 
 ## Install status lifecycle
 

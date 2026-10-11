@@ -163,18 +163,21 @@ directly.
 
 ## Pulling: tokens are protected
 
-The server only stores resolved values, so pulling one back into a local file
-would replace your tokens with one environment's URLs. `sync --pull` therefore
-skips any local file containing `{env:...}`:
+The server only stores resolved values, and a live server holds the
+production ones, so writing them back into a local file would replace your
+tokens with one environment's URLs. `raisindb pull` (`sync --pull`) therefore
+treats every `{env:...}` value as package configuration: it matches whatever
+the server holds, it is never overwritten, and the rest of the file is still
+updated around it.
 
-```
-✗ content/stories/my-site/.node.yaml: local file contains {env:...} tokens;
-  pull would replace them with this environment's resolved values
-  (use --force to overwrite anyway)
+```yaml
+properties:
+  title: Live title                              # updated from the server
+  domain: "{env:SITE_DOMAIN:-localhost}"         # kept, whatever the server says
 ```
 
-Pass `--force` only when you want the server's version, tokens and all.
-Otherwise treat token-bearing files as push-only and edit them locally.
+Watch mode (`sync --watch`) pulls whole files and still refuses to overwrite a
+file containing tokens unless `--force` is given.
 
 ## Next steps
 

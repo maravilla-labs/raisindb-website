@@ -152,6 +152,7 @@ const sidebars: SidebarsConfig = {
             'guides/connecting/pgwire',
             'guides/connecting/http-api',
             'guides/connecting/javascript-client',
+            'guides/connecting/phone-upload-qr',
           ],
         },
         {
@@ -371,6 +372,7 @@ const sidebars: SidebarsConfig = {
         'reference/http-api/mcp-api',
         'reference/http-api/mcp-connections-api',
         'reference/http-api/resource-serving-api',
+        'reference/http-api/upload-tokens',
       ],
     },
     {

@@ -149,7 +149,7 @@ The returned URL serves the bytes without a token until `exp`. `command` is `dow
 
 ### Upload bytes
 
-Multipart `POST` to an asset node path stores the file on that node. For large files use the resumable [upload endpoints](../javascript-client/uploads.md#http-endpoints).
+Multipart `POST` to an asset node path stores the file on that node. For large files use the resumable [upload endpoints](../javascript-client/uploads.md#http-endpoints). Devices without a user can use [upload tokens](upload-tokens.md).
 
 ## Time travel
 

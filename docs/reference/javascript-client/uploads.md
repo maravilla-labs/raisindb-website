@@ -189,3 +189,5 @@ The SDK drives the resumable upload API, which you can also call directly:
 3. `POST /api/uploads/{upload_id}/complete` with `{commit_message?, commit_actor?}` (or `{}`) returns `{upload_id, job_id, status: "completing"}`. The node is created by a background job a moment later.
 
 `GET /api/uploads/{upload_id}` reports the session, `HEAD` returns progress headers, and `DELETE` cancels the upload.
+
+A device without an account can upload into one destination with a signed token (engine v0.7.21 or later): see [Upload tokens](../http-api/upload-tokens.md).

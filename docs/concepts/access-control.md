@@ -231,6 +231,10 @@ raisin:access_control/
 └── graph-config/
 ```
 
+## Tokens that carry one narrow permission
+
+Besides user sessions and API keys, a signed-in user can mint an [upload token](../reference/http-api/upload-tokens.md): a signed claim for one upload destination, with a size, type, expiry and use limit. It carries no user and no role, and only the upload endpoints accept it. The engine checks the minting user's `create` permission when the token is minted (engine v0.7.21 or later).
+
 ## Identity authentication
 
 Authentication is handled by a tenant-wide identity layer. An identity is one

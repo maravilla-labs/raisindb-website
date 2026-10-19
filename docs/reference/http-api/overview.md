@@ -24,6 +24,8 @@ http://localhost:8080
 
 ## Authentication
 
+Devices without a user (a phone that scanned a QR code) can upload with a signed one-time [upload token](upload-tokens.md) instead of a login (engine v0.7.21 or later).
+
 Every request carries a bearer token:
 
 ```bash

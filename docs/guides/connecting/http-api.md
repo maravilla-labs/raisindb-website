@@ -275,7 +275,7 @@ A new repository comes with a `default` workspace and a `functions` workspace. `
 
 ## Files and assets
 
-- **Upload** binary content with the resumable upload endpoints (`POST /api/uploads`, then `PATCH` chunks, then `.../complete`). See [Uploads](../../reference/javascript-client/uploads.md#http-endpoints) for the HTTP sequence.
+- **Upload** binary content with the resumable upload endpoints (`POST /api/uploads`, then `PATCH` chunks, then `.../complete`). See [Uploads](../../reference/javascript-client/uploads.md#http-endpoints) for the HTTP sequence. For a phone, kiosk or any device without a user, use a signed one-time [upload token](phone-upload-qr.md) (engine v0.7.21 or later).
 - **Download** an asset node's bytes with `GET .../{path}?command=download` (or `command=display` for inline), or `GET .../{path}@file`.
 - **Signed URLs**: `POST .../{path}/raisin:sign` with `{"command":"download","expires_in":600}` returns a URL that works without a token until it expires.
 - **Static sites**: `GET /resources/{repo}/{branch}/{ws}/{path}` serves a subtree like a file server. See the [Resource Serving API](../../reference/http-api/resource-serving-api.md).

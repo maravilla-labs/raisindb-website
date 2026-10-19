@@ -4,7 +4,7 @@ sidebar_position: 7
 
 # Uploads
 
-Upload files as asset nodes and generate signed asset URLs. Uploads go over HTTP in chunks, so they work with both the WebSocket client and the HTTP client.
+Upload files as asset nodes (for a device with no user, see [upload tokens](../http-api/upload-tokens.md)) and generate signed asset URLs. Uploads go over HTTP in chunks, so they work with both the WebSocket client and the HTTP client.
 
 The `path` you give is the **asset node's own path**; the uploaded file becomes that node (type `raisin:Asset` unless `nodeType` says otherwise).
 

@@ -11,6 +11,8 @@ RaisinDB has two kinds of principals:
 
 Both end up with a JWT sent as `Authorization: Bearer <token>`.
 
+There is a third, narrower credential: a signed one-time **upload token**, minted by a signed-in user for one upload destination and sent as `Authorization: Upload <token>`. It carries no user and is accepted by the upload endpoints only. See [Upload tokens](upload-tokens.md) (engine v0.7.21 or later).
+
 ## Admin login
 
 ```

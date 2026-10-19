@@ -35,6 +35,7 @@ const receipt = raisin.email.send({
 | `html` | `string` | Optional alternative body, sent alongside the text. |
 | `attachments` | `EmailAttachment[]` | Optional. At most 20, 10 MiB each and 10 MiB in total by default. |
 | `provider` | `string` | Which configured sender to use. Omit for the default. |
+| `correlation` | `{ kind: string, id: string }` | Optional. Stored on the message record and copied to its delivery events, so you can link them back to your own node. |
 
 There is no `from` field. The sender identity comes from the tenant's email
 configuration, so a function chooses which configured account to use, not what
@@ -56,7 +57,11 @@ mean "the default".
 | `provider` | The provider API: `resend` or `brevo` (`smtp` is configurable but not yet implemented) |
 | `sender` | The configured account it went through |
 
-Acceptance by the provider is not delivery.
+Acceptance by the provider is not delivery. Each accepted send is recorded as a
+`raisin:EmailMessage`, and with delivery tracking enabled for a Brevo or Resend
+sender its later events (delivered, bounced, blocked, complained) arrive as
+`raisin:EmailEvent` nodes. See
+[Delivery tracking](../../guides/auth/outbound-email.md#knowing-it-arrived-delivery-tracking).
 
 ### Errors
 

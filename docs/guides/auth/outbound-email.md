@@ -128,6 +128,46 @@ which calls `raisin.email.send` like any other function, so a successful
 result confirms the whole chain: configuration, provider selection, secret,
 provider account and sending domain. Test sends run on `main`.
 
+## Knowing it arrived: delivery tracking
+
+A successful send means the provider **accepted** the message. It says nothing
+about whether it was delivered, bounced or blocked. For Brevo and Resend you can
+get that feedback with no code:
+
+1. Save the sender, then open its card on the Email page and press
+   **Enable delivery tracking**.
+2. RaisinDB creates the webhook at the provider using the sender's own API key.
+   If that is not possible (a restricted key, or a server the provider cannot
+   reach), the panel shows the URL to paste into Brevo or Resend yourself.
+3. **Resend only:** paste the endpoint's signing secret (`whsec_…`) into the
+   field the panel shows. Resend events are refused until it is stored.
+
+From then on:
+
+- Every accepted send is recorded as a `raisin:EmailMessage` under
+  `/email/messages` in `raisin:system`, with the provider's message id, the
+  recipients and a `status`. Pass `correlation: { kind, id }` to `send` to link
+  the record to your own node.
+- Every provider event is stored once as a `raisin:EmailEvent` under
+  `/email/events`: `delivered`, `deferred`, `soft_bounce`, `hard_bounce`,
+  `blocked`, `complained`, `failed`, `opened`, `clicked`, `unsubscribed`.
+  Webhooks the provider redelivers are recognised and not stored twice.
+- `status` only moves forward (`accepted` → `deferred` → `soft_bounce` →
+  `delivered` → `hard_bounce` / `blocked` / `complained` / `failed`), so a late
+  event can never overwrite a better one.
+
+Create a node-event trigger on `raisin:EmailEvent` to react, for example to
+stop mailing an address that bounced.
+
+The endpoint is `POST /api/email/{repo}/webhooks/{sender}/{token}`. Brevo does
+not sign its payloads, so the unguessable token is the guard; Resend payloads
+are also verified against their Svix signature. **Rotate URL** in the panel
+replaces the token.
+
+**SMTP cannot do this.** It can only confirm that the relay accepted the
+message; there is no feedback channel. Use Brevo or Resend wherever you need
+proof of delivery.
+
 ## Sending from a function
 
 The `raisin.email` binding is the same in JavaScript and Starlark. In

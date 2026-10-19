@@ -105,12 +105,12 @@ If the page is on another origin than the engine, allow `Authorization`, `Conten
 
 ## Where does the policy live? Using a server function
 
-Many apps keep their rules (who may upload, which folders, which limits) in a [server function](../functions/wasm-rust.md). Two facts shape what you can do today:
+Many apps keep their rules (who may upload, which folders, which limits) in a [server function](../functions/wasm-rust.md). The token model fits that directly:
 
-- **A function cannot mint an upload token.** The function host API (the `raisin_sdk` modules) has no upload-token call, and a function has no bearer token of the signed-in user to present to `POST /api/uploads/tokens`.
-- **A token therefore carries the authority of the user who mints it**, not of a function. At mint time the engine checks that this user may create at the destination, so a token can never grant more than the user has.
+- **Minting is a user action.** A token is minted with the signed-in user's own session (`POST /api/uploads/tokens`), so it carries exactly that user's authority.
+- **The engine checks the user at mint time.** It verifies that this user may create at the destination, so a token can never grant more than the user already has.
 
-The supported pattern: the logged-in page asks your function what is allowed, then mints the token with its own session using exactly what the function returned.
+The pattern: the logged-in page asks your function what is allowed, then mints the token with its own session using exactly what the function returned.
 
 ```typescript
 const { result, error } = await db.functions().invokeSync('upload_policy', { purpose: 'photo' });
@@ -163,7 +163,7 @@ raisin_sdk::export!(upload_policy);
 
 This compiles against the SDK (`cargo check`, native). Register it as a function node as described in [Rust functions](../functions/wasm-rust.md).
 
-**What this does and does not enforce.** The function decides what the page is *told*. The engine enforces only the user's own create permission, so a modified client could mint a different token (another folder, larger limits) wherever that user is allowed to create. If your policy must be binding, express it in the user's permissions (roles and [row-level security](../auth/row-level-security.md)), and treat the function's answer as guidance and a place to apply product rules.
+**Where the rules live.** Your function shapes what the page offers: the folder, the limits, the ticket and your product rules. The engine guarantees the boundary: a token is minted with the user's own permission, so it only ever writes where that user's roles allow. Rules that must hold for every client belong in the user's permissions (roles and [row-level security](../auth/row-level-security.md)); the function then builds the experience on top of them.
 
 **After the upload.** A function can finish the job: the engine writes the file as a node at `<folder>/up-<id>-<n>[.<ext>]`, so a function (called by the page after `complete`, or by a `node_event` trigger on creation in that folder) can look at that node, check it, and record it in your own ticket or record. Remember `complete` returns before the node exists: the write happens in a background job.
 

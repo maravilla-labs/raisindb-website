@@ -196,7 +196,7 @@ Minting returns `401` for anonymous callers, `403` when the caller may not creat
 - **Expiry gates opening a session.** A session opened in time stays usable for up to one hour, so a slow upload can finish after the token's own expiry. It is still limited to that one session.
 - **Size** is enforced twice: when the session opens, and while each chunk streams.
 - **Create-only.** Opening a session and completing it both refuse with `409 TOKEN_DESTINATION_TAKEN` when a node already exists at the destination. A node that appeared after the token was minted is never overwritten, and a use that has completed cannot be replayed.
-- **Use counter.** The counter of used uses is held in the server process, like the upload sessions. After a restart, or on another cluster node, it starts over. The remaining window: a replay of a use that has **not yet completed** can open one more session for the same fixed destination, within the token's limits. Whichever completes second is refused, because the destination then exists.
+- **Single use per destination.** Every use writes one node at a destination derived from the token. A destination that already holds a node refuses the next open and the completion with `409 TOKEN_DESTINATION_TAKEN`, so a use that has completed never repeats, across restarts and across cluster nodes. The count of opened uses is kept in the server process, like the upload sessions.
 - **Logging.** Neither the token nor its signature is logged, only the token id.
 
 ## Configuration and key rotation

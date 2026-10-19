@@ -23,7 +23,7 @@ Send the user's own bearer token. Nothing here uses a privileged key.
 
 ```javascript
 // Runs as the logged-in user.
-async function mintUploadToken(userToken) {
+async function mintUploadToken(userToken, overrides = {}) {
   const res = await fetch('https://db.example.com/api/uploads/tokens', {
     method: 'POST',
     headers: { Authorization: `Bearer ${userToken}`, 'Content-Type': 'application/json' },
@@ -36,6 +36,7 @@ async function mintUploadToken(userToken) {
       max_bytes: 20 * 1024 * 1024,
       ttl_seconds: 600,
       uses: 1,
+      ...overrides, // limits decided elsewhere, e.g. by a server function (see below)
     }),
   });
   if (!res.ok) throw new Error((await res.json()).code ?? res.status); // 403: user may not create here
@@ -101,6 +102,70 @@ document.querySelector('input[type=file]').addEventListener('change', async (e) 
 ```
 
 If the page is on another origin than the engine, allow `Authorization`, `Content-Range` and the `PATCH` method in CORS. A `409 TOKEN_DESTINATION_TAKEN` after a single-use token has completed is expected on a retry: do not retry blindly, mint a new token.
+
+## Where does the policy live? Using a server function
+
+Many apps keep their rules (who may upload, which folders, which limits) in a [server function](../functions/wasm-rust.md). Two facts shape what you can do today:
+
+- **A function cannot mint an upload token.** The function host API (the `raisin_sdk` modules) has no upload-token call, and a function has no bearer token of the signed-in user to present to `POST /api/uploads/tokens`.
+- **A token therefore carries the authority of the user who mints it**, not of a function. At mint time the engine checks that this user may create at the destination, so a token can never grant more than the user has.
+
+The supported pattern: the logged-in page asks your function what is allowed, then mints the token with its own session using exactly what the function returned.
+
+```typescript
+const { result, error } = await db.functions().invokeSync('upload_policy', { purpose: 'photo' });
+if (error || !result?.success) throw new Error(result?.reason ?? error);
+
+const token = await mintUploadToken(userToken, { repository: 'my-repo', ...result.policy });
+```
+
+Here `mintUploadToken` is the function from step 1, taking the request body as its second argument. The function, in Rust (`raisin_sdk`):
+
+```rust
+use raisin_sdk::prelude::*;
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+#[derive(Deserialize, Default)]
+pub struct Input {
+    #[serde(default)]
+    pub purpose: String,
+}
+
+#[raisin_sdk::handler(name = "upload_policy")]
+pub fn upload_policy(input: Input) -> Result<Value> {
+    let ctx = Context::get()?;
+    let allowed = ctx
+        .caller()
+        .map(|c| c.has_any_role(&["editor", "admin"]))
+        .unwrap_or(false);
+    if !allowed {
+        return Ok(json!({ "success": false, "reason": "forbidden" }));
+    }
+    let policy = match input.purpose.as_str() {
+        "photo" => json!({
+            "workspace": "assets", "folder": "/inbound/photos", "extension": "jpg",
+            "allowed_mimes": ["image/*"], "max_bytes": 10 * 1024 * 1024,
+            "ttl_seconds": 300, "uses": 3
+        }),
+        "contract" => json!({
+            "workspace": "assets", "folder": "/inbound/contracts", "extension": "pdf",
+            "allowed_mimes": ["application/pdf"], "max_bytes": 25 * 1024 * 1024,
+            "ttl_seconds": 600, "uses": 1
+        }),
+        _ => return Ok(json!({ "success": false, "reason": "unknown_purpose" })),
+    };
+    Ok(json!({ "success": true, "policy": policy }))
+}
+
+raisin_sdk::export!(upload_policy);
+```
+
+This compiles against the SDK (`cargo check`, native). Register it as a function node as described in [Rust functions](../functions/wasm-rust.md).
+
+**What this does and does not enforce.** The function decides what the page is *told*. The engine enforces only the user's own create permission, so a modified client could mint a different token (another folder, larger limits) wherever that user is allowed to create. If your policy must be binding, express it in the user's permissions (roles and [row-level security](../auth/row-level-security.md)), and treat the function's answer as guidance and a place to apply product rules.
+
+**After the upload.** A function can finish the job: the engine writes the file as a node at `<folder>/up-<id>-<n>[.<ext>]`, so a function (called by the page after `complete`, or by a `node_event` trigger on creation in that folder) can look at that node, check it, and record it in your own ticket or record. Remember `complete` returns before the node exists: the write happens in a background job.
 
 ## Node variant (a script or kiosk backend)
 
